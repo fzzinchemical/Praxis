@@ -615,7 +615,7 @@ Prompts are a limited resource, because developers' review effort falls over a s
 
 ### Workspace confinement
 
-Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `..` can't escape; check containment after resolution. Outside the workspace, reads ask and writes need an explicit per-path approval, except for `extra_read` and `extra_write`.
+Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `..` can't escape; check containment after resolution. Outside the workspace, reads ask and writes need an explicit per-path approval, except for `extra_read` and `extra_write`. Until the permissions and config tasks add those paths, tools refuse everything outside the workspace. `..` below a missing folder and dangling symlinks are refused too, because they can't be resolved.
 
 ### Sandbox
 

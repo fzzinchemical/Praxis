@@ -134,7 +134,7 @@ flowchart LR
   - **Do:** model listing, load with `context_length`, ask-or-`auto_load` behaviour.
   - **Done when:** tests cover enough context (no reload), too little context with and without `auto_load`, and a missing model.
 
-- [ ] **T1.5 File tools** (§6, §9 confinement)
+- [x] **T1.5 File tools** (§6, §9 confinement)
   - **Needs:** T0.1.
   - **Do:** `Read`, `Write`, `Edit`, `Grep`, `Glob` with registry, schemas, atomic writes, workspace confinement. `Write` and `Edit` results stay short (§6).
   - **Done when:** tests cover each tool's errors; the symlink and `..` escape tests from §10 pass; interrupted writes leave the original intact; and `Edit` refuses a file changed since it was read.
