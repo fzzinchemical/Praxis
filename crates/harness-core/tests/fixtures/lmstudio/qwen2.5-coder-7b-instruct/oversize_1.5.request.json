@@ -1,0 +1,16 @@
+{
+ "model": "qwen/qwen2.5-coder-7b-instruct",
+ "messages": [
+  {
+   "role": "user",
+   "content": "<26048 chars synthetic>"
+  }
+ ],
+ "stream": true,
+ "stream_options": {
+  "include_usage": true
+ },
+ "temperature": 0,
+ "seed": 42,
+ "max_tokens": 16
+}

@@ -211,11 +211,11 @@ impl Provider {
 
 LM Studio is the only backend. Chat goes through its OpenAI-compatible route and model management through its native API. No provider trait or enum: tests go through HTTP against the fake server, so nothing needs a mock.
 
-- **Base URL:** LM Studio `http://localhost:1234` (the port in its docs' examples; `UNVERIFIED` as the default).
+- **Base URL:** LM Studio `http://localhost:1234` (seen on the dev machine, T0.3; configurable).
 - **Proxies:** call `.no_proxy()` on loopback clients.
 - **Remote URLs:** warn when a non-loopback URL uses plain `http://`.
 - **Keys:** `api_key_env` in config names an environment variable. Keys are never stored in config or logged.
-- **Errors:** connection refused, no model loaded and unsupported tools each get a distinct `ProviderError` with a message that tells the user what to do.
+- **Errors:** connection refused, no model loaded (HTTP 400, `code: null`, message `No models loaded`), unknown model (HTTP 400, `code: model_not_found`), context overflow (see §5.2) and unsupported tools each get a distinct `ProviderError` with a message that tells the user what to do.
 
 ### 5.2 LM Studio facts
 
@@ -228,7 +228,12 @@ LM Studio is the only backend. Chat goes through its OpenAI-compatible route and
 | Model list | `GET /api/v1/models`: `key`, `max_context_length`, `loaded_instances[].{id, config.context_length}`, `capabilities.trained_for_tool_use` |
 | Unload | `POST /api/v1/models/unload` |
 | Auth | Optional `Authorization: Bearer` |
-| `UNVERIFIED` | Whether `/v1/chat/completions` uses a specific instance by id; `usage` and cached-token fields in streams; a reasoning field in deltas |
+| Instances | `model` accepts an instance id such as `<key>:2`; use the id from `ensure_ready` |
+| Usage | With `stream_options.include_usage`, a final chunk with empty `choices` has `prompt_tokens`, `completion_tokens`, `completion_tokens_details.reasoning_tokens`. No cached-token field |
+| Reasoning | Delta field `reasoning_content` |
+| Stream errors | **HTTP 200** with SSE `event: error`; the message embeds `exceed_context_size_error`, `n_prompt_tokens`, `n_ctx` |
+
+Evidence: [ADR 0002](adr/0002-lmstudio-provider-findings.md).
 
 **`ensure_ready` behaviour.** A reload would disrupt anything else using the server, so it only happens with consent:
 
@@ -278,11 +283,11 @@ flowchart TD
 Stages, in order:
 
 1. **Native** `tool_calls` from the response.
-2. **Text-embedded calls**, only in the assistant's own output, using parsers selected by the model profile (`<tool_call>{json}</tool_call>` and whichever formats T2.2's recordings show).
-3. **JSON repair:** double-encoded argument strings, trailing commas, code fences, literal newlines in strings.
+2. **Text-embedded calls**, only in the assistant's own output, using parsers selected by the model profile (`<tool_call>{json}</tool_call>` and the fenced `<tools>`/`<response>` JSON that qwen2.5-coder emits, ADR 0002).
+3. **JSON repair:** double-encoded argument strings, trailing commas, code fences, literal newlines in strings, doubled braces, single-quoted strings.
 4. **Schema validation** with `jsonschema` against the tool's input schema.
 5. **On failure,** return a structured tool error to the model naming the problem and the expected shape. Allow up to 3 failures for the same call in a row, then stop with a notice.
-6. **Constrained retry (T2.12).** If T0.3 shows it works, the retry uses LM Studio's `response_format` JSON schema, which uses grammar sampling on GGUF models. This fixes structure only, so validation and permission checks still apply. LM Studio warns that not all models support structured output, especially those under 7B.
+6. **Constrained retry (T2.12).** The retry uses LM Studio's `response_format` JSON schema, which uses grammar sampling on GGUF models. T0.3 found no `tool_calls` come back when it is set, so arguments are read from `content`, and reasoning must be off or given enough output budget. This fixes structure only, so validation and permission checks still apply. LM Studio warns that not all models support structured output, especially those under 7B.
 
 Rules:
 
@@ -304,10 +309,10 @@ Stop with `LoopDetected` when any of these happen:
 Layered: built-in by name pattern, then capabilities reported by LM Studio, then user config.
 
 ```toml
-[profiles."qwen*"]
+[profiles."qwen3*"]
 context = 64000
 max_output = 8192
-tool_format = "native"        # native | hermes-text | ...
+tool_format = "native"        # native | hermes-text | ...; qwen2.5-coder is text-only (ADR 0002)
 temperature = 0.2
 stop = []
 strip_thinking = true
@@ -375,9 +380,9 @@ flowchart TB
 
 - Date, cwd, branch and OS are captured once at session start. If they change, append a message; never rewrite the prefix.
 - Serialize tools and JSON deterministically, with stable key order.
-- **Don't change the `tools` array mid-session.** It's rendered into the start of the prompt by chat templates (`UNVERIFIED` per model), so changing it invalidates the cache.
+- **Don't change the `tools` array mid-session.** Changing it forces a full reprocess, measured on both tested models (ADR 0002).
 - Rewrite old messages only in a compaction pass. Filter and truncate tool output once, when first recorded.
-- Log cached prompt tokens if LM Studio reports them (`UNVERIFIED`), otherwise time to first token. A regression test (T2.5) asserts that consecutive request bodies share a prefix.
+- LM Studio reports no cached tokens, so log time to first token. A regression test (T2.5) asserts that consecutive request bodies share a prefix.
 
 ### Token budget
 
@@ -394,7 +399,7 @@ Default allocation of the context window `C`:
 
 **Oversized tool results:** keep head and tail, write the full text to the session's spool directory, and tell the model the path and how to read more.
 
-**Truncation detection:** servers may silently drop the start of an oversized prompt. Before each request, check the estimate against `C`. After each response, compare the reported prompt tokens with the estimate; a value far below the estimate, or at the context size, emits a warning and forces compaction. Exact thresholds come from T0.3.
+**Truncation detection:** T0.3 saw no silent truncation: over `C`, LM Studio returns `exceed_context_size_error` (§5.2), which forces compaction. Before each request, check the estimate against `C`. As a guard against other versions, a reported prompt size below 50% of the calibrated estimate also warns and forces compaction; 50% is a judgement, not a measurement, since estimates were within 2% in T0.3.
 
 ### Compaction
 

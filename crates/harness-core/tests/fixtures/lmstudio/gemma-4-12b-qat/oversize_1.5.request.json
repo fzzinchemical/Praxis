@@ -1,0 +1,16 @@
+{
+ "model": "google/gemma-4-12b-qat",
+ "messages": [
+  {
+   "role": "user",
+   "content": "<26138 chars synthetic>"
+  }
+ ],
+ "stream": true,
+ "stream_options": {
+  "include_usage": true
+ },
+ "temperature": 0,
+ "seed": 42,
+ "max_tokens": 16
+}

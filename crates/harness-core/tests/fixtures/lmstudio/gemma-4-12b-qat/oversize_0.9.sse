@@ -1,0 +1,32 @@
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"*"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":"   "},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":"Input"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":":"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" A"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" long"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" list"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" of"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" \""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":"word"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":"_"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":"number"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{"reasoning_content":" word"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"length"}]}
+
+data: {"id":"chatcmpl-vbor1ay75rzzltk0e7x","object":"chat.completion.chunk","created":1793996098,"model":"google/gemma-4-12b-qat","system_fingerprint":"google/gemma-4-12b-qat","choices":[],"usage":{"prompt_tokens":7340,"completion_tokens":16,"total_tokens":7356,"completion_tokens_details":{"reasoning_tokens":13}}}
+
+data: [DONE]
+

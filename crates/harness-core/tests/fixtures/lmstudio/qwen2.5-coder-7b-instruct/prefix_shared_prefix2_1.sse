@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-8u2xx351wedf1y9c5ximsl","object":"chat.completion.chunk","created":1793995995,"model":"qwen/qwen2.5-coder-7b-instruct","system_fingerprint":"qwen/qwen2.5-coder-7b-instruct","choices":[{"index":0,"delta":{"role":"assistant","content":"No"},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8u2xx351wedf1y9c5ximsl","object":"chat.completion.chunk","created":1793995995,"model":"qwen/qwen2.5-coder-7b-instruct","system_fingerprint":"qwen/qwen2.5-coder-7b-instruct","choices":[{"index":0,"delta":{"content":"."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"chatcmpl-8u2xx351wedf1y9c5ximsl","object":"chat.completion.chunk","created":1793995995,"model":"qwen/qwen2.5-coder-7b-instruct","system_fingerprint":"qwen/qwen2.5-coder-7b-instruct","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}]}
+
+data: {"id":"chatcmpl-8u2xx351wedf1y9c5ximsl","object":"chat.completion.chunk","created":1793995995,"model":"qwen/qwen2.5-coder-7b-instruct","system_fingerprint":"qwen/qwen2.5-coder-7b-instruct","choices":[],"usage":{"prompt_tokens":4943,"completion_tokens":3,"total_tokens":4946,"completion_tokens_details":{"reasoning_tokens":0}}}
+
+data: [DONE]
+

@@ -1,0 +1,58 @@
+{
+ "model": "qwen/qwen2.5-coder-7b-instruct",
+ "messages": [
+  {
+   "role": "user",
+   "content": "Use the Write tool to create hello.py containing a function that prints \"hi\" on two separate lines with quotes."
+  }
+ ],
+ "stream": true,
+ "stream_options": {
+  "include_usage": true
+ },
+ "temperature": 0,
+ "seed": 42,
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "Read",
+    "description": "Read a file",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "file_path": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "file_path"
+     ]
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "Write",
+    "description": "Write a file",
+    "parameters": {
+     "type": "object",
+     "properties": {
+      "file_path": {
+       "type": "string"
+      },
+      "content": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "file_path",
+      "content"
+     ]
+    }
+   }
+  }
+ ],
+ "max_tokens": 1024
+}

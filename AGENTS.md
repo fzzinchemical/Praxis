@@ -63,6 +63,8 @@ Checked 2026-11-06. Re-check before relying on it.
 
 Known before implementation. Details are in SPEC.
 
+- LM Studio reports context overflow as HTTP 200 plus SSE `event: error`, so checking the status alone misses it (ADR 0002).
+- `qwen2.5-coder-7b-instruct` never emits native tool calls despite accepting `tools` (ADR 0002).
 - `--workspace` overrides `default-members`, so it pulls wasm crates into native builds. Use `--exclude` as `scripts/verify` does.
 - LM Studio's native chat can't take custom tools, and its OpenAI-compatible routes can't set context size. Chat through `/v1/chat/completions` and set context when loading the model through `/api/v1/models/load` (SPEC §5).
 - Never assume a loaded model's context size. Read `loaded_instances[].config.context_length`.

@@ -63,7 +63,7 @@ flowchart LR
   - **Do:** run OpenCode and Goose on the T0.4 tasks with the chosen models; record outcomes and failure kinds in `docs/baseline.md`.
   - **Done when:** `docs/baseline.md` has results per tool and model, and **the human has decided to build, narrow scope, or contribute upstream**, recorded as an ADR. The rest of this file assumes "build".
 
-- [ ] **T0.3 Provider spike and fixture recording**
+- [x] **T0.3 Provider spike and fixture recording**
   - **Needs:** T0.0, T0.1.
   - **Do:** script real requests against LM Studio with each model: streaming with tools, context setting, oversized prompts, and repeat requests with a shared prefix. Save raw responses under `crates/harness-core/tests/fixtures/lmstudio/`. Resolve the provider `UNVERIFIED` items in §5.2, including how to observe cache reuse. Measure cache gains.
   - **Done when:** §5.2 has no provider `UNVERIFIED` items left, truncation thresholds are written into §7, and an ADR records the measured cache benefit and which tool-call formats each model emitted.
