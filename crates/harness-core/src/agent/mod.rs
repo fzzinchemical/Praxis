@@ -1,5 +1,6 @@
 //! The agent loop and the events front ends see (SPEC §4).
 
+mod compact;
 mod loop_detection;
 
 use self::loop_detection::LoopDetector;
@@ -7,6 +8,7 @@ pub mod profile;
 pub mod recovery;
 
 use crate::context::budget::{Budget, Observation};
+use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
@@ -86,6 +88,7 @@ pub enum AgentEvent {
         context_size: u32,
         cached_tokens: Option<u32>,
     },
+    Compaction(CompactionState),
     Notice {
         severity: Severity,
         title: String,
@@ -101,6 +104,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// Project instructions, part of the prefix and the first thing trimmed to fit it.
     pub agents_md: Option<String>,
+    /// How many recent turns keep their tool output when history is masked (SPEC §7).
+    pub mask_keep_turns: u32,
     pub max_turn_requests: u32,
     pub profile: ModelProfile,
 }
@@ -141,6 +146,10 @@ pub struct Agent {
     /// Frozen at session start: changing the array forces a full reprocess (SPEC §7).
     tool_schemas: Vec<ToolSchema>,
     facts: SessionFacts,
+    /// The server has shown the estimate is wrong, so compact before the next request.
+    compact_next: bool,
+    /// Messages a summary removed. Generated call ids count these so they never repeat.
+    summarised_messages: usize,
 }
 
 /// What one model request produced before it ended.
@@ -189,6 +198,8 @@ impl Agent {
             prefix_warning,
             tool_schemas,
             facts,
+            compact_next: false,
+            summarised_messages: 0,
         }
     }
 
@@ -242,7 +253,9 @@ impl Agent {
         self.call_failures.clear();
         let mut can_constrain = self.config.profile.constrained_retry;
         let mut retry: Option<ToolSchema> = None;
+        let mut overflow_retried = false;
         loop {
+            self.compact_if_needed(turn).await;
             requests += 1;
             let constrained = retry.take();
             let mut reply = self.request(turn, constrained.clone()).await;
@@ -251,6 +264,7 @@ impl Agent {
                 && !turn.cancel.is_cancelled()
             {
                 can_constrain = false;
+                self.compact_next |= matches!(error, ProviderError::ContextOverflow { .. });
                 turn.emit(AgentEvent::Notice {
                     severity: Severity::Warning,
                     title: "The server rejected a constrained retry, so retrying without it."
@@ -262,6 +276,18 @@ impl Agent {
             }
             self.observe_usage(&reply, turn).await;
             if let Some(error) = reply.error {
+                if let ProviderError::ContextOverflow { prompt_tokens, .. } = &error
+                    && reply.text.is_empty()
+                    && !std::mem::replace(&mut overflow_retried, true)
+                {
+                    // An overflow is the server's own count, so it's the best calibration there is.
+                    if let Some(tokens) = prompt_tokens {
+                        self.budget.observe(reply.sent_chars, *tokens);
+                    }
+                    self.compact_next = true;
+                    requests -= 1;
+                    continue;
+                }
                 // Half-streamed tool calls never arrive, so only text can need keeping.
                 let content = match reply.text.as_str() {
                     "" => INTERRUPTED_REPLY.to_owned(),
@@ -277,18 +303,25 @@ impl Agent {
                 && reply.calls.is_empty()
             {
                 reply.calls.push(ToolCall {
-                    id: format!("constrained-{}", self.history.len()),
+                    id: format!(
+                        "constrained-{}",
+                        self.history.len() + self.summarised_messages
+                    ),
                     name: tool.name,
                     arguments: std::mem::take(&mut reply.text),
                 });
             }
-            let id_prefix = format!("text-call-{}", self.history.len());
+            let id_prefix = format!(
+                "text-call-{}",
+                self.history.len() + self.summarised_messages
+            );
             let recovered = recovery::recover_calls(
                 &reply.text,
                 reply.calls,
                 self.config.profile.tool_format,
                 &id_prefix,
             );
+            overflow_retried = false;
             let done = recovered.calls.is_empty();
             let silent = recovered.text.is_empty();
             self.history.push(Message::Assistant {
@@ -389,13 +422,13 @@ impl Agent {
                 "The server may have truncated the prompt: it counted {reported} tokens where about {estimated} were expected."
             ))
             .await;
+            self.compact_next = true;
         }
     }
 
-    async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {
+    fn chat_request(&self, constrained: Option<ToolSchema>) -> ChatRequest {
         let profile = &self.config.profile;
-        let quiet = constrained.is_some();
-        let request = ChatRequest {
+        ChatRequest {
             model: self.config.model.clone(),
             messages: self.history.clone(),
             // Text formats get their tools through the system prompt instead.
@@ -414,7 +447,13 @@ impl Agent {
             temperature: profile.temperature,
             stop: profile.stop.clone(),
             response_format: constrained,
-        };
+        }
+    }
+
+    async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {
+        let profile = &self.config.profile;
+        let quiet = constrained.is_some();
+        let request = self.chat_request(constrained);
         let mut reply = Reply {
             quiet,
             sent_chars: request.chars(),

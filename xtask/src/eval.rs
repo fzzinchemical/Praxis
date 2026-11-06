@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, system_prompt,
 };
+use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use harness_core::provider::{LoadPolicy, Provider, ReadyModel};
 use harness_core::tools::ToolContext;
 use serde_json::{Value, json};
@@ -273,6 +274,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
             agents_md: None,
+            mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
         },

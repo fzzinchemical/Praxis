@@ -35,21 +35,36 @@ impl Budget {
         }
     }
 
-    fn percent(&self, percent: u64) -> u32 {
+    /// `percent` of `C`.
+    pub fn share(&self, percent: u64) -> u32 {
         // Never fails: callers pass at most 100, so the result fits the u32 context size.
         u32::try_from(u64::from(self.context_size) * percent / 100).unwrap_or(self.context_size)
     }
 
     pub fn output_reserve(&self) -> u32 {
-        self.percent(15)
+        self.share(15)
     }
 
     pub fn prefix_limit(&self) -> u32 {
-        self.percent(25)
+        self.share(25)
     }
 
     pub fn result_limit(&self) -> u32 {
-        self.percent(10)
+        self.share(10)
+    }
+
+    pub fn compact_at(&self) -> u32 {
+        self.share(80)
+    }
+
+    /// Masking frees enough in one rewrite to stay under `compact_at` for a good while.
+    pub fn mask_target(&self) -> u32 {
+        self.share(60)
+    }
+
+    /// At or below this, masking was enough and no summary is needed.
+    pub fn settle_at(&self) -> u32 {
+        self.share(70)
     }
 
     pub fn estimate(&self, chars: usize) -> u32 {

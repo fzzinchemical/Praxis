@@ -97,6 +97,13 @@ impl ChatRequest {
     }
 }
 
+impl Message {
+    /// Size of this message as sent.
+    pub fn chars(&self) -> usize {
+        message_json(self).to_string().chars().count()
+    }
+}
+
 fn request_body(req: &ChatRequest) -> Value {
     let messages: Vec<Value> = req.messages.iter().map(message_json).collect();
     let mut body = json!({

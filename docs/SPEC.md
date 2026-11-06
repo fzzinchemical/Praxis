@@ -389,6 +389,7 @@ flowchart TB
 - **Don't change the `tools` array mid-session.** Changing it forces a full reprocess, measured on both tested models (ADR 0002).
 - Rewrite old messages only in a compaction pass. Filter and truncate tool output once, when first recorded.
 - A fact that changed reaches the model as a note at the start of the next user message, because a separate message would break strict role alternation in some chat templates.
+- A constrained retry (§5.3) must omit `tools`, so it and the next normal request each reprocess the whole prompt. History stays append-only across both, and only a failed call pays this.
 - LM Studio reports no cached tokens, so log time to first token. A regression test (T2.5) asserts that consecutive request bodies share a prefix.
 
 ### Token budget
@@ -400,7 +401,7 @@ Default allocation of the context window `C`:
 | Reserved for output | 15% of `C` |
 | System prompt, tools, AGENTS.md, skill index | 25% of `C`; warn and trim AGENTS.md first when over |
 | One tool result | 10% of `C` |
-| History | Whatever remains; compact at 80% of `C` |
+| History | Whatever remains; compact when the whole prompt passes 80% of `C` |
 
 **Counting:** no tokenizer dependency, because tokenizers vary by model and the server knows the truth. Estimate at `chars / 3.5`, then calibrate per session from the `usage` the server reports. Compact early when uncertain.
 
@@ -432,13 +433,13 @@ flowchart TD
 
 **Masking rules:**
 - Mask whole tool results, never individual tokens or lines. Assistant text and tool calls stay.
-- Always keep the most recent `mask_keep_turns` turns (default 10), or as many as fit. Never mask a result the model hasn't had a turn to use.
-- The placeholder names the tool, its arguments and how to get the output again, such as `[Output removed to save space: Read src/a.rs lines 1-200. Call it again if needed.]`.
+- Always keep the most recent `mask_keep_turns` turns (default 10), or as many as fit. A turn starts at an assistant message. Never mask a result the model hasn't had a turn to use.
+- The placeholder names the tool, its arguments and how to get the output again, such as `[Output removed to save space: Read src/a.rs lines 1-200. Call it again if needed.]`. Repeating a call with side effects isn't a safe re-fetch, so output from anything but `Read`, `Grep` and `Glob` is spooled when masked and the placeholder gives that path.
 - The window size needs tuning, so evals compare 5, 10 and 20 against no masking. Small models may be more sensitive.
 
-**Summaries** use a structured template: goal, decisions, files changed, current state, next step. New history is `[summary] + [last N turns]`.
+**Summaries** use a structured template: goal, decisions, files changed, current state, next step. New history is `[summary] + [last N turns]`. It is one user message, labelled as model-written, and ends with the latest request verbatim so a summary can't lose it. A context overflow or a suspiciously small reported prompt forces compaction; an overflow retries the request once.
 
-Every stage leaves the prefix before history untouched, emits `Compaction` events and records the boundary in the session log. The full log stays on disk.
+Every stage leaves the prefix before history untouched, emits `Compaction` events and records the boundary in the session log (until sessions exist, in `tracing` logs only). The full log stays on disk.
 
 ### Reducing tool output
 

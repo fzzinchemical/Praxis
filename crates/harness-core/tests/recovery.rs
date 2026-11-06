@@ -85,6 +85,7 @@ fn label(event: &AgentEvent) -> String {
         AgentEvent::ToolFinished { outcome, .. } => format!("finished:{outcome:?}"),
         AgentEvent::PermissionRequest { name, .. } => format!("ask:{name}"),
         AgentEvent::Usage { .. } => "usage".to_owned(),
+        AgentEvent::Compaction(state) => format!("compaction:{state:?}"),
         AgentEvent::Notice { title, .. } => format!("notice:{title}"),
         AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
     }
@@ -115,6 +116,7 @@ async fn run_with(bodies: Vec<Vec<u8>>, profile: ModelProfile, dir: &Path) -> Ru
             context_size: 100_000,
             system_prompt: "sys".into(),
             agents_md: None,
+            mask_keep_turns: 10,
             max_turn_requests: 20,
             profile,
         },

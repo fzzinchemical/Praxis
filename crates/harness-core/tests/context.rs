@@ -3,7 +3,8 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::agent::{Agent, AgentConfig, AgentEvent, ToolOutcome};
+use harness_core::agent::{Agent, AgentConfig, AgentEvent, StopReason, ToolOutcome};
+use harness_core::context::compaction::{CompactionState, DEFAULT_MASK_KEEP_TURNS};
 use harness_core::provider::Provider;
 use harness_core::tools::{self, ToolContext};
 use serde_json::{Value, json};
@@ -61,6 +62,7 @@ fn config(context_size: u32) -> AgentConfig {
         context_size,
         system_prompt: "sys".into(),
         agents_md: None,
+        mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
     }
@@ -367,4 +369,338 @@ async fn session_facts_sit_in_the_prefix_and_changes_are_appended() {
         "{second}"
     );
     assert_eq!(last_message(&bodies[2]), "third", "announced only once");
+}
+
+fn compactions(events: &[AgentEvent]) -> Vec<CompactionState> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Compaction(state) => Some(*state),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `reads` Read calls of a file sized just under one result's limit, then a final answer.
+fn read_script(reads: usize) -> Vec<String> {
+    let mut bodies: Vec<String> = (0..reads)
+        .map(|n| {
+            tool_reply(
+                &format!("c{n}"),
+                "Read",
+                json!({"file_path": "f.txt", "limit": 1000 + n}),
+            )
+        })
+        .collect();
+    bodies.push(text_reply("done", 7000));
+    bodies
+}
+
+fn starts_and_ends(state: &[CompactionState]) -> Vec<String> {
+    state
+        .iter()
+        .map(|s| match s {
+            CompactionState::Started(stage) => format!("started:{stage:?}"),
+            CompactionState::Finished { stage, .. } => format!("finished:{stage:?}"),
+            CompactionState::Failed(stage) => format!("failed:{stage:?}"),
+        })
+        .collect()
+}
+
+/// A big text reply: nothing masking can touch, so these force the summary stage.
+fn long_reply() -> String {
+    let text = "t".repeat(10_000);
+    sse(&[json!({"choices": [{"delta": {"content": text}, "finish_reason": "stop"}]})])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn does_not_compact_below_the_threshold() {
+    let mut h = Harness::new(read_script(3), config(10_000)).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let events = h.turn("go").await;
+    assert_eq!(compactions(&events), []);
+    assert_each_body_extends_the_last(&h).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn masks_once_in_a_batch_and_keeps_the_prefix_and_recent_turns() {
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 3;
+    let mut h = Harness::new(read_script(9), cfg).await;
+    let content = big_file_lines(150);
+    fs::write(h.workspace.join("f.txt"), &content).unwrap();
+    let events = h.turn("go").await;
+
+    assert_eq!(
+        starts_and_ends(&compactions(&events)),
+        ["started:Masking", "finished:Masking"],
+        "one batched rewrite"
+    );
+    let bodies = h.bodies().await;
+    let last = bodies.last().unwrap()["messages"].as_array().unwrap();
+    assert_eq!(last[0], bodies[0]["messages"][0], "prefix untouched");
+    assert_eq!(bodies.last().unwrap()["tools"], bodies[0]["tools"]);
+    let results: Vec<&str> = last
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap())
+        .collect();
+    assert!(
+        results[0].starts_with("[Output removed to save space: Read"),
+        "{}",
+        results[0]
+    );
+    assert!(results[0].contains("f.txt") && results[0].contains("Call it again"));
+    assert!(
+        results
+            .iter()
+            .rev()
+            .take(3)
+            .all(|r| r.contains("line number 150"))
+    );
+
+    // The rewrite is the only break in the chain of byte-prefix extensions.
+    let requests = h.server.received_requests().await.unwrap();
+    let raw: Vec<&str> = requests
+        .iter()
+        .map(|r| std::str::from_utf8(&r.body).unwrap())
+        .collect();
+    let breaks = raw
+        .windows(2)
+        .filter(|pair| {
+            !split_messages(pair[1])
+                .0
+                .starts_with(split_messages(pair[0]).0)
+        })
+        .count();
+    assert_eq!(breaks, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn summarises_when_masking_is_not_enough() {
+    let bodies = vec![
+        long_reply(),
+        long_reply(),
+        long_reply(),
+        text_reply("Goal: the summary", 9000),
+        text_reply("after", 3000),
+    ];
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 1;
+    let mut h = Harness::new(bodies, cfg).await;
+    h.turn("one").await;
+    h.turn("two").await;
+    h.turn("three").await;
+    let events = h.turn("four").await;
+    assert_eq!(
+        starts_and_ends(&compactions(&events)),
+        [
+            "started:Masking",
+            "finished:Masking",
+            "started:Summary",
+            "finished:Summary"
+        ]
+    );
+    let bodies = h.bodies().await;
+    assert!(last_message(&bodies[3]).contains("Goal, Decisions, Files changed"));
+    let roles: Vec<&Value> = bodies[3]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| &m["role"])
+        .collect();
+    assert!(
+        roles
+            .windows(2)
+            .all(|pair| pair[0] != "user" || pair[1] != "user"),
+        "strict templates reject consecutive user messages"
+    );
+    let after = bodies[4]["messages"].as_array().unwrap();
+    assert_eq!(after[0], bodies[0]["messages"][0], "prefix untouched");
+    let summary = after[1]["content"].as_str().unwrap();
+    assert!(summary.contains("Goal: the summary"), "{summary}");
+    assert_eq!(after.last().unwrap()["content"], "four");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_summary_falls_back_to_stubs_and_warns() {
+    let bodies = vec![
+        long_reply(),
+        long_reply(),
+        long_reply(),
+        "event: error\ndata: {\"error\":{\"message\":\"boom\"}}\n\n".to_owned(),
+        text_reply("carried on", 9000),
+    ];
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 1;
+    let mut h = Harness::new(bodies, cfg).await;
+    h.turn("one").await;
+    h.turn("two").await;
+    h.turn("three").await;
+    let events = h.turn("four").await;
+    assert_eq!(
+        starts_and_ends(&compactions(&events)),
+        [
+            "started:Masking",
+            "finished:Masking",
+            "started:Summary",
+            "failed:Summary",
+            "started:Stubs",
+            "finished:Stubs"
+        ]
+    );
+    assert!(
+        warnings(&events)
+            .iter()
+            .any(|w| w.contains("without a summary"))
+    );
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::TurnEnded(StopReason::EndTurn))
+    ));
+    let compaction_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::Compaction(_)));
+    let text_at = events
+        .iter()
+        .position(|e| matches!(e, AgentEvent::TextDelta(_)));
+    assert!(compaction_at < text_at, "compaction comes before the reply");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_overflow_compacts_and_retries_once() {
+    let overflow = "event: error\ndata: {\"error\":{\"message\":\"exceed_context_size_error: n_prompt_tokens=11000 n_ctx=10000\"}}\n\n";
+    let mut bodies = read_script(4);
+    bodies.pop();
+    bodies.push(overflow.to_owned());
+    bodies.push(text_reply("recovered", 7000));
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 1;
+    let mut h = Harness::new(bodies, cfg).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let events = h.turn("go").await;
+    assert!(starts_and_ends(&compactions(&events)).contains(&"started:Masking".to_owned()));
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::TurnEnded(StopReason::EndTurn))
+    ));
+    let last = h.bodies().await.pop().unwrap();
+    assert!(last.to_string().contains("Output removed"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_overflow_ends_the_turn_instead_of_looping() {
+    let overflow =
+        "event: error\ndata: {\"error\":{\"message\":\"exceed_context_size_error\"}}\n\n";
+    let mut h = Harness::new(vec![overflow.to_owned()], config(10_000)).await;
+    let events = h.turn("go").await;
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::TurnEnded(StopReason::ProviderError))
+    ));
+    assert_eq!(h.bodies().await.len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reported_shrink_forces_compaction_on_the_next_request() {
+    let bodies = vec![
+        tool_reply("a", "Read", json!({"file_path": "f.txt"})),
+        tool_reply("b", "Read", json!({"file_path": "f.txt"})),
+        // Far below the estimate of about 2000 tokens, though well under the 80% threshold.
+        text_reply("next", 10),
+        tool_reply("c", "Read", json!({"file_path": "f.txt"})),
+        text_reply("done", 2000),
+    ];
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 1;
+    let mut h = Harness::new(bodies, cfg).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let first = h.turn("first").await;
+    assert_eq!(compactions(&first), []);
+    let second = h.turn("second").await;
+    assert_eq!(
+        starts_and_ends(&compactions(&second))[..2],
+        ["started:Masking", "finished:Masking"]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_constrained_retry_changes_only_tools_and_history_stays_append_only() {
+    let bodies = vec![
+        tool_reply("a", "Read", json!({"wrong": 1})),
+        text_reply(&json!({"file_path": "f.txt"}).to_string(), 4000),
+        text_reply("done", 4000),
+    ];
+    let mut cfg = config(20_000);
+    cfg.profile.constrained_retry = true;
+    let mut h = Harness::new(bodies, cfg).await;
+    fs::write(h.workspace.join("f.txt"), "hello\n").unwrap();
+    h.turn("go").await;
+
+    let parsed = h.bodies().await;
+    assert!(parsed[1].get("tools").is_none(), "this is the reprocess");
+    assert!(parsed[1].get("response_format").is_some());
+    assert_eq!(
+        parsed[0]["tools"], parsed[2]["tools"],
+        "tools come back unchanged"
+    );
+    let requests = h.server.received_requests().await.unwrap();
+    let raw: Vec<&str> = requests
+        .iter()
+        .map(|r| std::str::from_utf8(&r.body).unwrap())
+        .collect();
+    for pair in raw.windows(2) {
+        assert!(
+            split_messages(pair[1])
+                .0
+                .starts_with(split_messages(pair[0]).0)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_summary_has_its_reasoning_stripped_and_call_ids_never_repeat_after_it() {
+    let hermes = "<tool_call>{\"name\": \"Glob\", \"arguments\": {\"pattern\": \"*\"}}</tool_call>";
+    let bodies = vec![
+        long_reply(),
+        long_reply(),
+        long_reply(),
+        text_reply("<think>secret plan</think>Goal: kept", 9000),
+        text_reply(hermes, 3000),
+        text_reply("done", 3000),
+    ];
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 1;
+    cfg.profile.strip_thinking = true;
+    cfg.profile.tool_format = harness_core::agent::recovery::ToolFormat::HermesText;
+    let mut h = Harness::new(bodies, cfg).await;
+    h.turn("one").await;
+    h.turn("two").await;
+    h.turn("three").await;
+    h.turn("four").await;
+    let last = h.bodies().await.pop().unwrap();
+    let text = last["messages"].to_string();
+    assert!(
+        text.contains("Goal: kept") && !text.contains("secret plan"),
+        "{text}"
+    );
+    let id = last["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap()["tool_call_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    // 2 + 3 replies and prompts, plus the removed messages: above what a shrunken history gives.
+    let n: usize = id
+        .trim_start_matches("text-call-")
+        .split('-')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(n >= 8, "{id}");
 }

@@ -93,6 +93,7 @@ impl Harness {
                 context_size: 100_000,
                 system_prompt: "sys".into(),
                 agents_md: None,
+                mask_keep_turns: 10,
                 max_turn_requests,
                 profile: harness_core::agent::profile::ModelProfile::default(),
             },
@@ -164,6 +165,7 @@ fn label(event: &AgentEvent) -> String {
             ..
         } => format!("ask:{id}:{can_always}:{input}"),
         AgentEvent::Usage { used_tokens, .. } => format!("usage:{used_tokens}"),
+        AgentEvent::Compaction(state) => format!("compaction:{state:?}"),
         AgentEvent::Notice { .. } => "notice".to_owned(),
         AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
     }

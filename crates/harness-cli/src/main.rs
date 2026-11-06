@@ -8,6 +8,7 @@ use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, DEFAULT_MAX_TURN_REQUESTS, PermissionReply, StopReason,
     ToolOutcome, system_prompt,
 };
+use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::tools::ToolContext;
 use serde_json::Value;
@@ -236,6 +237,7 @@ async fn run_turn(
                 context_size,
                 ..
             } => eprintln!("[context {used_tokens}/{context_size}]"),
+            AgentEvent::Compaction(state) => eprintln!("[compaction {state:?}]"),
             AgentEvent::Notice { title, .. } => eprintln!("{}", sanitize(&title)),
             AgentEvent::TurnEnded(reason) => stop = reason,
         }
@@ -390,6 +392,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
             agents_md: None,
+            mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
             profile,
         },
