@@ -119,7 +119,7 @@ flowchart LR
     class T0_1,T0_3 other
 ```
 
-- [ ] **T1.1 Streaming parsers** (§5)
+- [x] **T1.1 Streaming parsers** (§5)
   - **Needs:** T0.3.
   - **Do:** `provider/stream.rs`: SSE line framing over byte streams, handling chunks split at any byte.
   - **Done when:** tests split recorded fixtures at every byte offset and produce identical results.
