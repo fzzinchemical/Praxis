@@ -371,6 +371,16 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
     let mut terminal = interactive.then(spawn_terminal_reader);
     let interrupt = Interrupt::install();
     let ready = ready_model(&provider, cli.model, &settings, &mut terminal).await?;
+    let models = provider.list_models().await?;
+    let reported = models.iter().find(|m| {
+        m.loaded_instances
+            .iter()
+            .any(|instance| instance.id == ready.instance_id)
+    });
+    let key = reported.map_or(ready.instance_id.as_str(), |m| m.key.as_str());
+    // shortcut: no user layer until config arrives in M3, which also needs `context` read earlier.
+    let profile =
+        harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
     let workspace = std::env::current_dir()?;
     let agent = Agent::new(
         Arc::new(provider),
@@ -380,7 +390,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
-            tool_format: harness_core::agent::recovery::ToolFormat::Native,
+            profile,
         },
     );
     match prompt {

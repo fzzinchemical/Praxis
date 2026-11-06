@@ -1,18 +1,46 @@
 //! Turns weak models' output into tool calls (SPEC §5.3). Everything here is about structure:
 //! a recovered call still goes through schema validation and the permission path.
 
-use crate::provider::ToolCall;
+use crate::provider::{ToolCall, ToolSchema};
+use serde::Deserialize;
 use serde_json::Value;
 
 /// How a model expresses tool calls. Text formats are parsed only from the assistant's own
 /// reply, never from tool results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum ToolFormat {
     Native,
     /// `<tool_call>{json}</tool_call>`.
     HermesText,
     /// A code fence holding `<tools>` or `<response>`, as qwen2.5-coder writes (ADR 0002).
     FencedJson,
+}
+
+impl ToolFormat {
+    /// The system prompt addition teaching a text format, or `None` for native calling.
+    /// `tools` is listed in a fixed order so the prompt prefix stays cacheable (SPEC §7).
+    pub fn instructions(self, tools: &[ToolSchema]) -> Option<String> {
+        let example = r#"{"name": "<tool>", "arguments": {<arguments>}}"#;
+        let shape = match self {
+            Self::Native => return None,
+            Self::HermesText => format!("<tool_call>{example}</tool_call>"),
+            Self::FencedJson => format!("```xml\n<tools>\n{example}\n</tools>\n```"),
+        };
+        let listing: Vec<String> = tools
+            .iter()
+            .map(|t| {
+                format!(
+                    "- {}: {} Arguments: {}",
+                    t.name, t.description, t.parameters
+                )
+            })
+            .collect();
+        Some(format!(
+            "\n\nTo call a tool, write exactly this, with valid JSON:\n{shape}\nTools:\n{}",
+            listing.join("\n")
+        ))
+    }
 }
 
 /// The name given to a text-embedded call whose body can't be read, so the model hears about it.

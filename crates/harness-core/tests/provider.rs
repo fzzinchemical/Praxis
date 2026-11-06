@@ -38,6 +38,8 @@ fn request() -> ChatRequest {
         }],
         tools: vec![],
         max_tokens: None,
+        temperature: None,
+        stop: Vec::new(),
     }
 }
 
@@ -270,6 +272,8 @@ async fn sends_an_openai_shaped_request_with_auth() {
             parameters: json!({"type": "object"}),
         }],
         max_tokens: Some(16),
+        temperature: None,
+        stop: Vec::new(),
     };
     assert!(collect(&provider, req).await.iter().all(Result::is_ok));
 }

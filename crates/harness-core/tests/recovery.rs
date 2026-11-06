@@ -4,9 +4,10 @@
 #![cfg(test)]
 
 use futures::StreamExt;
+use harness_core::agent::profile::{self, ModelProfile};
 use harness_core::agent::recovery::{ToolFormat, recover_calls};
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply};
-use harness_core::provider::{ChatChunk, ChatRequest, Provider, ToolCall};
+use harness_core::provider::{Capabilities, ChatChunk, ChatRequest, Provider, ToolCall};
 use harness_core::tools::{self, ToolContext};
 use serde_json::{Value, json};
 use std::fs;
@@ -90,6 +91,14 @@ fn label(event: &AgentEvent) -> String {
 }
 
 async fn run(bodies: Vec<Vec<u8>>, format: ToolFormat, dir: &Path) -> Run {
+    let profile = ModelProfile {
+        tool_format: format,
+        ..ModelProfile::default()
+    };
+    run_with(bodies, profile, dir).await
+}
+
+async fn run_with(bodies: Vec<Vec<u8>>, profile: ModelProfile, dir: &Path) -> Run {
     let server = MockServer::start().await;
     Mock::given(matchers::method("POST"))
         .respond_with(Script {
@@ -106,7 +115,7 @@ async fn run(bodies: Vec<Vec<u8>>, format: ToolFormat, dir: &Path) -> Run {
             context_size: 1000,
             system_prompt: "sys".into(),
             max_turn_requests: 20,
-            tool_format: format,
+            profile,
         },
     );
     let (tx, mut rx) = mpsc::channel(16);
@@ -144,6 +153,8 @@ async fn decode(bytes: Vec<u8>) -> (String, Vec<ToolCall>) {
         messages: Vec::new(),
         tools: Vec::new(),
         max_tokens: None,
+        temperature: None,
+        stop: Vec::new(),
     };
     let stream = provider
         .chat(request, CancellationToken::new())
@@ -313,4 +324,54 @@ async fn think_blocks_become_thinking_events_and_stay_out_of_history() {
 
     assert!(run.saw("thinking:hmm"), "{:?}", run.events);
     assert_eq!(run.body(1).await["messages"][2]["content"], "note");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_model_with_no_tool_support_is_warned_about_then_uses_text_calling() {
+    let dir = workspace();
+    fs::write(dir.join("a.txt"), "x").unwrap();
+    let capabilities = Capabilities {
+        trained_for_tool_use: false,
+    };
+    let profile = profile::resolve("some-model", Some(&capabilities), &[]);
+    let call = r#"<tool_call>{"name":"Read","arguments":{"file_path":"a.txt"}}</tool_call>"#;
+    let run = run_with(vec![text_reply(call), text_reply("done")], profile, &dir).await;
+
+    assert!(run.events[0].starts_with("notice:"), "{:?}", run.events);
+    assert!(run.saw("started:Read"), "{:?}", run.events);
+    let first = run.body(0).await;
+    assert!(first.get("tools").is_none());
+    let system = first["messages"][0]["content"].as_str().unwrap();
+    assert!(system.starts_with("sys"));
+    assert!(system.contains("<tool_call>"));
+    assert!(system.contains("file_path"));
+    assert_eq!(run.body(1).await["messages"][0]["content"], system);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_settings_reach_the_request() {
+    let dir = workspace();
+    let profile = ModelProfile {
+        max_output: Some(50),
+        temperature: Some(0.2),
+        stop: vec!["END".to_owned()],
+        ..ModelProfile::default()
+    };
+    let run = run_with(vec![text_reply("done")], profile, &dir).await;
+    let body = run.body(0).await;
+    assert_eq!(body["max_tokens"], 50);
+    assert_eq!(body["temperature"], 0.2);
+    assert_eq!(body["stop"], json!(["END"]));
+    assert!(body.get("tools").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn turning_off_strip_thinking_keeps_think_tags_as_text() {
+    let dir = workspace();
+    let profile = ModelProfile {
+        strip_thinking: false,
+        ..ModelProfile::default()
+    };
+    let run = run_with(vec![text_reply("<think>a</think>b")], profile, &dir).await;
+    assert!(!run.saw("thinking:"), "{:?}", run.events);
 }

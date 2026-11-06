@@ -16,6 +16,8 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSchema>,
     pub max_tokens: Option<u32>,
+    pub temperature: Option<f64>,
+    pub stop: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,6 +109,12 @@ fn request_body(req: &ChatRequest) -> Value {
     }
     if let Some(max_tokens) = req.max_tokens {
         body["max_tokens"] = max_tokens.into();
+    }
+    if let Some(temperature) = req.temperature {
+        body["temperature"] = temperature.into();
+    }
+    if !req.stop.is_empty() {
+        body["stop"] = req.stop.clone().into();
     }
     body
 }

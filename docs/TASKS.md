@@ -224,7 +224,7 @@ flowchart LR
   - **Needs:** T1.7.
   - **Done when:** tests pass for every malformed fixture from T0.3; and tests confirm invalid calls never execute, text in tool results is never parsed as a call, and 3 repeat failures stop the turn.
 
-- [ ] **T2.3 Model profiles** (§5.5)
+- [x] **T2.3 Model profiles** (§5.5)
   - **Needs:** T2.2.
   - **Done when:** layered resolution is tested, and a model with no tool support uses text calling after a warning.
 

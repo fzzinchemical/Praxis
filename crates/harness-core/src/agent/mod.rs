@@ -3,6 +3,7 @@
 mod loop_detection;
 
 use self::loop_detection::LoopDetector;
+pub mod profile;
 pub mod recovery;
 
 use crate::permissions::{Decision, Permissions};
@@ -11,6 +12,7 @@ use crate::provider::{
 };
 use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
+use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -95,7 +97,7 @@ pub struct AgentConfig {
     pub context_size: u32,
     pub system_prompt: String,
     pub max_turn_requests: u32,
-    pub tool_format: ToolFormat,
+    pub profile: ModelProfile,
 }
 
 pub const DEFAULT_MAX_TURN_REQUESTS: u32 = 50;
@@ -153,8 +155,9 @@ impl Reply {
 
 impl Agent {
     pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, config: AgentConfig) -> Self {
+        let teaching = config.profile.tool_format.instructions(&tools::schemas());
         let history = vec![Message::System {
-            content: config.system_prompt.clone(),
+            content: config.system_prompt.clone() + teaching.as_deref().unwrap_or_default(),
         }];
         Self {
             provider,
@@ -185,6 +188,14 @@ impl Agent {
             events,
             cancel: cancel.child_token(),
         };
+        if let Some(warning) = self.config.profile.warning.take() {
+            turn.emit(AgentEvent::Notice {
+                severity: Severity::Warning,
+                title: warning,
+                detail: None,
+            })
+            .await;
+        }
         let reason = self.run_requests(&turn).await;
         turn.emit(AgentEvent::TurnEnded(reason)).await;
     }
@@ -212,7 +223,7 @@ impl Agent {
             let recovered = recovery::recover_calls(
                 &reply.text,
                 reply.calls,
-                self.config.tool_format,
+                self.config.profile.tool_format,
                 &id_prefix,
             );
             let done = recovered.calls.is_empty();
@@ -296,11 +307,19 @@ impl Agent {
     }
 
     async fn request(&self, turn: &Turn<'_>) -> Reply {
+        let profile = &self.config.profile;
         let request = ChatRequest {
             model: self.config.model.clone(),
             messages: self.history.clone(),
-            tools: tools::schemas(),
-            max_tokens: None,
+            // Text formats get their tools through the system prompt instead.
+            // shortcut: history still uses tool roles, unproven on templates without tool support; render as plain text if T2.1 shows failures.
+            tools: match profile.tool_format {
+                ToolFormat::Native => tools::schemas(),
+                ToolFormat::HermesText | ToolFormat::FencedJson => Vec::new(),
+            },
+            max_tokens: profile.max_output,
+            temperature: profile.temperature,
+            stop: profile.stop.clone(),
         };
         let mut reply = Reply::default();
         let mut splitter = ThinkSplitter::default();
@@ -314,7 +333,17 @@ impl Agent {
         pin_mut!(stream);
         while let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(ChatChunk::Text(delta)) => reply.add(splitter.push(&delta), turn).await,
+                Ok(ChatChunk::Text(delta)) => {
+                    let split = if profile.strip_thinking {
+                        splitter.push(&delta)
+                    } else {
+                        Split {
+                            text: delta,
+                            ..Split::default()
+                        }
+                    };
+                    reply.add(split, turn).await;
+                }
                 Ok(ChatChunk::Thinking(delta)) => {
                     turn.emit(AgentEvent::ThinkingDelta(delta)).await;
                 }

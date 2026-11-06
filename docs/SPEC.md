@@ -323,7 +323,7 @@ stop = []
 strip_thinking = true
 ```
 
-A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt.
+A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning. The user layer and `context` take effect once config lands (M3).
 
 ## 6. Tools
 
