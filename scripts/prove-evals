@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Proves every eval's check.sh: fails on the untouched fixture, fails when the tests are
+# tampered with, passes on solution.patch, and fails on each bad-solutions/*.patch.
+# Needs no model, but compiles every fixture several times, so it stays out of scripts/verify.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+errors=0
+tasks=0
+
+# Prints check.sh's final message, or PASS if it exits 0.
+outcome() {
+    local out
+    if out=$("$1/check.sh" "$2" 2>&1); then echo PASS; else echo "FAIL: $(tail -n 1 <<<"$out")"; fi
+}
+
+# Fresh git-initialised copy of a fixture, so `git apply` can't resolve against the outer repo.
+fresh() {
+    rm -rf "$tmp/w"
+    cp -a "$1/repo" "$tmp/w"
+    git -C "$tmp/w" init -q
+}
+
+# expect <label> <PASS|FAIL> <outcome>
+expect() {
+    printf '  %-28s %s\n' "$1" "$3"
+    if [[ $3 != "$2"* ]]; then
+        echo "  ^^^ expected $2"
+        errors=$((errors + 1))
+    fi
+}
+
+for toml in evals/*/task.toml; do
+    task=$(dirname "$toml")
+    tasks=$((tasks + 1))
+    echo "$(basename "$task")"
+    if ! grep -q '^prompt = ' "$toml" || ! grep -q '^max_turns = ' "$toml"; then
+        echo "  ^^^ task.toml lacks prompt or max_turns"
+        errors=$((errors + 1))
+    fi
+    before=$(tar -C "$task" -c repo | sha256sum)
+
+    fresh "$task"
+    expect "untouched fixture" FAIL "$(outcome "$task" "$tmp/w")"
+
+    # Tamper the way a cheating agent would: gut the tests and disable test discovery.
+    fresh "$task"
+    rm -rf "$tmp/w/tests"
+    mkdir "$tmp/w/tests"
+    echo '#[test] fn ok() {}' >"$tmp/w/tests/hidden.rs"
+    sed -i '/^\[package\]/a autotests = false' "$tmp/w/Cargo.toml"
+    expect "tests tampered with" FAIL "$(outcome "$task" "$tmp/w")"
+
+    fresh "$task"
+    git -C "$tmp/w" apply "$PWD/$task/solution.patch"
+    expect "solution.patch" PASS "$(outcome "$task" "$tmp/w")"
+
+    for bad in "$task"/bad-solutions/*.patch; do
+        [[ -e $bad ]] || continue
+        fresh "$task"
+        git -C "$tmp/w" apply "$PWD/$bad"
+        expect "bad: $(basename "$bad" .patch)" FAIL "$(outcome "$task" "$tmp/w")"
+    done
+
+    if [[ $before != "$(tar -C "$task" -c repo | sha256sum)" ]]; then
+        echo "  ^^^ check.sh modified the fixture"
+        errors=$((errors + 1))
+    fi
+done
+
+echo "prove-evals: $tasks tasks, $errors errors"
+[[ $tasks -ge 10 && $errors -eq 0 ]]

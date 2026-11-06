@@ -1,0 +1,4 @@
+prompt = '''Add a --json flag to the wordcount binary. With it, the output is exactly {"words":N,"lines":M} on one line. The flag may come before or after the file name. Output without the flag must not change.'''
+
+max_turns = 30
+wall_time_secs = 900

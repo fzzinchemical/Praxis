@@ -1,0 +1,4 @@
+prompt = '''The module `util` only holds text helpers. Rename it to `text`: the file becomes src/text.rs and every path is updated. Do not leave a re-export under the old name.'''
+
+max_turns = 30
+wall_time_secs = 900

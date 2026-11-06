@@ -1,0 +1,4 @@
+prompt = '''parse_duration gives the wrong answer for durations with more than one unit: "1h30m" should be 5400 seconds but it is not. Find the cause and fix it.'''
+
+max_turns = 30
+wall_time_secs = 900

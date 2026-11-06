@@ -1,0 +1,4 @@
+prompt = '''Invoices use f64 dollars, which causes rounding errors. Change the money code to integer cents: LineItem gets `price_cents: u64` instead of `price`, Invoice::total becomes `total_cents(&self) -> u64`. Update every caller. Report output format stays the same. No f64 may remain in src/.'''
+
+max_turns = 30
+wall_time_secs = 900

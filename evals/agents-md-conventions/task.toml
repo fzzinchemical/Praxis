@@ -1,0 +1,4 @@
+prompt = '''Add a function parse_port to src/lib.rs that parses a TCP port from text. Valid ports are 1 to 65535.'''
+
+max_turns = 30
+wall_time_secs = 900

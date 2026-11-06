@@ -1,0 +1,86 @@
+diff --git a/README.md b/README.md
+index 71abee1..cee5bf2 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,3 @@
+ # accounts
+ 
+-Stores `UserRecord` values in memory. See `UserRecord::new`.
++Stores `Account` values in memory. See `Account::new`.
+diff --git a/src/lib.rs b/src/lib.rs
+index a8fa75d..ca364fa 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2,4 +2,4 @@ pub mod model;
+ pub mod report;
+ pub mod store;
+ 
+-pub use model::UserRecord;
++pub use model::Account;
+diff --git a/src/model.rs b/src/model.rs
+index 15c5085..7721def 100644
+--- a/src/model.rs
++++ b/src/model.rs
+@@ -1,12 +1,12 @@
+ /// One person known to the system.
+ #[derive(Clone, Debug, PartialEq)]
+-pub struct UserRecord {
++pub struct Account {
+     pub id: u32,
+     pub name: String,
+ }
+ 
+-impl UserRecord {
+-    pub fn new(id: u32, name: &str) -> UserRecord {
+-        UserRecord { id, name: name.to_string() }
++impl Account {
++    pub fn new(id: u32, name: &str) -> Account {
++        Account { id, name: name.to_string() }
+     }
+ }
+diff --git a/src/report.rs b/src/report.rs
+index cee4e1d..302b00b 100644
+--- a/src/report.rs
++++ b/src/report.rs
+@@ -1,6 +1,6 @@
+-use crate::UserRecord;
++use crate::Account;
+ 
+-pub fn summary(records: &[UserRecord]) -> String {
+-    let names: Vec<&str> = records.iter().map(|r: &UserRecord| r.name.as_str()).collect();
++pub fn summary(records: &[Account]) -> String {
++    let names: Vec<&str> = records.iter().map(|r: &Account| r.name.as_str()).collect();
+     names.join(", ")
+ }
+diff --git a/src/store.rs b/src/store.rs
+index a1e7dd2..a607792 100644
+--- a/src/store.rs
++++ b/src/store.rs
+@@ -1,21 +1,21 @@
+-use crate::model::UserRecord;
++use crate::model::Account;
+ 
+-/// In-memory collection of `UserRecord` values.
++/// In-memory collection of `Account` values.
+ #[derive(Default)]
+ pub struct Store {
+-    records: Vec<UserRecord>,
++    records: Vec<Account>,
+ }
+ 
+ impl Store {
+-    pub fn add(&mut self, record: UserRecord) {
++    pub fn add(&mut self, record: Account) {
+         self.records.push(record);
+     }
+ 
+-    pub fn find(&self, id: u32) -> Option<&UserRecord> {
++    pub fn find(&self, id: u32) -> Option<&Account> {
+         self.records.iter().find(|r| r.id == id)
+     }
+ 
+-    pub fn all(&self) -> &[UserRecord] {
++    pub fn all(&self) -> &[Account] {
+         &self.records
+     }
+ }

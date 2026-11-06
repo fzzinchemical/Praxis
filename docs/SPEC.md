@@ -923,6 +923,8 @@ Start with tools, then resources and prompts.
 
 Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode.
 
+`check.sh [workdir]` judges a copy of the agent's edited repo and never changes it. Each task also has `hidden/` (tests outside the writable path), `solution.patch` and optionally `bad-solutions/*.patch`. `scripts/prove-evals` shows that every check fails on the untouched fixture and on tampered tests, passes on the solution and fails on each bad solution; it needs no model and stays out of verify because it compiles every fixture repeatedly.
+
 Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
 
 ## 15. Error and logging policy

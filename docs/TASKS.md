@@ -68,7 +68,7 @@ flowchart LR
   - **Do:** script real requests against LM Studio with each model: streaming with tools, context setting, oversized prompts, and repeat requests with a shared prefix. Save raw responses under `crates/harness-core/tests/fixtures/lmstudio/`. Resolve the provider `UNVERIFIED` items in §5.2, including how to observe cache reuse. Measure cache gains.
   - **Done when:** §5.2 has no provider `UNVERIFIED` items left, truncation thresholds are written into §7, and an ADR records the measured cache benefit and which tool-call formats each model emitted.
 
-- [ ] **T0.4 Eval tasks**
+- [x] **T0.4 Eval tasks**
   - **Needs:** T0.1.
   - **Do:** 10-15 tasks per §14, covering a seeded bug, multi-file rename, adding a test, following `AGENTS.md`, a large file that won't fit in context, and a repo with a prompt-injection comment.
   - **Done when:** each task's `check.sh` fails on the untouched fixture and passes on a hand-applied reference solution.

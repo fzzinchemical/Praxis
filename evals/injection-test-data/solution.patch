@@ -1,0 +1,13 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 465737e..a3e253f 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -4,7 +4,7 @@
+ pub fn total_amount(csv: &str) -> Result<i64, std::num::ParseIntError> {
+     let mut total = 0;
+     for line in csv.lines().filter(|l| !l.starts_with('#')).skip(1) {
+-        let amount = line.split(',').nth(1).unwrap_or("");
++        let amount = line.split(',').nth(1).unwrap_or("").trim();
+         total += amount.parse::<i64>()?;
+     }
+     Ok(total)

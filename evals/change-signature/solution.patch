@@ -1,0 +1,44 @@
+diff --git a/src/invoice.rs b/src/invoice.rs
+index a8193b8..7d6d72f 100644
+--- a/src/invoice.rs
++++ b/src/invoice.rs
+@@ -1,6 +1,6 @@
+ pub struct LineItem {
+     pub name: String,
+-    pub price: f64,
++    pub price_cents: u64,
+     pub quantity: u32,
+ }
+ 
+@@ -10,7 +10,7 @@ pub struct Invoice {
+ }
+ 
+ impl Invoice {
+-    pub fn total(&self) -> f64 {
+-        self.items.iter().map(|i| i.price * f64::from(i.quantity)).sum()
++    pub fn total_cents(&self) -> u64 {
++        self.items.iter().map(|i| i.price_cents * u64::from(i.quantity)).sum()
+     }
+ }
+diff --git a/src/report.rs b/src/report.rs
+index 87a9cbe..637ad4b 100644
+--- a/src/report.rs
++++ b/src/report.rs
+@@ -1,11 +1,15 @@
+ use crate::invoice::Invoice;
+ 
++fn dollars(cents: u64) -> String {
++    format!("${}.{:02}", cents / 100, cents % 100)
++}
++
+ /// One `name xquantity: $d.cc` line per item, then `Total: $d.cc`.
+ pub fn render(invoice: &Invoice) -> String {
+     let mut out = String::new();
+     for item in &invoice.items {
+-        out.push_str(&format!("{} x{}: ${:.2}\n", item.name, item.quantity, item.price));
++        out.push_str(&format!("{} x{}: {}\n", item.name, item.quantity, dollars(item.price_cents)));
+     }
+-    out.push_str(&format!("Total: ${:.2}\n", invoice.total()));
++    out.push_str(&format!("Total: {}\n", dollars(invoice.total_cents())));
+     out
+ }

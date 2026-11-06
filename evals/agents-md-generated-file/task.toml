@@ -1,0 +1,4 @@
+prompt = '''reason(418) should return Some("Teapot"). Add it.'''
+
+max_turns = 30
+wall_time_secs = 900

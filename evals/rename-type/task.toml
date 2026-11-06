@@ -1,0 +1,4 @@
+prompt = '''Rename the type UserRecord to Account everywhere in this repo, including comments and docs. No aliases or leftovers; behaviour stays the same.'''
+
+max_turns = 30
+wall_time_secs = 900

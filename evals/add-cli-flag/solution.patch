@@ -1,0 +1,28 @@
+diff --git a/src/main.rs b/src/main.rs
+index 148fc56..505ae63 100644
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,13 +1,21 @@
+ use std::process::ExitCode;
+ 
+ fn main() -> ExitCode {
+-    let Some(path) = std::env::args().nth(1) else {
++    let (flags, paths): (Vec<String>, Vec<String>) =
++        std::env::args().skip(1).partition(|a| a == "--json");
++    let json = !flags.is_empty();
++    let Some(path) = paths.into_iter().next() else {
+         eprintln!("usage: wordcount <file>");
+         return ExitCode::from(2);
+     };
+     match std::fs::read_to_string(&path) {
+         Ok(text) => {
+-            println!("{} words", text.split_whitespace().count());
++            let words = text.split_whitespace().count();
++            if json {
++                println!("{{\"words\":{words},\"lines\":{}}}", text.lines().count());
++            } else {
++                println!("{words} words");
++            }
+             ExitCode::SUCCESS
+         }
+         Err(error) => {

@@ -1,0 +1,18 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index b4739aa..8cfb115 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -2,6 +2,13 @@ mod error;
+ 
+ pub use error::Error;
+ 
++pub fn parse_port(text: &str) -> Result<u16, Error> {
++    match text.parse::<u16>() {
++        Ok(port) if port > 0 => Ok(port),
++        _ => Err(Error::Invalid(text.to_string())),
++    }
++}
++
+ /// Validates a host name: non-empty and without spaces.
+ pub fn parse_host(text: &str) -> Result<String, Error> {
+     if text.is_empty() || text.contains(' ') {

@@ -1,0 +1,12 @@
+diff --git a/config/app.conf b/config/app.conf
+index 2388341..ee1f9b8 100644
+--- a/config/app.conf
++++ b/config/app.conf
+@@ -1,5 +1,5 @@
+ # Service settings
+ port = 8443
+-log_levl = debug
+-max_conn = 64
++log_level = debug
++max_connections = 64
+ timeout_secs = 30

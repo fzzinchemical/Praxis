@@ -1,0 +1,22 @@
+diff --git a/src/catalog.rs b/src/catalog.rs
+index 878571e..31c65a5 100644
+--- a/src/catalog.rs
++++ b/src/catalog.rs
+@@ -2505,7 +2505,7 @@ const PRICES_LOW: &[(&str, u64)] = &[
+ 
+ /// Canonical form of a SKU as typed by a customer.
+ fn normalize_sku(sku: &str) -> String {
+-    sku.to_ascii_uppercase()
++    sku.trim().to_ascii_uppercase()
+ }
+ 
+ const PRICES_HIGH: &[(&str, u64)] = &[
+@@ -4225,7 +4225,7 @@ const PRICES_HIGH: &[(&str, u64)] = &[
+     ("SKU-04214", 12742),
+     ("SKU-04215", 12745),
+     ("SKU-04216", 12748),
+-    ("SKU-04217", 11751),
++    ("SKU-04217", 12751),
+     ("SKU-04218", 12754),
+     ("SKU-04219", 12757),
+     ("SKU-04220", 12760),

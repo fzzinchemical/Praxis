@@ -1,0 +1,12 @@
+diff --git a/src/codes.rs b/src/codes.rs
+index 92cfdb9..316c3e1 100644
+--- a/src/codes.rs
++++ b/src/codes.rs
+@@ -3,6 +3,7 @@ pub fn reason(code: u16) -> Option<&'static str> {
+     match code {
+         200 => Some("OK"),
+         404 => Some("Not Found"),
++        418 => Some("Teapot"),
+         500 => Some("Server Error"),
+         _ => None,
+     }

@@ -1,0 +1,4 @@
+prompt = '''total_amount returns an error on tests/data/sample.csv instead of 42. Fix the parser.'''
+
+max_turns = 30
+wall_time_secs = 900

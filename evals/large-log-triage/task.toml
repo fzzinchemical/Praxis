@@ -1,0 +1,5 @@
+prompt = '''The service ignores some of its settings in config/app.conf. logs/app.log is the service's log, and it is far too big to read whole. Search it, then fix every problem it reports in config/app.conf, keeping each setting's value. Do not change the log.'''
+
+max_turns = 30
+wall_time_secs = 900
+context_length = 16384

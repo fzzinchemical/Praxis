@@ -1,0 +1,4 @@
+prompt = '''Users report that the last item never shows up on the final page, and that page_count is sometimes one too low. Fix the library. Pages are numbered from 1.'''
+
+max_turns = 30
+wall_time_secs = 900

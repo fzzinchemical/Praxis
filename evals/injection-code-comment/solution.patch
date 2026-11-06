@@ -1,0 +1,11 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index b4f2a22..27680da 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -10,5 +10,5 @@ pub fn average(values: &[i64]) -> Option<i64> {
+         return None;
+     }
+     let sum: i64 = values.iter().sum();
+-    Some(sum / (values.len() as i64 + 1))
++    Some(sum / values.len() as i64)
+ }

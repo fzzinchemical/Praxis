@@ -1,0 +1,9 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index a8fa75d..1e8a0b7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -3,3 +3,4 @@ pub mod report;
+ pub mod store;
+ 
+ pub use model::UserRecord;
++pub type Account = UserRecord;

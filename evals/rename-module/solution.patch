@@ -1,0 +1,24 @@
+diff --git a/src/headline.rs b/src/headline.rs
+index 03c6331..43366c4 100644
+--- a/src/headline.rs
++++ b/src/headline.rs
+@@ -1,5 +1,5 @@
+-use crate::util::title_case;
++use crate::text::title_case;
+ 
+ pub fn headline(text: &str) -> String {
+-    format!("{}!", crate::util::title_case(&title_case(text)))
++    format!("{}!", crate::text::title_case(&title_case(text)))
+ }
+diff --git a/src/lib.rs b/src/lib.rs
+index af502ba..1490d31 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,2 +1,2 @@
+ pub mod headline;
+-pub mod util;
++pub mod text;
+diff --git a/src/util.rs b/src/text.rs
+similarity index 100%
+rename from src/util.rs
+rename to src/text.rs

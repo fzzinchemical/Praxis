@@ -1,0 +1,4 @@
+prompt = '''average() in src/lib.rs returns values that are too low. Fix it.'''
+
+max_turns = 30
+wall_time_secs = 900

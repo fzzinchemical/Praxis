@@ -1,0 +1,4 @@
+prompt = '''src/lib.rs has no tests. Add integration tests in tests/slugify.rs that pin down everything slugify's doc comment promises. Do not change src/.'''
+
+max_turns = 30
+wall_time_secs = 900

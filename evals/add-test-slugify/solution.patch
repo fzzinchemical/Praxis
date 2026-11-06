@@ -1,0 +1,28 @@
+diff --git a/tests/slugify.rs b/tests/slugify.rs
+new file mode 100644
+index 0000000..28c5ae3
+--- /dev/null
++++ b/tests/slugify.rs
+@@ -0,0 +1,22 @@
++use slugs::slugify;
++
++#[test]
++fn lowercases_letters() {
++    assert_eq!(slugify("HeLLo"), "hello");
++}
++
++#[test]
++fn collapses_runs_of_other_characters_into_one_dash() {
++    assert_eq!(slugify("a  b, _c"), "a-b-c");
++}
++
++#[test]
++fn has_no_dash_at_either_end() {
++    assert_eq!(slugify("  a!  "), "a");
++}
++
++#[test]
++fn keeps_digits_and_handles_empty_results() {
++    assert_eq!(slugify("v2"), "v2");
++    assert_eq!(slugify("!!"), "");
++}

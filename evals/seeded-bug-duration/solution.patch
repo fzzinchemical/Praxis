@@ -1,0 +1,12 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 93ba2dc..af8b78e 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -23,6 +23,7 @@ pub fn parse_duration(text: &str) -> Option<u64> {
+             _ => return None,
+         };
+         total = total.checked_add(number.checked_mul(unit)?)?;
++        number = 0;
+         pending = false;
+     }
+     if pending || text.is_empty() { None } else { Some(total) }
