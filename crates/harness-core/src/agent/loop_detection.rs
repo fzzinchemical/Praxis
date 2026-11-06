@@ -1,6 +1,6 @@
 //! Stops a turn whose tool calls show the model is stuck (SPEC §5.4).
 
-use super::parse_arguments;
+use super::recovery::parse_arguments;
 use crate::provider::ToolCall;
 use serde_json::Value;
 use std::collections::{HashSet, VecDeque};

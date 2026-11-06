@@ -255,14 +255,25 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     });
 
     let base = format!("http://127.0.0.1:{SANDBOX_PORT}");
+    let provider = Provider::new(&base, None)?;
+    let instance = text("instance")?.to_owned();
+    // Same resolution as the CLI, so evals judge what users actually run.
+    let models = provider.list_models().await?;
+    let reported = models
+        .iter()
+        .find(|m| m.loaded_instances.iter().any(|i| i.id == instance));
+    let key = reported.map_or(instance.as_str(), |m| m.key.as_str());
+    let profile =
+        harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
     let mut agent = Agent::new(
-        Arc::new(Provider::new(&base, None)?),
+        Arc::new(provider),
         Arc::new(ToolContext::new(Path::new(WORK))?),
         AgentConfig {
-            model: text("instance")?.to_owned(),
+            model: instance,
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
             max_turn_requests: u32::try_from(number("max_turns")?)?,
+            profile,
         },
     );
     let cancel = CancellationToken::new();
