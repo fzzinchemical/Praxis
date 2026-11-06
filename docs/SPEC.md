@@ -83,7 +83,7 @@ flowchart TB
     vscode["harness-vscode<br/>wasm32"] -.->|"spawns harness acp"| cli
     vscode <-.->|"postMessage"| ui["harness-vscode-ui<br/>wasm32"]
     xtask["xtask<br/>dev only"] -.->|"packages"| vscode
-    xtask -.->|"runs evals through"| cli
+    xtask -.->|"runs evals through"| core
 
     classDef native fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef wasm fill:#fef3c7,stroke:#d97706,color:#78350f
@@ -143,7 +143,7 @@ pub enum AgentEvent {
     ToolFinished { id: ToolCallId, outcome: ToolOutcome },
     PermissionRequest { id: ToolCallId, name: String, input: serde_json::Value,
                         can_always: bool, preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
-    Usage { used_tokens: u32, context_size: u32, cached_tokens: Option<u32> },
+    Usage { prompt_tokens: u32, used_tokens: u32, context_size: u32, cached_tokens: Option<u32> },
     Compaction(CompactionState),
     Notice { severity: Severity, title: String, detail: Option<String> },
     TurnEnded(StopReason),
@@ -925,11 +925,11 @@ Start with tools, then resources and prompts.
 
 ### Evals
 
-Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode.
+Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode. Until T3.3 provides both, `cargo xtask eval` drives `harness-core` directly, approves every tool call and instead runs each task inside `bwrap`: only the task's copy is writable, the home directory isn't mounted, and the only network path is a forwarded socket to LM Studio. `check.sh` runs in a second `bwrap` with no network, because it executes agent-written code. The command fails if `bwrap` is missing.
 
 `check.sh [workdir]` judges a copy of the agent's edited repo and never changes it. Each task also has `hidden/` (tests outside the writable path), `solution.patch` and optionally `bad-solutions/*.patch`. `scripts/prove-evals` shows that every check fails on the untouched fixture and on tampered tests, passes on the solution and fails on each bad solution; it needs no model and stays out of verify because it compiles every fixture repeatedly.
 
-Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
+Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. A metric the harness can't produce yet is `null`, with its reason under `null_reasons`. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
 
 ## 15. Error and logging policy
 

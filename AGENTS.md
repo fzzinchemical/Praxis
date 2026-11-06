@@ -92,3 +92,4 @@ Known before implementation. Details are in SPEC.
 - Clippy's `allow-unwrap-in-tests` skips helper functions in `tests/*.rs` unless the file starts with `#![cfg(test)]`.
 - Workspace builds enable `serde_json`'s `preserve_order` through a dependency, so JSON key order differs between `-p` and `--workspace` test runs. Don't assert on it.
 - clap's `args_conflicts_with_subcommands` stops subcommands parsing after any flag, including global ones.
+- `reqwest` with rustls fails to build a client when no CA roots exist, even for plain HTTP to loopback, so sandboxes must mount `/etc/ssl` and `/etc/ca-certificates`.

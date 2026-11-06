@@ -110,6 +110,17 @@ impl AdminClient {
         }
     }
 
+    pub(super) async fn unload(&self, instance_id: &str) -> Result<(), ProviderError> {
+        let url = self.endpoint.url("api/v1/models/unload");
+        let request = self
+            .endpoint
+            .http
+            .post(url)
+            .json(&serde_json::json!({ "instance_id": instance_id }));
+        self.endpoint.send(request).await?;
+        Ok(())
+    }
+
     async fn load(&self, model: &str, context: u32) -> Result<ReadyModel, ProviderError> {
         let url = self.endpoint.url("api/v1/models/load");
         let request = self.endpoint.http.post(url).json(&serde_json::json!({

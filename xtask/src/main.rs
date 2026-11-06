@@ -1,4 +1,7 @@
-//! Dev tasks. `cargo xtask vsix` packages the VS Code extension without npm or vsce (ADR 0001).
+//! Dev tasks. `cargo xtask vsix` packages the VS Code extension without npm or vsce (ADR 0001);
+//! `cargo xtask eval` runs the model evals (SPEC §14).
+
+mod eval;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -19,17 +22,26 @@ const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </Types>
 "#;
 
-fn main() -> Result<()> {
-    match env::args().nth(1).as_deref() {
-        Some("vsix") => vsix(),
-        _ => bail!("usage: cargo xtask vsix"),
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.split_first() {
+        Some((command, _)) if command == "vsix" => vsix(),
+        Some((command, rest)) if command == "eval" => eval::eval(rest, workspace_root()?).await,
+        // Runs inside the sandbox that `eval` starts.
+        Some((command, [spec])) if command == "eval-agent" => eval::agent_main(spec).await,
+        _ => bail!("usage: cargo xtask vsix | eval --model <id>"),
     }
 }
 
-fn vsix() -> Result<()> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+fn workspace_root() -> Result<&'static Path> {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .context("xtask has no parent directory")?;
+        .context("xtask has no parent directory")
+}
+
+fn vsix() -> Result<()> {
+    let root = workspace_root()?;
     let out = root.join("target/vsix");
     // Stale glue from an earlier build must not ship.
     if out.exists() {

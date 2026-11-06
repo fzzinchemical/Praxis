@@ -222,6 +222,10 @@ impl Provider {
     ) -> Result<ReadyModel, ProviderError> {
         self.admin.ensure_ready(model, context, policy).await
     }
+
+    pub async fn unload(&self, instance_id: &str) -> Result<(), ProviderError> {
+        self.admin.unload(instance_id).await
+    }
 }
 
 #[cfg(test)]
