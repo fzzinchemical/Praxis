@@ -145,7 +145,7 @@ flowchart LR
   - **Done when:** a test proves a spawned grandchild dies on timeout, and that secret-named variables are absent.
   - **Note:** unsandboxed until T3.3, so until then every `Bash` call must prompt, with no "always" option. Use it only on fixture repos.
 
-- [ ] **T1.7 Agent loop and events** (§4)
+- [x] **T1.7 Agent loop and events** (§4)
   - **Needs:** T1.2, T1.5.
   - **Do:** the loop and event model, sequential tools, `max_turn_requests`, cancellation.
   - **Done when:** scripted fake-server test completes a two-tool turn with the exact event order asserted, cancel mid-tool yields `TurnEnded(Cancelled)`; and the next prompt continues from consistent history.

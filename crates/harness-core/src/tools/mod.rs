@@ -34,7 +34,7 @@ impl ToolOutput {
         }
     }
 
-    fn error(content: String) -> Self {
+    pub fn error(content: String) -> Self {
         Self {
             content,
             is_error: true,
