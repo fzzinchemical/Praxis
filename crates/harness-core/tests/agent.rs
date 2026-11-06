@@ -3,7 +3,7 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::agent::{Agent, AgentConfig, AgentEvent, StopReason, ToolOutcome};
+use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
 use serde_json::{Value, json};
@@ -102,13 +102,14 @@ impl Harness {
         }
     }
 
-    /// Runs a turn on its own task, as a session does, handing each event to `on_event`.
+    /// Runs a turn on its own task, as a session does, and returns its event labels.
+    /// `reply` answers permission requests; `None` drops the sender, as if nobody can answer.
     async fn turn(
         &mut self,
         prompt: &str,
         cancel: CancellationToken,
-        mut on_event: impl FnMut(&mut AgentEvent),
-    ) -> Vec<AgentEvent> {
+        mut reply: impl FnMut(&str) -> Option<PermissionReply>,
+    ) -> Vec<String> {
         let mut agent = self.agent.take().unwrap();
         let (tx, mut rx) = mpsc::channel(16);
         let prompt = prompt.to_owned();
@@ -117,9 +118,13 @@ impl Harness {
             agent
         });
         let mut events = Vec::new();
-        while let Some(mut event) = rx.recv().await {
-            on_event(&mut event);
-            events.push(event);
+        while let Some(event) = rx.recv().await {
+            events.push(label(&event));
+            if let AgentEvent::PermissionRequest { name, respond, .. } = event
+                && let Some(answer) = reply(&name)
+            {
+                respond.send(answer).unwrap();
+            }
         }
         self.agent = Some(task.await.unwrap());
         events
@@ -140,23 +145,30 @@ impl Harness {
     }
 }
 
-fn labels(events: &[AgentEvent]) -> Vec<String> {
-    events
-        .iter()
-        .map(|event| match event {
-            AgentEvent::TextDelta(text) => format!("text:{text}"),
-            AgentEvent::ThinkingDelta(text) => format!("thinking:{text}"),
-            AgentEvent::ToolStarted { id, title, .. } => format!("started:{id}:{title}"),
-            AgentEvent::ToolFinished { id, outcome } => match outcome {
-                ToolOutcome::Completed(output) if output.is_error => format!("error:{id}"),
-                ToolOutcome::Completed(_) => format!("finished:{id}"),
-                ToolOutcome::Cancelled => format!("cancelled:{id}"),
-            },
-            AgentEvent::Usage { used_tokens, .. } => format!("usage:{used_tokens}"),
-            AgentEvent::Notice { .. } => "notice".to_owned(),
-            AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
-        })
-        .collect()
+fn label(event: &AgentEvent) -> String {
+    match event {
+        AgentEvent::TextDelta(text) => format!("text:{text}"),
+        AgentEvent::ThinkingDelta(text) => format!("thinking:{text}"),
+        AgentEvent::ToolStarted { id, title, .. } => format!("started:{id}:{title}"),
+        AgentEvent::ToolFinished { id, outcome } => match outcome {
+            ToolOutcome::Completed(output) if output.is_error => format!("error:{id}"),
+            ToolOutcome::Completed(_) => format!("finished:{id}"),
+            ToolOutcome::Cancelled => format!("cancelled:{id}"),
+        },
+        AgentEvent::PermissionRequest {
+            id,
+            can_always,
+            input,
+            ..
+        } => format!("ask:{id}:{can_always}:{input}"),
+        AgentEvent::Usage { used_tokens, .. } => format!("usage:{used_tokens}"),
+        AgentEvent::Notice { .. } => "notice".to_owned(),
+        AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
+    }
+}
+
+fn never_asked(tool: &str) -> Option<PermissionReply> {
+    panic!("unexpected permission request for {tool}")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -173,10 +185,10 @@ async fn completes_a_two_tool_turn_with_exact_event_order() {
     ];
     let mut h = Harness::in_workspace(workspace, script, 50).await;
 
-    let events = h.turn("go", CancellationToken::new(), |_| {}).await;
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
 
     assert_eq!(
-        labels(&events),
+        events,
         [
             format!("started:c1:Read {}", path.display()),
             "finished:c1".to_owned(),
@@ -214,32 +226,31 @@ async fn cancelling_mid_tool_ends_cancelled_and_the_next_prompt_has_consistent_h
 
     let started = std::time::Instant::now();
     let events = h
-        .turn("first", cancel, move |event| {
-            if matches!(event, AgentEvent::ToolStarted { .. }) {
-                let trigger = trigger.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                    trigger.cancel();
-                });
-            }
+        .turn("first", cancel, move |_| {
+            let trigger = trigger.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                trigger.cancel();
+            });
+            Some(PermissionReply::AllowOnce)
         })
         .await;
 
     assert!(started.elapsed().as_secs() < 20, "the sleep wasn't killed");
     assert_eq!(
-        labels(&events),
+        events,
         [
             "started:c1:Bash sleep 30",
+            r#"ask:c1:false:{"command":"sleep 30"}"#,
             "cancelled:c1",
             "ended:Cancelled"
         ]
     );
 
-    let events = h.turn("second", CancellationToken::new(), |_| {}).await;
-    assert_eq!(
-        labels(&events),
-        ["text:resumed", "usage:12", "ended:EndTurn"]
-    );
+    let events = h
+        .turn("second", CancellationToken::new(), never_asked)
+        .await;
+    assert_eq!(events, ["text:resumed", "usage:12", "ended:EndTurn"]);
     assert_eq!(
         h.roles(1).await,
         ["system", "user", "assistant", "tool", "tool", "user"]
@@ -256,13 +267,10 @@ async fn stops_at_max_turn_requests() {
     let looping = tool_reply(&[("c1", "Glob", json!({"pattern": "*"}))]);
     let mut h = Harness::new(vec![looping], 2).await;
 
-    let events = h.turn("go", CancellationToken::new(), |_| {}).await;
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
 
     assert_eq!(h.server.received_requests().await.unwrap().len(), 2);
-    assert!(matches!(
-        events.last(),
-        Some(AgentEvent::TurnEnded(StopReason::MaxTurnRequests))
-    ));
+    assert_eq!(events.last().unwrap(), "ended:MaxTurnRequests");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -274,10 +282,10 @@ async fn invalid_arguments_go_back_to_the_model_instead_of_ending_the_turn() {
     ]);
     let mut h = Harness::new(vec![bad, text_reply("ok")], 50).await;
 
-    let events = h.turn("go", CancellationToken::new(), |_| {}).await;
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
 
     assert_eq!(
-        labels(&events),
+        events,
         [
             "started:c1:Read",
             "error:c1",
@@ -295,10 +303,166 @@ async fn a_provider_failure_ends_the_turn_and_the_next_prompt_still_works() {
     let error = "event: error\ndata: {\"error\":{\"message\":\"boom\"}}\n\n".to_owned();
     let mut h = Harness::new(vec![error, text_reply("fine")], 50).await;
 
-    let events = h.turn("first", CancellationToken::new(), |_| {}).await;
-    assert_eq!(labels(&events), ["notice", "ended:ProviderError"]);
+    let events = h.turn("first", CancellationToken::new(), never_asked).await;
+    assert_eq!(events, ["notice", "ended:ProviderError"]);
 
-    let events = h.turn("second", CancellationToken::new(), |_| {}).await;
-    assert_eq!(labels(&events), ["text:fine", "usage:12", "ended:EndTurn"]);
+    let events = h
+        .turn("second", CancellationToken::new(), never_asked)
+        .await;
+    assert_eq!(events, ["text:fine", "usage:12", "ended:EndTurn"]);
     assert_eq!(h.roles(1).await, ["system", "user", "assistant", "user"]);
+}
+
+/// A workspace, its target file, and a script that writes the file `writes` times, then stops.
+async fn writer(writes: usize) -> (Harness, PathBuf) {
+    let workspace = new_workspace();
+    let path = workspace.join("out.txt");
+    let mut script: Vec<String> = (0..writes)
+        .map(|i| {
+            let id = format!("w{i}");
+            tool_reply(&[(&id, "Write", json!({"file_path": path, "content": "x"}))])
+        })
+        .collect();
+    script.push(text_reply("done"));
+    (Harness::in_workspace(workspace, script, 50).await, path)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_rejected_write_does_not_happen_and_the_model_is_told() {
+    let (mut h, path) = writer(1).await;
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            Some(PermissionReply::RejectOnce)
+        })
+        .await;
+
+    assert!(!path.exists());
+    assert_eq!(events[2], "error:w0");
+    let result = h.request_messages(1).await[3]["content"].clone();
+    assert!(result.as_str().unwrap().contains("rejected"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_does_not_happen_when_nobody_can_answer() {
+    let (mut h, path) = writer(1).await;
+
+    let events = h.turn("go", CancellationToken::new(), |_| None).await;
+
+    assert!(!path.exists());
+    assert_eq!(events[2], "error:w0");
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_does_not_happen_when_the_front_end_is_gone() {
+    let (h, path) = writer(1).await;
+    let mut agent = h.agent.unwrap();
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+
+    agent
+        .run_turn("go".into(), &tx, CancellationToken::new())
+        .await;
+
+    assert!(!path.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_prompt_shows_the_full_parameters() {
+    let (mut h, path) = writer(1).await;
+
+    let events = h.turn("go", CancellationToken::new(), |_| None).await;
+
+    // Key order depends on whether a workspace build enables serde_json's `preserve_order`.
+    assert!(events[1].starts_with("ask:w0:true:"));
+    assert!(events[1].contains(r#""content":"x""#));
+    assert!(events[1].contains(&format!(r#""file_path":"{}""#, path.display())));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_once_writes_and_asks_again_next_time() {
+    let (mut h, path) = writer(2).await;
+    let mut asked = 0;
+
+    h.turn("go", CancellationToken::new(), |_| {
+        asked += 1;
+        Some(PermissionReply::AllowOnce)
+    })
+    .await;
+
+    assert_eq!(asked, 2);
+    assert!(path.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_stops_asking_for_that_tool() {
+    let (mut h, path) = writer(2).await;
+    let mut asked = 0;
+
+    h.turn("go", CancellationToken::new(), |_| {
+        asked += 1;
+        Some(PermissionReply::AllowAlways)
+    })
+    .await;
+
+    assert_eq!(asked, 1);
+    assert!(path.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reject_always_denies_later_calls_without_asking() {
+    let (mut h, path) = writer(2).await;
+    let mut asked = 0;
+
+    h.turn("go", CancellationToken::new(), |_| {
+        asked += 1;
+        Some(PermissionReply::RejectAlways)
+    })
+    .await;
+
+    assert_eq!(asked, 1);
+    assert!(!path.exists());
+}
+
+// Bash is unsandboxed until T3.3, so a blanket grant must be impossible even from a buggy front end.
+#[tokio::test(flavor = "multi_thread")]
+async fn allow_always_on_bash_only_counts_once() {
+    let call = tool_reply(&[("b", "Bash", json!({"command": "true"}))]);
+    let mut h = Harness::new(vec![call.clone(), call, text_reply("done")], 50).await;
+    let mut asked = 0;
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            asked += 1;
+            Some(PermissionReply::AllowAlways)
+        })
+        .await;
+
+    assert_eq!(asked, 2);
+    assert!(events[1].starts_with("ask:b:false:"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelling_a_pending_prompt_ends_the_turn_without_running_the_tool() {
+    let (mut h, path) = writer(1).await;
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            Some(PermissionReply::Cancelled)
+        })
+        .await;
+
+    assert!(!path.exists());
+    assert_eq!(events.last().unwrap(), "ended:Cancelled");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_tool_is_refused_without_a_prompt() {
+    let call = tool_reply(&[("u", "Delete", json!({"file_path": "x"}))]);
+    let mut h = Harness::new(vec![call, text_reply("ok")], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(events[1], "error:u");
 }

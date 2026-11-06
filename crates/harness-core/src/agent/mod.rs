@@ -1,5 +1,6 @@
 //! The agent loop and the events front ends see (SPEC §4).
 
+use crate::permissions::{Decision, Permissions};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall,
 };
@@ -7,7 +8,7 @@ use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 pub type ToolCallId = String;
@@ -35,6 +36,15 @@ pub enum ToolOutcome {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionReply {
+    AllowOnce,
+    AllowAlways,
+    RejectOnce,
+    RejectAlways,
+    Cancelled,
+}
+
 #[derive(Debug)]
 pub enum AgentEvent {
     TextDelta(String),
@@ -48,6 +58,14 @@ pub enum AgentEvent {
     ToolFinished {
         id: ToolCallId,
         outcome: ToolOutcome,
+    },
+    /// Show the full `input`. Offer "always" only when `can_always`. Dropping `respond` denies.
+    PermissionRequest {
+        id: ToolCallId,
+        name: String,
+        input: Value,
+        can_always: bool,
+        respond: oneshot::Sender<PermissionReply>,
     },
     Usage {
         used_tokens: u32,
@@ -82,6 +100,7 @@ pub struct Agent {
     tools: Arc<ToolContext>,
     config: AgentConfig,
     history: Vec<Message>,
+    permissions: Permissions,
 }
 
 /// What one model request produced before it ended.
@@ -103,6 +122,7 @@ impl Agent {
             tools,
             config,
             history,
+            permissions: Permissions::default(),
         }
     }
 
@@ -217,7 +237,7 @@ impl Agent {
     }
 
     /// Returns the result to show the model.
-    async fn run_call(&self, call: &ToolCall, turn: &Turn<'_>) -> String {
+    async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> String {
         let input = parse_arguments(&call.arguments);
         turn.emit(AgentEvent::ToolStarted {
             id: call.id.clone(),
@@ -227,10 +247,13 @@ impl Agent {
         })
         .await;
         let output = match input {
-            Some(input) => {
-                let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
-                tools::execute(&call.name, input, tools, cancel).await
-            }
+            Some(input) => match self.check_permission(call, &input, turn).await {
+                Ok(()) => {
+                    let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
+                    tools::execute(&call.name, input, tools, cancel).await
+                }
+                Err(reason) => ToolOutput::error(reason),
+            },
             None => ToolOutput::error(
                 "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
                     .to_owned(),
@@ -249,6 +272,37 @@ impl Agent {
         })
         .await;
         content
+    }
+
+    /// `Err` holds the denial to show the model. Anything but an explicit approval denies.
+    async fn check_permission(
+        &mut self,
+        call: &ToolCall,
+        input: &Value,
+        turn: &Turn<'_>,
+    ) -> Result<(), String> {
+        let can_always = match self.permissions.decide(&call.name) {
+            Decision::Allow => return Ok(()),
+            Decision::Deny(reason) => return Err(reason),
+            Decision::Ask { can_always } => can_always,
+        };
+        let (respond, answer) = oneshot::channel();
+        turn.emit(AgentEvent::PermissionRequest {
+            id: call.id.clone(),
+            name: call.name.clone(),
+            input: input.clone(),
+            can_always,
+            respond,
+        })
+        .await;
+        let reply = tokio::select! {
+            answer = answer => answer.unwrap_or(PermissionReply::RejectOnce),
+            () = turn.cancel.cancelled() => PermissionReply::Cancelled,
+        };
+        if reply == PermissionReply::Cancelled {
+            turn.cancel.cancel();
+        }
+        self.permissions.record(&call.name, reply)
     }
 }
 

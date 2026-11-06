@@ -142,7 +142,7 @@ pub enum AgentEvent {
     ToolStarted { id: ToolCallId, name: String, input: serde_json::Value, title: String },
     ToolFinished { id: ToolCallId, outcome: ToolOutcome },
     PermissionRequest { id: ToolCallId, name: String, input: serde_json::Value,
-                        preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
+                        can_always: bool, preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
     Usage { used_tokens: u32, context_size: u32, cached_tokens: Option<u32> },
     Compaction(CompactionState),
     Notice { severity: Severity, title: String, detail: Option<String> },
@@ -154,7 +154,7 @@ pub enum StopReason { EndTurn, MaxTokens, MaxTurnRequests, Cancelled, LoopDetect
 pub enum PermissionReply { AllowOnce, AllowAlways, RejectOnce, RejectAlways, Cancelled }
 ```
 
-`ToolOutcome` is `Completed(ToolOutput)` or `Cancelled`. Variants and fields arrive with the task that first produces them: `Compaction` with T2.6.
+`ToolOutcome` is `Completed(ToolOutput)` or `Cancelled`. Variants and fields arrive with the task that first produces them: `Compaction` with T2.6, `preview` with T5.8. `can_always` says whether a front end may offer "always" (§9); core treats a disallowed `AllowAlways` as once. A `ToolStarted` precedes its `PermissionRequest`, and a denied call finishes as an error `ToolFinished`.
 
 The agent loop runs as one Tokio task per session, sends events on an `mpsc` channel, and observes a `CancellationToken`. Handlers must be `Send`, which ACP also requires.
 

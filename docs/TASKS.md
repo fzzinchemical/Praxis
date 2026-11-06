@@ -150,7 +150,7 @@ flowchart LR
   - **Do:** the loop and event model, sequential tools, `max_turn_requests`, cancellation.
   - **Done when:** scripted fake-server test completes a two-tool turn with the exact event order asserted, cancel mid-tool yields `TurnEnded(Cancelled)`; and the next prompt continues from consistent history.
 
-- [ ] **T1.8 Basic permissions** (§9)
+- [x] **T1.8 Basic permissions** (§9)
   - **Needs:** T1.7.
   - **Do:** `ask` mode defaults, prompt via `PermissionRequest`, once and always replies, deny when no one can answer. Prompts show full parameters (§9).
   - **Done when:** tests prove `Write` doesn't happen on reject, or when non-interactive.
