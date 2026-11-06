@@ -41,7 +41,7 @@ Fitting candidates were screened with 3 runs each of a single, a two-file and a 
 | `google/gemma-4-e4b` (7.2 GB) | 9/9 | 3/3 | 1.1-9.6 s |
 | `prism-ml/bonsai-27b` (4.7 GB) | 9/9 | 1/3 | 2.7-11.7 s |
 
-`qwen3.5-4b` was chosen: fastest, and a different family from gemma. Its cache gain is about 7x (2.9 s cold, 0.44 s shared prefix) and overflow behaves the same. Without tools, `response_format` hit the output limit during reasoning, as on gemma. At 4B it is the smallest model here, and tool-call validity says nothing yet about coding quality; T2.1 measures that.
+`qwen3.5-4b` was chosen: fastest, and a different family from gemma. Its cache gain is about 7x (2.9 s cold, 0.44 s shared prefix) and overflow behaves the same. Without tools, `response_format` hit the output limit during reasoning, as on gemma. With `tools` also set, it failed with `failed to parse grammar` as an SSE error on HTTP 200, so a constrained retry must omit `tools`. At 4B it is the smallest model here, and tool-call validity says nothing yet about coding quality; T2.1 measures that.
 
 ## Decision
 
