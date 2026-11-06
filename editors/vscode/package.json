@@ -1,0 +1,14 @@
+{
+  "name": "harness",
+  "displayName": "Harness",
+  "description": "Local-first coding agent harness",
+  "publisher": "harness",
+  "version": "0.0.0",
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.145.0" },
+  "main": "./dist/harness_vscode.js",
+  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "contributes": {
+    "commands": [{ "command": "harness.spike", "title": "Harness: Run Spike" }]
+  }
+}

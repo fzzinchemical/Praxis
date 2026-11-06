@@ -21,3 +21,9 @@ codegen-units = 1
 strip = true
 # Keep unwinding: a panicking tool task becomes a tool error, not a dead session (SPEC §2).
 panic = "unwind"
+
+# wasm32's prebuilt std is panic=abort, so it can't take the release profile's unwind.
+[profile.wasm-release]
+inherits = "release"
+panic = "abort"
+opt-level = "s"

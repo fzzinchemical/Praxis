@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{cspSource}} 'wasm-unsafe-eval'; style-src {{cspSource}}; connect-src {{cspSource}}">
+<title>Harness</title>
+<script type="module" src="{{uiScript}}"></script>
+</head>
+<body>
+<main>
+<h1>Child process output</h1>
+<pre id="output" tabindex="0" aria-live="polite"></pre>
+</main>
+</body>
+</html>

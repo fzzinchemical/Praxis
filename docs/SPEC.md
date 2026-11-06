@@ -123,7 +123,7 @@ Verified latest versions on 2026-11-06. Use the current compatible release at T0
 | `landlock` | 0.4 | Sandbox |
 | `tree-sitter` + grammar crates | 0.27 | Repo map |
 | `wasm-bindgen`, `js-sys`, `web-sys`, `wasm-bindgen-futures` | Pin to the installed CLI | Extension |
-| `leptos` (CSR) | 0.8 | Webview UI, confirmed by T0.6 |
+| `leptos` (CSR) | 0.8 | Webview UI, not yet tried: T0.6 used `web-sys` directly |
 | `pulldown-cmark` | 0.13 | Markdown in the webview |
 | `zip` | 9.4 | `.vsix` (xtask only) |
 | `wiremock` | 0.6 | Dev: fake provider server |
@@ -793,7 +793,7 @@ flowchart TB
 Build:
 
 - Extension crate: `wasm32-unknown-unknown`, `wasm-bindgen --target nodejs`, and `main` in `package.json` points at the generated JS.
-- UI crate: `wasm-bindgen --target web`, loaded by the HTML shell.
+- UI crate: `wasm-bindgen --target deno`, loaded by the HTML shell. It starts on import; `web` would need an init script (ADR 0001).
 - Bindings: `#[wasm_bindgen(module = "vscode")]` and `module = "child_process"`, only for what's called.
 - ACP types: try the `agent-client-protocol` crate on wasm through its `Channel` or `ByteStreams` transport, keeping `JsValue` out of the connection (`JsValue` isn't `Send`). If this is too heavy, use only its schema types and frame lines by hand.
 - `cargo xtask vsix` zips `extension.vsixmanifest`, `[Content_Types].xml` and `extension/**`. Linux x64 first, with the native binary at `extension/bin/`.
@@ -814,7 +814,7 @@ Security and accessibility requirements:
 
 - `capabilities.untrustedWorkspaces.supported = false`.
 - `harness.binaryPath` must have **`"scope": "machine"`**, so a repository's `.vscode/settings.json` can't point it at a malicious binary. The same applies to any setting that affects execution.
-- Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}`. No inline scripts; `localResourceRoots` limited to the extension directory.
+- Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}; connect-src ${cspSource}` (`connect-src` is how the glue fetches the wasm, ADR 0001). No inline scripts; `localResourceRoots` limited to the extension directory.
 - Render model text through `pulldown-cmark` with **raw HTML escaped**, not passed through. Only allow `http`, `https` and `vscode` link schemes, opened with the editor's confirmation.
 - Validate every message between webview and extension against typed enums.
 - All controls keyboard reachable and labelled; streaming region uses `aria-live="polite"`; use VS Code theme CSS variables. Respect reduced motion.

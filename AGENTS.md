@@ -80,6 +80,8 @@ Known before implementation. Details are in SPEC.
 - Saving tokens can make things slower: any rewrite of old history forces reprocessing from that point. Judge context features by turns and wall time, not just tokens (SPEC §7, §14).
 - Don't add a helper model. Papers that report large savings often use one, and there's only one GPU (docs/RESEARCH.md).
 - The `wasm-bindgen` CLI version must exactly match the `wasm-bindgen` crate version. Pacman ships CLI 0.2.128 and crates.io has 0.2.130, so pin the crate to the CLI.
+- The webview glue uses `wasm-bindgen --target deno` because it self-starts; `web` needs a banned init script. A broken webview shows as an empty panel, so check it after any `wasm-bindgen` bump (ADR 0001).
+- `code` launched from a VS Code terminal inherits `ELECTRON_RUN_AS_NODE` and `VSCODE_*`. Use `env -i` for an isolated test profile.
 - Built-in tool and parameter names are a compatibility surface for plugin hooks. Don't rename `Bash`, `Edit`, `file_path` and so on (SPEC §6).
 - Docs: the graphs in `docs/TASKS.md` mirror each task's "Needs" line, so change both together. Mermaid rejects `call` as a node id.
 - `reqwest` honours proxy environment variables, so disable proxies for a loopback LM Studio URL or local traffic may be sent to a proxy.

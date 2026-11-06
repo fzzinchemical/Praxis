@@ -1,7 +1,7 @@
 # ADR 0001: Rust only, with minimal VS Code glue
 
 > [!NOTE]
-> **Status: accepted, 2026-11-06.** The wasm entry point is unproven until spike T0.6.
+> **Status: accepted, 2026-11-06.** Spike T0.6 proved the wasm entry point with no handwritten JS; see "Spike results".
 
 ## Context
 
@@ -20,7 +20,7 @@ The packaged extension is built without npm, a bundler or `vsce`: `cargo xtask v
 ```mermaid
 flowchart LR
     ext["harness-vscode<br/>Rust"] -->|"wasm-bindgen --target nodejs"| extout["wasm + generated JS"]
-    ui["harness-vscode-ui<br/>Rust"] -->|"wasm-bindgen --target web"| uiout["wasm + generated JS"]
+    ui["harness-vscode-ui<br/>Rust"] -->|"wasm-bindgen --target deno"| uiout["wasm + generated JS"]
     cli["harness-cli<br/>Rust"] -->|"cargo build --release"| bin["native harness binary"]
     manifest["package.json, HTML shell, CSS"] --> vsix
     extout --> vsix[".vsix<br/>written by cargo xtask vsix"]
@@ -47,6 +47,22 @@ flowchart LR
 If spike T0.6 shows `activate` can't be exported directly from generated glue, one additional handwritten file is allowed, containing no logic beyond re-exporting from the generated module.
 
 Plugins and MCP servers are separate programs in any language. This rule covers the harness, not what users choose to run with it.
+
+## Spike results (T0.6, VS Code 1.145.0, wasm-bindgen 0.2.128)
+
+- **Extension host:** `--target nodejs` works as is. The generated CommonJS exports `activate` and resolves `vscode` and `child_process` through `require`. The conditional re-export file was not needed.
+- **Webview:** the UI uses `--target deno`, not `web` as first planned. It is the only target that starts the wasm on import with nothing else to call, because the shell can't make an init call:
+
+| Target | Result in the webview |
+|---|---|
+| `web`, `no-modules` | Needs an init call, so an inline script (banned by the CSP) or handwritten JS |
+| `module` | `SyntaxError`: VS Code's Electron rejects `import source` |
+| `bundler` | Not run: its output imports the `.wasm` file as an ES module, which needs a bundler |
+| `deno` | Works: top-level `fetch` plus `instantiateStreaming`, and it uses no Deno API |
+
+- **CSP:** that `fetch` needs `connect-src ${cspSource}`, which the original policy lacked. The webview can already load the same origin through `script-src`, and `localResourceRoots` still limits local files to the extension. The added reach is `fetch` to `*.vscode-cdn.net`.
+- **Profile:** `wasm32` std is `panic=abort`, so the crates build under a `wasm-release` profile instead of `release`.
+- **Risk:** the `deno` target is chosen for what its glue does today, so recheck it when bumping `wasm-bindgen`. A failure shows as an empty panel, not a build error.
 
 ## Consequences
 
