@@ -139,7 +139,7 @@ flowchart LR
   - **Do:** `Read`, `Write`, `Edit`, `Grep`, `Glob` with registry, schemas, atomic writes, workspace confinement. `Write` and `Edit` results stay short (§6).
   - **Done when:** tests cover each tool's errors; the symlink and `..` escape tests from §10 pass; interrupted writes leave the original intact; and `Edit` refuses a file changed since it was read.
 
-- [ ] **T1.6 `Bash` tool, without sandbox yet** (§6)
+- [x] **T1.6 `Bash` tool, without sandbox yet** (§6)
   - **Needs:** T1.5.
   - **Do:** process-group kill on timeout and cancel, output capture, environment allowlist.
   - **Done when:** a test proves a spawned grandchild dies on timeout, and that secret-named variables are absent.

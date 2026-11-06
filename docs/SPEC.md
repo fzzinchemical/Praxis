@@ -350,7 +350,7 @@ Behaviour:
 - **`Write` and `Edit` results** stay short (path and lines changed) and never repeat file content to the model. Hooks still receive the full `structured` value.
 - **`Write` and `Edit`** write through a temp file and atomic rename, and preserve file mode. Checkpoint first (§8).
 - **`Read`** returns line-numbered text, refuses binary files, and applies a default line limit. Never filter or minify its content, because `Edit` needs an exact match.
-- **`Bash`** runs through `harness sandbox-exec` (§9), kills the whole process group on timeout or cancel, and has a default timeout of 120 s.
+- **`Bash`** runs through `harness sandbox-exec` (§9), kills the whole process group on timeout, on cancel and when the shell exits (a leftover background job would hold the output pipes open), and has a default timeout of 120 s. Without `unsafe`, the kill goes through the shell's `kill` builtin.
 - **Tool errors** are returned to the model as content. They never end the turn.
 
 ## 7. Context management

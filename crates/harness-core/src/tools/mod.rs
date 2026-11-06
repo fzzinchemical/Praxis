@@ -1,6 +1,7 @@
 //! Built-in tools and their registry (SPEC §6). Names and parameters are a compatibility
 //! surface for plugin hooks: never rename them.
 
+mod bash;
 mod confine;
 mod files;
 mod search;
@@ -10,6 +11,7 @@ use schemars::{JsonSchema, generate::SchemaSettings};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use thiserror::Error;
@@ -78,6 +80,8 @@ impl ToolError {
 #[derive(Debug)]
 pub struct ToolContext {
     workspace: PathBuf,
+    /// The already scrubbed environment for child processes.
+    env: Vec<(OsString, OsString)>,
     /// Content hash of each file as last read or written, so `Edit` can spot outside changes.
     seen: Mutex<HashMap<PathBuf, u64>>,
 }
@@ -85,10 +89,19 @@ pub struct ToolContext {
 impl ToolContext {
     /// Fails if `workspace` can't be resolved: confinement needs its real path.
     pub fn new(workspace: &Path) -> Result<Self, ToolError> {
+        Self::with_env(workspace, std::env::vars_os())
+    }
+
+    /// Like [`Self::new`], scrubbing `vars` instead of this process's environment.
+    pub fn with_env(
+        workspace: &Path,
+        vars: impl IntoIterator<Item = (OsString, OsString)>,
+    ) -> Result<Self, ToolError> {
         Ok(Self {
             workspace: workspace
                 .canonicalize()
                 .map_err(ToolError::io("open the workspace", workspace))?,
+            env: bash::child_env(vars),
             seen: Mutex::default(),
         })
     }
@@ -145,6 +158,11 @@ pub fn schemas() -> Vec<ToolSchema> {
             schema_of::<files::EditInput>(),
         ),
         tool(
+            "Bash",
+            "Run a shell command in the workspace. Non-interactive, with a scrubbed environment.",
+            schema_of::<bash::BashInput>(),
+        ),
+        tool(
             "Grep",
             "Search file contents with a regex. Skips hidden and ignored files.",
             schema_of::<search::GrepInput>(),
@@ -186,7 +204,11 @@ pub async fn execute(
     cancel: CancellationToken,
 ) -> ToolOutput {
     let name = name.to_owned();
-    let task = tokio::task::spawn_blocking(move || run_blocking(&name, input, &ctx, &cancel));
+    let task = if name == "Bash" {
+        tokio::spawn(async move { bash::run(parse(input)?, &ctx, &cancel).await })
+    } else {
+        tokio::task::spawn_blocking(move || run_blocking(&name, input, &ctx, &cancel))
+    };
     match task.await {
         Ok(Ok(output)) => output,
         Ok(Err(error)) => ToolOutput::error(error.to_string()),

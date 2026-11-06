@@ -117,6 +117,7 @@ fn schemas_keep_the_claude_code_names_and_parameters() {
                 "Edit",
                 vec!["file_path", "new_string", "old_string", "replace_all"]
             ),
+            ("Bash", vec!["command", "description", "timeout"]),
             (
                 "Grep",
                 vec!["-i", "glob", "multiline", "output_mode", "path", "pattern"]
@@ -498,4 +499,132 @@ async fn cancelled_searches_stop() {
     cancel.cancel();
     let output = execute("Grep", json!({ "pattern": "x" }), f.ctx.clone(), cancel).await;
     err(&output, "Cancelled");
+}
+
+fn bash(command: &str, timeout_ms: u64) -> Value {
+    json!({ "command": command, "timeout": timeout_ms })
+}
+
+/// A zombie counts as dead: nothing reaps it until init gets around to it.
+fn is_alive(pid: &str) -> bool {
+    fs::read_to_string(format!("/proc/{pid}/stat"))
+        .map(|stat| {
+            let after_name = stat.rsplit(')').next().unwrap_or("");
+            !after_name.trim_start().starts_with('Z')
+        })
+        .unwrap_or(false)
+}
+
+async fn assert_dies(pid: &str) {
+    for _ in 0..100 {
+        if !is_alive(pid) {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("process {pid} is still alive");
+}
+
+const BACKGROUND_SLEEP: &str = "sleep 300 & echo $! > pid; wait";
+
+#[tokio::test]
+async fn bash_returns_output_exit_code_and_runs_in_the_workspace() {
+    let f = Fixture::new();
+    f.file("marker.txt", "");
+    let output = f.call("Bash", bash("ls; echo oops >&2", 10_000)).await;
+    ok(&output, "marker.txt");
+    ok(&output, "oops");
+    assert_eq!(output.structured["stdout"], "marker.txt\n");
+    assert_eq!(output.structured["stderr"], "oops\n");
+    assert_eq!(output.structured["interrupted"], false);
+    assert_eq!(output.structured["isImage"], false);
+
+    let failed = f.call("Bash", bash("exit 3", 10_000)).await;
+    err(&failed, "exit code 3");
+    err(&f.call("Bash", json!({})).await, "command");
+}
+
+#[tokio::test]
+async fn bash_timeout_kills_a_spawned_grandchild() {
+    let f = Fixture::new();
+    let output = f.call("Bash", bash(BACKGROUND_SLEEP, 1000)).await;
+    err(&output, "Timed out");
+    assert_eq!(output.structured["interrupted"], true);
+    let pid = fs::read_to_string(f.ws().join("pid")).unwrap();
+    assert_dies(pid.trim()).await;
+}
+
+#[tokio::test]
+async fn bash_cancel_kills_the_whole_process_group() {
+    let f = Fixture::new();
+    let cancel = CancellationToken::new();
+    let trigger = cancel.clone();
+    let pid_file = f.ws().join("pid");
+    tokio::spawn(async move {
+        while !pid_file.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        trigger.cancel();
+    });
+    let output = execute(
+        "Bash",
+        bash(BACKGROUND_SLEEP, 60_000),
+        f.ctx.clone(),
+        cancel,
+    )
+    .await;
+    err(&output, "Cancelled");
+    assert_eq!(output.structured["interrupted"], true);
+    let pid = fs::read_to_string(f.ws().join("pid")).unwrap();
+    assert_dies(pid.trim()).await;
+}
+
+#[tokio::test]
+async fn bash_returns_when_the_shell_exits_and_leaves_no_background_process() {
+    let f = Fixture::new();
+    let started = std::time::Instant::now();
+    let output = f
+        .call("Bash", bash("sleep 300 & echo $! > pid; echo done", 60_000))
+        .await;
+    ok(&output, "done");
+    assert!(
+        started.elapsed().as_secs() < 30,
+        "waited for the background job"
+    );
+    let pid = fs::read_to_string(f.ws().join("pid")).unwrap();
+    assert_dies(pid.trim()).await;
+}
+
+#[tokio::test]
+async fn bash_child_environment_holds_only_allowlisted_variables() {
+    let f = Fixture::new();
+    let path = std::env::var_os("PATH").unwrap();
+    let vars = [
+        ("PATH", path.to_str().unwrap()),
+        ("HOME", "/home/test"),
+        ("GITHUB_TOKEN", "leak-1"),
+        ("OPENAI_API_KEY", "leak-2"),
+        ("AWS_SECRET", "leak-3"),
+        ("DATABASE_PASSWORD", "leak-4"),
+        ("github_token", "leak-5"),
+    ]
+    .map(|(k, v)| (k.into(), v.into()));
+    let ctx = Arc::new(ToolContext::with_env(&f.ws(), vars).unwrap());
+    let output = execute("Bash", bash("env", 10_000), ctx, CancellationToken::new()).await;
+    ok(&output, "HOME=/home/test");
+    assert!(!output.content.contains("leak"), "{}", output.content);
+    assert!(!output.content.contains("TOKEN"), "{}", output.content);
+}
+
+#[tokio::test]
+async fn bash_caps_captured_output_and_says_so() {
+    let f = Fixture::new();
+    let output = f
+        .call(
+            "Bash",
+            bash("head -c 3000000 /dev/zero | tr '\\0' x", 30_000),
+        )
+        .await;
+    ok(&output, "output truncated");
+    assert!(output.content.len() < 1_100_000);
 }
