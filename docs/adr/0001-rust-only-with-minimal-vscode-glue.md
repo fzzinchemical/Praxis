@@ -1,0 +1,63 @@
+# ADR 0001: Rust only, with minimal VS Code glue
+
+> [!NOTE]
+> **Status: accepted, 2026-11-06.** The wasm entry point is unproven until spike T0.6.
+
+## Context
+
+The project owner requires the entire harness to be written in Rust for maximum performance.
+
+The native binary can be entirely Rust. VS Code is the exception: extensions run in a JavaScript extension host, webviews are HTML pages, and an extension needs a `package.json` manifest. A native Rust binary can't be loaded as the extension itself.
+
+Microsoft's WebAssembly Component Model route isn't usable. Its working examples use a TypeScript `activate`, its Rust-authored extension exploration was not continued, and it lacks async support for VS Code's mostly asynchronous API.
+
+## Decision
+
+Compile the extension from Rust to WebAssembly with `wasm-bindgen`, which binds JavaScript APIs including `vscode` and Node's `child_process` directly. Glue JavaScript is generated at build time and exports `activate` and `deactivate`. All agent work stays in the native `harness` binary, so wasm speed is irrelevant to agent performance.
+
+The packaged extension is built without npm, a bundler or `vsce`: `cargo xtask vsix` writes the zip directly.
+
+```mermaid
+flowchart LR
+    ext["harness-vscode<br/>Rust"] -->|"wasm-bindgen --target nodejs"| extout["wasm + generated JS"]
+    ui["harness-vscode-ui<br/>Rust"] -->|"wasm-bindgen --target web"| uiout["wasm + generated JS"]
+    cli["harness-cli<br/>Rust"] -->|"cargo build --release"| bin["native harness binary"]
+    manifest["package.json, HTML shell, CSS"] --> vsix
+    extout --> vsix[".vsix<br/>written by cargo xtask vsix"]
+    uiout --> vsix
+    bin --> vsix
+
+    classDef rust fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef glue fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef output fill:#dcfce7,stroke:#16a34a,color:#14532d
+    class ext,ui,cli rust
+    class manifest,extout,uiout glue
+    class bin,vsix output
+```
+
+### The only permitted non-Rust files
+
+| File | Why it can't be Rust |
+|---|---|
+| `editors/vscode/package.json` | VS Code requires it. Data, not code |
+| Generated `wasm-bindgen` JS glue | Generated from Rust at build time, never committed or edited |
+| One webview HTML shell and one CSS file | Webviews must load HTML; styling is CSS |
+| `scripts/verify`, CI YAML | Dev tooling, not shipped |
+
+If spike T0.6 shows `activate` can't be exported directly from generated glue, one additional handwritten file is allowed, containing no logic beyond re-exporting from the generated module.
+
+Plugins and MCP servers are separate programs in any language. This rule covers the harness, not what users choose to run with it.
+
+## Consequences
+
+- Native, wasm and packaging builds are all driven by Cargo. There is no Node toolchain to maintain.
+- We give up the npm ecosystem: the `@types/vscode` types, UI toolkits and `@vscode/test-electron`. Bindings for the VS Code API are handwritten and limited to what we call.
+- Webview UI runs in wasm, so a slightly larger download and a CSP that includes `wasm-unsafe-eval`.
+- Extension tests are limited: logic is tested natively and the integration surface through a manual checklist.
+- Marketplace publishing without `vsce` is unresolved. Local `.vsix` install is the supported route for now.
+- Expected performance gains are startup time, memory and a single binary. Inference dominates agent wall-clock time, so the biggest latency lever is prompt-cache reuse (SPEC §7), not language choice.
+
+## Evidence
+
+- [VS Code on WebAssembly](https://code.visualstudio.com/blogs/2024/05/08/wasm)
+- [Cargo Tools](https://users.rust-lang.org/t/cargo-tools-vscode-open-vsx-extension/141527): an existing extension with its extension layer in Rust via `wasm-bindgen`, with a small TypeScript bridge. It shows the approach is viable, but not that the bridge can be avoided.
