@@ -124,7 +124,7 @@ flowchart LR
   - **Do:** `provider/stream.rs`: SSE line framing over byte streams, handling chunks split at any byte.
   - **Done when:** tests split recorded fixtures at every byte offset and produce identical results.
 
-- [ ] **T1.2 Chat client** (§5.1, §5.2)
+- [x] **T1.2 Chat client** (§5.1, §5.2)
   - **Needs:** T1.1.
   - **Do:** `chat` with streamed tool-call assembly by index, `list_models`, typed errors, `.no_proxy()` on loopback, cancellation.
   - **Done when:** `wiremock` tests with fixtures pass for a text reply, tool call, server down, no model loaded and cancel mid-stream.
