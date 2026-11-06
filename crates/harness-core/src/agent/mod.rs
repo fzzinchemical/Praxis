@@ -3,13 +3,17 @@
 mod loop_detection;
 
 use self::loop_detection::LoopDetector;
+pub mod recovery;
+
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall,
 };
 use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
+use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
@@ -91,6 +95,7 @@ pub struct AgentConfig {
     pub context_size: u32,
     pub system_prompt: String,
     pub max_turn_requests: u32,
+    pub tool_format: ToolFormat,
 }
 
 pub const DEFAULT_MAX_TURN_REQUESTS: u32 = 50;
@@ -106,6 +111,8 @@ pub fn system_prompt(workspace: &Path) -> String {
     )
 }
 
+/// Failures of one tool in a row before the turn stops (SPEC §5.3).
+const MAX_CALL_FAILURES: u32 = 3;
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
 const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
 const INTERRUPTED_REPLY: &str = "(interrupted)";
@@ -118,6 +125,9 @@ pub struct Agent {
     config: AgentConfig,
     history: Vec<Message>,
     permissions: Permissions,
+    /// Failures in a row per tool name, this turn.
+    call_failures: HashMap<String, u32>,
+    parse_failures: u32,
 }
 
 /// What one model request produced before it ended.
@@ -127,6 +137,18 @@ struct Reply {
     calls: Vec<ToolCall>,
     finish: Option<FinishReason>,
     error: Option<ProviderError>,
+}
+
+impl Reply {
+    async fn add(&mut self, split: Split, turn: &Turn<'_>) {
+        if !split.thinking.is_empty() {
+            turn.emit(AgentEvent::ThinkingDelta(split.thinking)).await;
+        }
+        if !split.text.is_empty() {
+            self.text.push_str(&split.text);
+            turn.emit(AgentEvent::TextDelta(split.text)).await;
+        }
+    }
 }
 
 impl Agent {
@@ -140,7 +162,14 @@ impl Agent {
             config,
             history,
             permissions: Permissions::default(),
+            call_failures: HashMap::new(),
+            parse_failures: 0,
         }
+    }
+
+    /// Calls rejected as unreadable or invalid in this session, for the scoreboard (SPEC §5.3).
+    pub fn parse_failures(&self) -> u32 {
+        self.parse_failures
     }
 
     /// Runs one prompt to completion. `TurnEnded` is always the last event. If the receiver
@@ -163,6 +192,7 @@ impl Agent {
     async fn run_requests(&mut self, turn: &Turn<'_>) -> StopReason {
         let mut requests = 0;
         let mut detector = LoopDetector::default();
+        self.call_failures.clear();
         loop {
             requests += 1;
             let reply = self.request(turn).await;
@@ -178,11 +208,18 @@ impl Agent {
                 });
                 return turn.provider_failure(error).await;
             }
-            let done = reply.calls.is_empty();
-            let silent = reply.text.is_empty();
+            let id_prefix = format!("text-call-{}", self.history.len());
+            let recovered = recovery::recover_calls(
+                &reply.text,
+                reply.calls,
+                self.config.tool_format,
+                &id_prefix,
+            );
+            let done = recovered.calls.is_empty();
+            let silent = recovered.text.is_empty();
             self.history.push(Message::Assistant {
-                content: (done || !reply.text.is_empty()).then_some(reply.text),
-                tool_calls: reply.calls.clone(),
+                content: (done || !recovered.text.is_empty()).then_some(recovered.text),
+                tool_calls: recovered.calls.clone(),
             });
             if done {
                 return match reply.finish {
@@ -191,7 +228,7 @@ impl Agent {
                 };
             }
             let mut stuck = None;
-            for call in reply.calls {
+            for call in recovered.calls {
                 let content = if turn.cancel.is_cancelled() {
                     NOT_RUN_RESULT.to_owned()
                 } else if stuck.is_some() {
@@ -217,10 +254,45 @@ impl Agent {
                 .await;
                 return StopReason::LoopDetected;
             }
+            if let Some(name) = self.exhausted_tool() {
+                turn.emit(AgentEvent::Notice {
+                    severity: Severity::Error,
+                    title: format!(
+                        "Stopped: the model failed {MAX_CALL_FAILURES} times in a row to make a valid `{name}` call."
+                    ),
+                    detail: Some("Try rephrasing the request or using another model.".to_owned()),
+                })
+                .await;
+                return StopReason::LoopDetected;
+            }
             if requests >= self.config.max_turn_requests {
                 return StopReason::MaxTurnRequests;
             }
         }
+    }
+
+    fn exhausted_tool(&self) -> Option<String> {
+        self.call_failures
+            .iter()
+            .find(|(_, count)| **count >= MAX_CALL_FAILURES)
+            .map(|(name, _)| name.clone())
+    }
+
+    /// Only a call that passes this may reach the permission path (SPEC §5.3).
+    fn check_call(&mut self, call: &ToolCall) -> Result<Value, String> {
+        let checked = recovery::parse_arguments(&call.arguments)
+            .ok_or_else(|| {
+                "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
+                    .to_owned()
+            })
+            .and_then(|input| tools::validate(&call.name, &input).map(|()| input));
+        if checked.is_ok() {
+            self.call_failures.remove(&call.name);
+        } else {
+            *self.call_failures.entry(call.name.clone()).or_default() += 1;
+            self.parse_failures += 1;
+        }
+        checked
     }
 
     async fn request(&self, turn: &Turn<'_>) -> Reply {
@@ -231,6 +303,7 @@ impl Agent {
             max_tokens: None,
         };
         let mut reply = Reply::default();
+        let mut splitter = ThinkSplitter::default();
         let stream = match self.provider.chat(request, turn.cancel.clone()).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -241,10 +314,7 @@ impl Agent {
         pin_mut!(stream);
         while let Some(chunk) = stream.next().await {
             match chunk {
-                Ok(ChatChunk::Text(delta)) => {
-                    reply.text.push_str(&delta);
-                    turn.emit(AgentEvent::TextDelta(delta)).await;
-                }
+                Ok(ChatChunk::Text(delta)) => reply.add(splitter.push(&delta), turn).await,
                 Ok(ChatChunk::Thinking(delta)) => {
                     turn.emit(AgentEvent::ThinkingDelta(delta)).await;
                 }
@@ -266,31 +336,30 @@ impl Agent {
                 }
             }
         }
+        reply.add(splitter.finish(), turn).await;
         reply
     }
 
     /// Returns the result to show the model.
     async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> String {
-        let input = parse_arguments(&call.arguments);
+        let checked = self.check_call(call);
+        let input = checked.as_ref().ok();
         turn.emit(AgentEvent::ToolStarted {
             id: call.id.clone(),
             name: call.name.clone(),
-            input: input.clone().unwrap_or(Value::Null),
-            title: title(&call.name, input.as_ref()),
+            input: input.cloned().unwrap_or(Value::Null),
+            title: title(&call.name, input),
         })
         .await;
-        let output = match input {
-            Some(input) => match self.check_permission(call, &input, turn).await {
+        let output = match checked {
+            Ok(input) => match self.check_permission(call, &input, turn).await {
                 Ok(()) => {
                     let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
                     tools::execute(&call.name, input, tools, cancel).await
                 }
                 Err(reason) => ToolOutput::error(reason),
             },
-            None => ToolOutput::error(
-                "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
-                    .to_owned(),
-            ),
+            Err(problem) => ToolOutput::error(problem),
         };
         let content = output.content.clone();
         // A tool that succeeded despite the cancel keeps its result: the work happened.
@@ -363,13 +432,6 @@ impl Turn<'_> {
         .await;
         StopReason::ProviderError
     }
-}
-
-/// Model arguments are untrusted text, so anything but a JSON object goes back as an error.
-fn parse_arguments(arguments: &str) -> Option<Value> {
-    serde_json::from_str(arguments)
-        .ok()
-        .filter(Value::is_object)
 }
 
 fn title(name: &str, input: Option<&Value>) -> String {

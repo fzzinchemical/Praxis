@@ -93,6 +93,7 @@ impl Harness {
                 context_size: 1000,
                 system_prompt: "sys".into(),
                 max_turn_requests,
+                tool_format: harness_core::agent::recovery::ToolFormat::Native,
             },
         );
         Self {

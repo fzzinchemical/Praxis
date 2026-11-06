@@ -175,6 +175,33 @@ pub fn schemas() -> Vec<ToolSchema> {
     ]
 }
 
+/// Checks arguments against the tool's schema (SPEC §5.3). `Err` names the problem and the
+/// expected shape, for the model to correct.
+pub fn validate(name: &str, input: &Value) -> Result<(), String> {
+    let all = schemas();
+    let Some(schema) = all.iter().find(|tool| tool.name == name) else {
+        let known: Vec<&str> = all.iter().map(|tool| tool.name.as_str()).collect();
+        return Err(format!(
+            "Unknown tool `{name}`. Expected one of: {}.",
+            known.join(", ")
+        ));
+    };
+    let validator = jsonschema::validator_for(&schema.parameters)
+        .map_err(|e| format!("The schema for `{name}` is broken: {e}"))?;
+    let problems: Vec<String> = validator
+        .iter_errors(input)
+        .map(|e| e.to_string())
+        .collect();
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "Invalid arguments for `{name}`: {}. Expected: {}",
+        problems.join("; "),
+        schema.parameters
+    ))
+}
+
 fn parse<T: DeserializeOwned>(input: Value) -> Result<T, ToolError> {
     serde_json::from_value(input).map_err(|e| ToolError::InvalidArguments(e.to_string()))
 }

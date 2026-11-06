@@ -298,7 +298,8 @@ Rules:
 - Never parse tool calls out of tool results. Recovered calls go through the same permission path as native ones.
 - Never execute a call that failed validation.
 - Strip reasoning (`<think>` blocks or a reasoning field) before storing the assistant message, so history stays compact and stable. Still emit it as `ThinkingDelta`.
-- Record parse failures for the scoreboard.
+- Record parse failures for the scoreboard (`Agent::parse_failures`).
+- A text format is parsed only when the profile selects it, and only if the reply has no native calls. "The same call" means the same tool name. Stopping uses `StopReason::LoopDetected`.
 
 ### 5.4 Loop detection
 

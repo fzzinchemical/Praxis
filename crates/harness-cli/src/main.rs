@@ -380,6 +380,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
+            tool_format: harness_core::agent::recovery::ToolFormat::Native,
         },
     );
     match prompt {

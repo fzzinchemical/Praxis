@@ -220,7 +220,7 @@ flowchart LR
   - **Needs:** T1.9, T0.4.
   - **Done when:** `cargo xtask eval` runs all tasks on a model and writes the scoreboard JSON with every metric in §14.
 
-- [ ] **T2.2 Tool-call recovery** (§5.3)
+- [x] **T2.2 Tool-call recovery** (§5.3)
   - **Needs:** T1.7.
   - **Done when:** tests pass for every malformed fixture from T0.3; and tests confirm invalid calls never execute, text in tool results is never parsed as a call, and 3 repeat failures stop the turn.
 
