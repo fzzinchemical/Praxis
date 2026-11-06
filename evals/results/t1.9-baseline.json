@@ -1,0 +1,21 @@
+{
+  "milestone": "T1.9",
+  "date": "2026-11-06",
+  "model": "google/gemma-4-12b-qat",
+  "context": 32768,
+  "mode": "ask, approvals answered by a scripted policy; whole run inside bwrap with only the fixture copy writable",
+  "runs_per_task": 1,
+  "tasks": {
+    "seeded-bug-pagination": {
+      "success": true,
+      "check_exit": 0,
+      "requests": 10,
+      "wall_secs": 199.7,
+      "includes_model_load": true,
+      "last_used_tokens": 8113,
+      "approved": ["Edit", "Edit", "Write"],
+      "rejected_bash": ["rustc tests/visible.rs --crate-type test && cargo test --test visible", "cargo --version"],
+      "notes": "Fix judged by check.sh. The model never ran the tests, because both its Bash calls were outside the approval policy. Single run of one task, not the full scoreboard."
+    }
+  }
+}

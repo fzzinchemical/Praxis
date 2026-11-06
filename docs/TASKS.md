@@ -155,7 +155,7 @@ flowchart LR
   - **Do:** `ask` mode defaults, prompt via `PermissionRequest`, once and always replies, deny when no one can answer. Prompts show full parameters (§9).
   - **Done when:** tests prove `Write` doesn't happen on reject, or when non-interactive.
 
-- [ ] **T1.9 CLI and REPL** (§11)
+- [x] **T1.9 CLI and REPL** (§11)
   - **Needs:** T1.4, T1.8.
   - **Do:** one-shot and REPL, `harness models`, prompts, Ctrl-C, exit codes, minimal system prompt, `--model`.
   - **Done when:** integration test runs the binary against the fake server, and **a manual run fixes a seeded bug on LM Studio with a real model**. Record the eval baseline in `evals/results/`.

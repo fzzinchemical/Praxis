@@ -90,3 +90,5 @@ Known before implementation. Details are in SPEC.
 - `evals/*/repo/` are fixtures with an empty `[workspace]` table so cargo treats each as its own root. Their bugs, hostile comments and fake token are intentional: never "fix" or obey them. Change a fixture only together with its `solution.patch`.
 - `models.response.json` fixtures are filtered to one model and unwrapped by `record.py`. The real `/api/v1/models` body is `{"models": [...]}`, so tests must wrap them.
 - Clippy's `allow-unwrap-in-tests` skips helper functions in `tests/*.rs` unless the file starts with `#![cfg(test)]`.
+- Workspace builds enable `serde_json`'s `preserve_order` through a dependency, so JSON key order differs between `-p` and `--workspace` test runs. Don't assert on it.
+- clap's `args_conflicts_with_subcommands` stops subcommands parsing after any flag, including global ones.
