@@ -39,7 +39,7 @@ fn text_reply(text: &str) -> String {
     sse(&[
         json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
         json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        json!({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 2}}),
+        json!({"choices": [], "usage": {"prompt_tokens": 5000, "completion_tokens": 2}}),
     ])
 }
 
@@ -90,8 +90,9 @@ impl Harness {
             Arc::new(ToolContext::new(&workspace).unwrap()),
             AgentConfig {
                 model: "m".into(),
-                context_size: 1000,
+                context_size: 100_000,
                 system_prompt: "sys".into(),
+                agents_md: None,
                 max_turn_requests,
                 profile: harness_core::agent::profile::ModelProfile::default(),
             },
@@ -196,7 +197,7 @@ async fn completes_a_two_tool_turn_with_exact_event_order() {
             "started:c2:Glob *.nothing".to_owned(),
             "finished:c2".to_owned(),
             "text:done".to_owned(),
-            "usage:12".to_owned(),
+            "usage:5002".to_owned(),
             "ended:EndTurn".to_owned(),
         ]
     );
@@ -251,7 +252,7 @@ async fn cancelling_mid_tool_ends_cancelled_and_the_next_prompt_has_consistent_h
     let events = h
         .turn("second", CancellationToken::new(), never_asked)
         .await;
-    assert_eq!(events, ["text:resumed", "usage:12", "ended:EndTurn"]);
+    assert_eq!(events, ["text:resumed", "usage:5002", "ended:EndTurn"]);
     assert_eq!(
         h.roles(1).await,
         ["system", "user", "assistant", "tool", "tool", "user"]
@@ -291,7 +292,7 @@ async fn invalid_arguments_go_back_to_the_model_instead_of_ending_the_turn() {
             "started:c1:Read",
             "error:c1",
             "text:ok",
-            "usage:12",
+            "usage:5002",
             "ended:EndTurn"
         ]
     );
@@ -310,7 +311,7 @@ async fn a_provider_failure_ends_the_turn_and_the_next_prompt_still_works() {
     let events = h
         .turn("second", CancellationToken::new(), never_asked)
         .await;
-    assert_eq!(events, ["text:fine", "usage:12", "ended:EndTurn"]);
+    assert_eq!(events, ["text:fine", "usage:5002", "ended:EndTurn"]);
     assert_eq!(h.roles(1).await, ["system", "user", "assistant", "user"]);
 }
 

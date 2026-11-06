@@ -403,7 +403,7 @@ Default allocation of the context window `C`:
 
 **Counting:** no tokenizer dependency, because tokenizers vary by model and the server knows the truth. Estimate at `chars / 3.5`, then calibrate per session from the `usage` the server reports. Compact early when uncertain.
 
-**Oversized tool results:** keep head and tail, write the full text to the session's spool directory, and tell the model the path and how to read more.
+**Oversized tool results:** keep head and tail, write the full text to the session's spool directory, and tell the model the path and how to read more. Until sessions exist (§8), the spool is a private per-session temp directory removed at session end. `Read` may read it (outside the workspace, read-only); file names never come from the model. `max_tokens` is set to the output reservation.
 
 **Truncation detection:** T0.3 saw no silent truncation: over `C`, LM Studio returns `exceed_context_size_error` (§5.2), which forces compaction. Before each request, check the estimate against `C`. As a guard against other versions, a reported prompt size below 50% of the calibrated estimate also warns and forces compaction; 50% is a judgement, not a measurement, since estimates were within 2% in T0.3.
 

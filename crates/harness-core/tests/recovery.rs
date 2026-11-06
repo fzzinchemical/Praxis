@@ -112,8 +112,9 @@ async fn run_with(bodies: Vec<Vec<u8>>, profile: ModelProfile, dir: &Path) -> Ru
         Arc::new(ToolContext::new(dir).unwrap()),
         AgentConfig {
             model: "m".into(),
-            context_size: 1000,
+            context_size: 100_000,
             system_prompt: "sys".into(),
+            agents_md: None,
             max_turn_requests: 20,
             profile,
         },

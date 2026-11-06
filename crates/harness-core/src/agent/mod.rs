@@ -6,6 +6,7 @@ use self::loop_detection::LoopDetector;
 pub mod profile;
 pub mod recovery;
 
+use crate::context::budget::{Budget, Observation};
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
@@ -96,6 +97,8 @@ pub struct AgentConfig {
     pub model: String,
     pub context_size: u32,
     pub system_prompt: String,
+    /// Project instructions, part of the prefix and the first thing trimmed to fit it.
+    pub agents_md: Option<String>,
     pub max_turn_requests: u32,
     pub profile: ModelProfile,
 }
@@ -130,6 +133,9 @@ pub struct Agent {
     /// Failures in a row per tool name, this turn.
     call_failures: HashMap<String, u32>,
     parse_failures: u32,
+    budget: Budget,
+    /// A warning from `new`, which has no event channel, for the first turn to send.
+    prefix_warning: Option<String>,
 }
 
 /// What one model request produced before it ended.
@@ -141,6 +147,8 @@ struct Reply {
     error: Option<ProviderError>,
     /// The text is arguments for a constrained retry, not something to show.
     quiet: bool,
+    sent_chars: usize,
+    prompt_tokens: Option<u32>,
 }
 
 impl Reply {
@@ -159,10 +167,9 @@ impl Reply {
 
 impl Agent {
     pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, config: AgentConfig) -> Self {
-        let teaching = config.profile.tool_format.instructions(&tools::schemas());
-        let history = vec![Message::System {
-            content: config.system_prompt.clone() + teaching.as_deref().unwrap_or_default(),
-        }];
+        let budget = Budget::new(config.context_size);
+        let (system, prefix_warning) = assemble_prefix(&config, &budget);
+        let history = vec![Message::System { content: system }];
         Self {
             provider,
             tools,
@@ -171,6 +178,8 @@ impl Agent {
             permissions: Permissions::default(),
             call_failures: HashMap::new(),
             parse_failures: 0,
+            budget,
+            prefix_warning,
         }
     }
 
@@ -200,6 +209,9 @@ impl Agent {
             })
             .await;
         }
+        if let Some(title) = self.prefix_warning.take() {
+            turn.warn(title).await;
+        }
         let reason = self.run_requests(&turn).await;
         turn.emit(AgentEvent::TurnEnded(reason)).await;
     }
@@ -228,6 +240,7 @@ impl Agent {
                 .await;
                 continue;
             }
+            self.observe_usage(&reply, turn).await;
             if let Some(error) = reply.error {
                 // Half-streamed tool calls never arrive, so only text can need keeping.
                 let content = match reply.text.as_str() {
@@ -339,6 +352,22 @@ impl Agent {
         checked
     }
 
+    async fn observe_usage(&mut self, reply: &Reply, turn: &Turn<'_>) {
+        let Some(reported) = reply.prompt_tokens else {
+            return;
+        };
+        if let Observation::PromptShrank {
+            reported,
+            estimated,
+        } = self.budget.observe(reply.sent_chars, reported)
+        {
+            turn.warn(format!(
+                "The server may have truncated the prompt: it counted {reported} tokens where about {estimated} were expected."
+            ))
+            .await;
+        }
+    }
+
     async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {
         let profile = &self.config.profile;
         let quiet = constrained.is_some();
@@ -352,13 +381,19 @@ impl Agent {
                 _ => Vec::new(),
             },
             // No limit on a constrained retry: reasoning can use up a small one (ADR 0002).
-            max_tokens: profile.max_output.filter(|_| constrained.is_none()),
+            max_tokens: constrained.is_none().then(|| {
+                let reserve = self.budget.output_reserve();
+                profile
+                    .max_output
+                    .map_or(reserve, |limit| limit.min(reserve))
+            }),
             temperature: profile.temperature,
             stop: profile.stop.clone(),
             response_format: constrained,
         };
         let mut reply = Reply {
             quiet,
+            sent_chars: request.chars(),
             ..Reply::default()
         };
         let mut splitter = ThinkSplitter::default();
@@ -389,6 +424,7 @@ impl Agent {
                 Ok(ChatChunk::ToolCall(call)) => reply.calls.push(call),
                 Ok(ChatChunk::Finish(reason)) => reply.finish = Some(reason),
                 Ok(ChatChunk::Usage(usage)) => {
+                    reply.prompt_tokens = Some(usage.prompt_tokens);
                     turn.emit(AgentEvent::Usage {
                         prompt_tokens: usage.prompt_tokens,
                         used_tokens: usage.prompt_tokens + usage.completion_tokens,
@@ -441,7 +477,8 @@ impl Agent {
             outcome,
         })
         .await;
-        content
+        self.budget
+            .fit_result(content, |text| self.tools.spool(text))
     }
 
     /// `Err` holds the denial to show the model. Anything but an explicit approval denies.
@@ -482,6 +519,15 @@ struct Turn<'a> {
 }
 
 impl Turn<'_> {
+    async fn warn(&self, title: String) {
+        self.emit(AgentEvent::Notice {
+            severity: Severity::Warning,
+            title,
+            detail: None,
+        })
+        .await;
+    }
+
     async fn emit(&self, event: AgentEvent) {
         if self.events.send(event).await.is_err() {
             self.cancel.cancel();
@@ -500,6 +546,42 @@ impl Turn<'_> {
         .await;
         StopReason::ProviderError
     }
+}
+
+/// Builds the system message, trimming AGENTS.md first if the prefix is over budget (SPEC §7).
+fn assemble_prefix(config: &AgentConfig, budget: &Budget) -> (String, Option<String>) {
+    let teaching = config.profile.tool_format.instructions(&tools::schemas());
+    let base = config.system_prompt.clone() + teaching.as_deref().unwrap_or_default();
+    let other_chars = ChatRequest {
+        model: config.model.clone(),
+        messages: vec![Message::System {
+            content: base.clone(),
+        }],
+        tools: match config.profile.tool_format {
+            ToolFormat::Native => tools::schemas(),
+            _ => Vec::new(),
+        },
+        max_tokens: None,
+        temperature: None,
+        stop: Vec::new(),
+        response_format: None,
+    }
+    .chars();
+    let (system, trimmed) = match &config.agents_md {
+        Some(agents_md) => {
+            let (kept, cut) = budget.fit_agents_md(agents_md, other_chars);
+            (format!("{base}\n\n{kept}"), cut)
+        }
+        None => (base, false),
+    };
+    let warning = if trimmed {
+        Some("AGENTS.md is too long for the prompt budget, so it was trimmed.".to_owned())
+    } else if budget.estimate(other_chars) > budget.prefix_limit() {
+        Some("The system prompt and tools are over their share of the context.".to_owned())
+    } else {
+        None
+    };
+    (system, warning)
 }
 
 fn title(name: &str, input: Option<&Value>) -> String {

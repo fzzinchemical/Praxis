@@ -12,8 +12,13 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs::{self, DirBuilder, OpenOptions};
+use std::io::{self, Write as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -84,6 +89,10 @@ pub struct ToolContext {
     env: Vec<(OsString, OsString)>,
     /// Content hash of each file as last read or written, so `Edit` can spot outside changes.
     seen: Mutex<HashMap<PathBuf, u64>>,
+    /// Holds this session's full oversized results (SPEC §7). Created on first use.
+    spool_dir: PathBuf,
+    /// How many files are in `spool_dir`, or `None` until this session has created it.
+    spooled: Mutex<Option<u64>>,
 }
 
 impl ToolContext {
@@ -103,7 +112,42 @@ impl ToolContext {
                 .map_err(ToolError::io("open the workspace", workspace))?,
             env: bash::child_env(vars),
             seen: Mutex::default(),
+            spool_dir: new_spool_path(),
+            spooled: Mutex::default(),
         })
+    }
+
+    /// Saves `text` privately and returns its path. The name is ours alone: tool call ids come
+    /// from the model, so they must never reach a path.
+    pub fn spool(&self, text: &str) -> io::Result<PathBuf> {
+        let mut spooled = self.spooled.lock().unwrap_or_else(PoisonError::into_inner);
+        let count = match *spooled {
+            Some(count) => count,
+            None => {
+                // `create` fails if the path exists, so nobody can plant a directory they can read.
+                DirBuilder::new().mode(0o700).create(&self.spool_dir)?;
+                0
+            }
+        };
+        *spooled = Some(count + 1);
+        let path = self.spool_dir.join(format!("result-{}.txt", count + 1));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)?
+            .write_all(text.as_bytes())?;
+        Ok(path)
+    }
+
+    /// Like [`confine::resolve`], but also lets `Read` reach this session's spool.
+    fn resolve_read(&self, raw: &str) -> Result<PathBuf, ToolError> {
+        match fs::canonicalize(raw) {
+            Ok(path) if Path::new(raw).is_absolute() && path.starts_with(&self.spool_dir) => {
+                Ok(path)
+            }
+            _ => confine::resolve(&self.workspace, raw),
+        }
     }
 
     fn remember(&self, path: &Path, hash: u64) {
@@ -120,6 +164,34 @@ impl ToolContext {
             .get(path)
             .copied()
     }
+}
+
+impl Drop for ToolContext {
+    fn drop(&mut self) {
+        let spooled = self
+            .spooled
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if spooled.is_some()
+            && let Err(error) = fs::remove_dir_all(&self.spool_dir)
+        {
+            tracing::warn!(%error, "couldn't remove the spool directory");
+        }
+    }
+}
+
+// shortcut: spools live in the temp directory and a killed process leaves them behind;
+// move them beside the session log when sessions arrive.
+/// A real path, so it compares equal to canonicalized paths. Unique per context.
+fn new_spool_path() -> PathBuf {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let temp = std::env::temp_dir();
+    let temp = temp.canonicalize().unwrap_or(temp);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.subsec_nanos());
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    temp.join(format!("harness-spool-{}-{nanos}-{id}", std::process::id()))
 }
 
 fn schema_of<T: JsonSchema>() -> Value {

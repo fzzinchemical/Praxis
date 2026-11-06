@@ -228,7 +228,7 @@ flowchart LR
   - **Needs:** T2.2.
   - **Done when:** layered resolution is tested, and a model with no tool support uses text calling after a warning.
 
-- [ ] **T2.4 Token budget and output truncation** (§7)
+- [x] **T2.4 Token budget and output truncation** (§7)
   - **Needs:** T1.7.
   - **Done when:** tests confirm the category limits hold, calibration converges on fixture usage values, oversized results spool to disk and can be read back, and truncation triggers the warning.
 

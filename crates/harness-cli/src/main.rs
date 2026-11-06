@@ -389,6 +389,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             model: ready.instance_id,
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
+            agents_md: None,
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
             profile,
         },

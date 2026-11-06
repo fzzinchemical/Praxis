@@ -272,6 +272,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             model: instance,
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
+            agents_md: None,
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
         },

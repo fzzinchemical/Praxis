@@ -78,7 +78,7 @@ fn text_of<'a>(bytes: &'a [u8], path: &Path) -> Result<&'a str, ToolError> {
 }
 
 pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
-    let path = resolve(&ctx.workspace, &input.file_path)?;
+    let path = ctx.resolve_read(&input.file_path)?;
     let bytes = read_bytes(&path)?;
     let text = text_of(&bytes, &path)?;
     ctx.remember(&path, hash_of(&bytes));
