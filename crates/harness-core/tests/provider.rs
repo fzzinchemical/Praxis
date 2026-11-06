@@ -5,7 +5,8 @@
 
 use futures::{StreamExt, pin_mut};
 use harness_core::provider::{
-    ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
+    ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, ToolCall,
+    ToolSchema,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -440,4 +441,166 @@ fn rejects_a_base_url_that_is_not_http() {
             Err(ProviderError::InvalidUrl { .. })
         ));
     }
+}
+
+const QWEN: &str = "qwen3.5-4b";
+
+fn recorded_models() -> Value {
+    serde_json::from_slice(&fixture("qwen3.5-4b/models.response.json")).unwrap()
+}
+
+fn recorded_load() -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .set_body_raw(fixture("qwen3.5-4b/load.response.json"), "application/json")
+}
+
+/// Serves `models` wrapped as the real route does. The load route must be called exactly `loads` times.
+async fn admin_server(models: Value, load: ResponseTemplate, loads: u64) -> (MockServer, Provider) {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": models })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/models/load"))
+        .and(body_partial_json(
+            json!({"model": QWEN, "echo_load_config": true}),
+        ))
+        .respond_with(load)
+        .expect(loads)
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    (server, provider)
+}
+
+async fn ready_error(provider: &Provider, model: &str, policy: LoadPolicy) -> ProviderError {
+    provider
+        .ensure_ready(model, 16000, policy)
+        .await
+        .err()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn enough_context_uses_the_loaded_instance_without_reloading() {
+    let (_s, provider) = admin_server(recorded_models(), recorded_load(), 0).await;
+    for context in [4096, 8192] {
+        let ready = provider
+            .ensure_ready(QWEN, context, LoadPolicy::Allowed)
+            .await
+            .unwrap();
+        assert_eq!(ready.instance_id, QWEN);
+        assert_eq!(ready.context_length, 8192);
+    }
+}
+
+#[tokio::test]
+async fn picks_the_instance_with_enough_context_when_several_are_loaded() {
+    let mut models = recorded_models();
+    let mut big = models[0]["loaded_instances"][0].clone();
+    big["id"] = json!("qwen3.5-4b:2");
+    big["config"]["context_length"] = json!(32000);
+    models[0]["loaded_instances"]
+        .as_array_mut()
+        .unwrap()
+        .push(big);
+    let (_s, provider) = admin_server(models, recorded_load(), 0).await;
+    let ready = provider
+        .ensure_ready(QWEN, 16000, LoadPolicy::AskFirst)
+        .await
+        .unwrap();
+    assert_eq!(ready.instance_id, "qwen3.5-4b:2");
+    assert_eq!(ready.context_length, 32000);
+}
+
+#[tokio::test]
+async fn too_little_context_without_consent_asks_and_does_not_load() {
+    let (_s, provider) = admin_server(recorded_models(), recorded_load(), 0).await;
+    let error = ready_error(&provider, QWEN, LoadPolicy::AskFirst).await;
+    let ProviderError::LoadNeedsConsent { model, context } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!((model.as_str(), *context), (QWEN, 16000));
+    assert!(error.to_string().contains("auto_load"));
+}
+
+#[tokio::test]
+async fn a_model_not_loaded_at_all_also_needs_consent() {
+    let mut models = recorded_models();
+    models[0]["loaded_instances"] = json!([]);
+    let (_s, provider) = admin_server(models, recorded_load(), 0).await;
+    let error = ready_error(&provider, QWEN, LoadPolicy::AskFirst).await;
+    assert!(matches!(error, ProviderError::LoadNeedsConsent { .. }));
+}
+
+#[tokio::test]
+async fn too_little_context_with_consent_loads_with_the_requested_context() {
+    let mut models = recorded_models();
+    models[0]["loaded_instances"][0]["config"]["context_length"] = json!(4096);
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "models": models })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/v1/models/load"))
+        .and(body_partial_json(
+            json!({"model": QWEN, "context_length": 8192}),
+        ))
+        .respond_with(recorded_load())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let ready = provider
+        .ensure_ready(QWEN, 8192, LoadPolicy::Allowed)
+        .await
+        .unwrap();
+    assert_eq!(ready.instance_id, QWEN);
+    assert_eq!(ready.context_length, 8192);
+}
+
+#[tokio::test]
+async fn a_load_that_applied_less_context_than_requested_is_an_error() {
+    let (_s, provider) = admin_server(recorded_models(), recorded_load(), 1).await;
+    let error = ready_error(&provider, QWEN, LoadPolicy::Allowed).await;
+    let ProviderError::Server { message } = error else {
+        panic!("{error:?}");
+    };
+    assert!(
+        message.contains("8192") && message.contains("16000"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn an_unreadable_load_response_is_malformed() {
+    let load = ResponseTemplate::new(200).set_body_json(json!({"status": "loaded"}));
+    let (_s, provider) = admin_server(recorded_models(), load, 1).await;
+    let error = ready_error(&provider, QWEN, LoadPolicy::Allowed).await;
+    assert!(matches!(error, ProviderError::Malformed { .. }));
+}
+
+#[tokio::test]
+async fn a_failed_load_reports_the_server_error() {
+    let load = error_body(Value::Null, "Not enough memory");
+    let (_s, provider) = admin_server(recorded_models(), load, 1).await;
+    let error = ready_error(&provider, QWEN, LoadPolicy::Allowed).await;
+    let ProviderError::Server { message } = error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("Not enough memory"));
+}
+
+#[tokio::test]
+async fn a_missing_model_is_an_error_and_never_loads_even_with_consent() {
+    let (_s, provider) = admin_server(recorded_models(), recorded_load(), 0).await;
+    let error = ready_error(&provider, "no/such-model", LoadPolicy::Allowed).await;
+    let ProviderError::ModelNotFound { message } = error else {
+        panic!("{error:?}");
+    };
+    assert!(message.contains("no/such-model"));
 }

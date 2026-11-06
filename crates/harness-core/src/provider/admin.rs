@@ -37,6 +37,28 @@ struct ModelList {
     models: Vec<ModelInfo>,
 }
 
+#[derive(Deserialize)]
+struct LoadResponse {
+    instance_id: String,
+    load_config: InstanceConfig,
+}
+
+/// May `ensure_ready` load a model? Loading disrupts anything else using the server (SPEC §5.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadPolicy {
+    /// `auto_load = true`, or the user approved this load.
+    Allowed,
+    /// Fail with `ProviderError::LoadNeedsConsent` so the caller can ask, then retry with `Allowed`.
+    AskFirst,
+}
+
+/// An instance known to have at least the requested context. Chat should address `instance_id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadyModel {
+    pub instance_id: String,
+    pub context_length: u32,
+}
+
 pub(super) struct AdminClient {
     endpoint: Endpoint,
 }
@@ -55,5 +77,63 @@ impl AdminClient {
                 detail: e.to_string(),
             })?;
         Ok(list.models)
+    }
+
+    pub(super) async fn ensure_ready(
+        &self,
+        model: &str,
+        context: u32,
+        policy: LoadPolicy,
+    ) -> Result<ReadyModel, ProviderError> {
+        let models = self.list_models().await?;
+        let Some(info) = models.iter().find(|m| m.key == model) else {
+            return Err(ProviderError::ModelNotFound {
+                message: model.to_owned(),
+            });
+        };
+        let loaded = info
+            .loaded_instances
+            .iter()
+            .find(|i| i.config.context_length >= context);
+        if let Some(instance) = loaded {
+            return Ok(ReadyModel {
+                instance_id: instance.id.clone(),
+                context_length: instance.config.context_length,
+            });
+        }
+        match policy {
+            LoadPolicy::Allowed => self.load(model, context).await,
+            LoadPolicy::AskFirst => Err(ProviderError::LoadNeedsConsent {
+                model: model.to_owned(),
+                context,
+            }),
+        }
+    }
+
+    async fn load(&self, model: &str, context: u32) -> Result<ReadyModel, ProviderError> {
+        let url = self.endpoint.url("api/v1/models/load");
+        let request = self.endpoint.http.post(url).json(&serde_json::json!({
+            "model": model,
+            "context_length": context,
+            "echo_load_config": true,
+        }));
+        let response = self.endpoint.send(request).await?;
+        let body = response.text().await.map_err(ProviderError::Transport)?;
+        let loaded: LoadResponse =
+            serde_json::from_str(&body).map_err(|e| ProviderError::Malformed {
+                detail: e.to_string(),
+            })?;
+        let applied = loaded.load_config.context_length;
+        if applied < context {
+            return Err(ProviderError::Server {
+                message: format!(
+                    "`{model}` loaded with {applied} context instead of the requested {context}"
+                ),
+            });
+        }
+        Ok(ReadyModel {
+            instance_id: loaded.instance_id,
+            context_length: applied,
+        })
     }
 }

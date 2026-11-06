@@ -129,7 +129,7 @@ flowchart LR
   - **Do:** `chat` with streamed tool-call assembly by index, `list_models`, typed errors, `.no_proxy()` on loopback, cancellation.
   - **Done when:** `wiremock` tests with fixtures pass for a text reply, tool call, server down, no model loaded and cancel mid-stream.
 
-- [ ] **T1.4 LM Studio admin and `ensure_ready`** (§5.2)
+- [x] **T1.4 LM Studio admin and `ensure_ready`** (§5.2)
   - **Needs:** T1.2.
   - **Do:** model listing, load with `context_length`, ask-or-`auto_load` behaviour.
   - **Done when:** tests cover enough context (no reload), too little context with and without `auto_load`, and a missing model.

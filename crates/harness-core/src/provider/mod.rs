@@ -5,7 +5,7 @@ mod admin;
 mod chat;
 pub mod stream;
 
-pub use admin::{Capabilities, InstanceConfig, LoadedInstance, ModelInfo};
+pub use admin::{Capabilities, InstanceConfig, LoadPolicy, LoadedInstance, ModelInfo, ReadyModel};
 pub use chat::{
     ChatChunk, ChatRequest, CompletionDetails, FinishReason, Message, ToolCall, ToolSchema, Usage,
 };
@@ -29,6 +29,10 @@ pub enum ProviderError {
     NoModelLoaded,
     #[error("LM Studio doesn't know this model: {message}. Check the model name.")]
     ModelNotFound { message: String },
+    #[error(
+        "`{model}` needs loading with {context} context, which disrupts anything else using LM Studio. Approve the load, set `auto_load = true`, or load it yourself."
+    )]
+    LoadNeedsConsent { model: String, context: u32 },
     #[error(
         "The prompt doesn't fit the model's context. Compact the conversation or load the model with more context."
     )]
@@ -206,6 +210,17 @@ impl Provider {
 
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
         self.admin.list_models().await
+    }
+
+    /// Finds a loaded instance of `model` with at least `context`, loading one if
+    /// `policy` allows. A new load leaves existing instances in place.
+    pub async fn ensure_ready(
+        &self,
+        model: &str,
+        context: u32,
+        policy: LoadPolicy,
+    ) -> Result<ReadyModel, ProviderError> {
+        self.admin.ensure_ready(model, context, policy).await
     }
 }
 

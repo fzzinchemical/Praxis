@@ -205,7 +205,7 @@ impl Provider {
     pub async fn chat(&self, req: ChatRequest, cancel: CancellationToken)
         -> Result<impl Stream<Item = Result<ChatChunk, ProviderError>>, ProviderError>;
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
-    pub async fn ensure_ready(&self, model: &str, context: u32) -> Result<ReadyModel, ProviderError>;
+    pub async fn ensure_ready(&self, model: &str, context: u32, policy: LoadPolicy) -> Result<ReadyModel, ProviderError>;
 }
 ```
 
@@ -255,6 +255,8 @@ flowchart TD
     class ready good
     class missing,stop bad
 ```
+
+The provider never prompts. `LoadPolicy::Allowed` means `auto_load = true` or approval already given. `LoadPolicy::AskFirst` fails with `ProviderError::LoadNeedsConsent` instead of loading, so the front end can ask and retry with `Allowed`, or stop and show the error's explanation. A load adds an instance and leaves existing ones in place. If a load applies less context than requested, that is an error.
 
 ### 5.3 Tool-call recovery
 
