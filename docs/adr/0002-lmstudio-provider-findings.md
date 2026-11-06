@@ -1,7 +1,7 @@
 # ADR 0002: LM Studio provider findings
 
 > [!NOTE]
-> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/harness-core/tests/fixtures/lmstudio/`. **Amended the same day:** the owner dropped qwen2.5-coder after these findings, so `gemma-4-12b-qat` is the only chosen model.
+> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/harness-core/tests/fixtures/lmstudio/`. **Amended the same day:** the owner dropped qwen2.5-coder after these findings, and chose `qwen3.5-4b` as the second model alongside `gemma-4-12b-qat`.
 
 ## Context
 
@@ -30,6 +30,18 @@ An early change costs the full reprocess, and so does changing `tools`, which co
 **Constrained output.** `response_format` with a JSON schema gave valid arguments on qwen, with or without `tools`. With both set, neither model produced `tool_calls`: the JSON arrives as `content`. On gemma without tools, reasoning used all 256 output tokens and no JSON appeared, so that case is inconclusive.
 
 **Instances.** `model` accepts an instance id: `<key>:2` reached the 4096-context instance, shown by its `n_ctx` error. With two loaded, the bare key reached the first one (a single observation).
+
+## Second model
+
+Fitting candidates were screened with 3 runs each of a single, a two-file and a multi-line tool call:
+
+| Model | Valid native calls | Both files requested | Run time |
+|---|---|---|---|
+| `qwen3.5-4b` (3.4 GB) | 9/9 | 3/3 | 1.0-6.9 s |
+| `google/gemma-4-e4b` (7.2 GB) | 9/9 | 3/3 | 1.1-9.6 s |
+| `prism-ml/bonsai-27b` (4.7 GB) | 9/9 | 1/3 | 2.7-11.7 s |
+
+`qwen3.5-4b` was chosen: fastest, and a different family from gemma. Its cache gain is about 7x (2.9 s cold, 0.44 s shared prefix) and overflow behaves the same. Without tools, `response_format` hit the output limit during reasoning, as on gemma. At 4B it is the smallest model here, and tool-call validity says nothing yet about coding quality; T2.1 measures that.
 
 ## Decision
 

@@ -19,7 +19,7 @@ Local-first coding agent harness, written in Rust. It connects to LM Studio, the
 3. Implement the smallest change that passes it. Do only that task.
 4. Run the narrowest test while iterating, then `./scripts/verify` once at the end.
 5. Tick the task in `docs/TASKS.md` in the same branch. If reality differs from SPEC, update SPEC in that branch and say so in the commit body.
-7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. There is no remote, CI or PR: verify is the only gate.
+7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. There is no remote, CI or PR: verify is the only gate, and it runs on every commit through `.githooks/pre-commit`. Enable it once per clone with `git config core.hooksPath .githooks`.
 6. Add any non-obvious trap you hit to the Gotchas section below.
 
 Keep each branch to about 400 changed lines, recorded fixtures aside; split a task if it grows beyond that.
@@ -52,7 +52,7 @@ These exist once T0.1 is done. Until then there is no build.
 
 ## Models
 
-The owner's chosen model for spikes, baselines and evals is `google/gemma-4-12b-qat` alone. `qwen2.5-coder-7b-instruct` was tried and dropped (ADR 0002).
+The chosen models for spikes, baselines and evals are `google/gemma-4-12b-qat` and `qwen3.5-4b`. `qwen2.5-coder-7b-instruct` was tried and dropped (ADR 0002).
 
 ## Dev environment
 
@@ -68,6 +68,7 @@ Checked 2026-11-06. Re-check before relying on it.
 
 Known before implementation. Details are in SPEC.
 
+- The pre-commit hook checks the working tree, not just the staged files, so unstaged changes can fail or pass a commit.
 - LM Studio reports context overflow as HTTP 200 plus SSE `event: error`, so checking the status alone misses it (ADR 0002).
 - `qwen2.5-coder-7b-instruct` never emits native tool calls despite accepting `tools` (ADR 0002).
 - `--workspace` overrides `default-members`, so it pulls wasm crates into native builds. Use `--exclude` as `scripts/verify` does.
