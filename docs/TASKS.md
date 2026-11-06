@@ -241,7 +241,7 @@ flowchart LR
   - **Do:** tiered: batched masking first, then a summary if needed, then stubs. Compare `mask_keep_turns` of 5, 10 and 20 with no masking.
   - **Done when:** tests cover the trigger, whole-result masking, recent turns kept, re-fetch placeholders, preserved prefix, failed summary fallback and event order; evals show that history is rewritten rarely; and the "large file" eval passes on a small context.
 
-- [ ] **T2.7 Loop detection** (§5.4) · *Should*
+- [x] **T2.7 Loop detection** (§5.4) · *Should*
   - **Needs:** T1.7.
   - **Done when:** tests cover each trigger, including one where legitimately repeated calls with different arguments do not trigger it.
 

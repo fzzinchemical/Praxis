@@ -1,5 +1,8 @@
 //! The agent loop and the events front ends see (SPEC §4).
 
+mod loop_detection;
+
+use self::loop_detection::LoopDetector;
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall,
@@ -91,6 +94,7 @@ pub struct AgentConfig {
 pub const DEFAULT_MAX_TURN_REQUESTS: u32 = 50;
 
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
+const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
 const INTERRUPTED_REPLY: &str = "(interrupted)";
 
 /// One conversation. History stays valid for the next prompt however a turn ends: every tool
@@ -145,6 +149,7 @@ impl Agent {
 
     async fn run_requests(&mut self, turn: &Turn<'_>) -> StopReason {
         let mut requests = 0;
+        let mut detector = LoopDetector::default();
         loop {
             requests += 1;
             let reply = self.request(turn).await;
@@ -161,6 +166,7 @@ impl Agent {
                 return turn.provider_failure(error).await;
             }
             let done = reply.calls.is_empty();
+            let silent = reply.text.is_empty();
             self.history.push(Message::Assistant {
                 content: (done || !reply.text.is_empty()).then_some(reply.text),
                 tool_calls: reply.calls.clone(),
@@ -171,12 +177,16 @@ impl Agent {
                     _ => StopReason::EndTurn,
                 };
             }
+            let mut stuck = None;
             for call in reply.calls {
                 let content = if turn.cancel.is_cancelled() {
                     NOT_RUN_RESULT.to_owned()
+                } else if stuck.is_some() {
+                    LOOP_NOT_RUN_RESULT.to_owned()
                 } else {
                     self.run_call(&call, turn).await
                 };
+                stuck = stuck.or_else(|| detector.record(&call, silent));
                 self.history.push(Message::Tool {
                     tool_call_id: call.id,
                     content,
@@ -184,6 +194,15 @@ impl Agent {
             }
             if turn.cancel.is_cancelled() {
                 return StopReason::Cancelled;
+            }
+            if let Some(trigger) = stuck {
+                turn.emit(AgentEvent::Notice {
+                    severity: Severity::Warning,
+                    title: "Stopped: tool loop detected".to_owned(),
+                    detail: Some(trigger.describe().to_owned()),
+                })
+                .await;
+                return StopReason::LoopDetected;
             }
             if requests >= self.config.max_turn_requests {
                 return StopReason::MaxTurnRequests;

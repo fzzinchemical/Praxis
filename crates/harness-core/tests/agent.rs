@@ -466,3 +466,51 @@ async fn an_unknown_tool_is_refused_without_a_prompt() {
 
     assert_eq!(events[1], "error:u");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_repeated_call_stops_the_turn_with_a_warning_and_a_new_prompt_starts_clean() {
+    let looping = tool_reply(&[("c", "Glob", json!({"pattern": "*"}))]);
+    let mut h = Harness::new(vec![looping], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(events[events.len() - 2], "notice");
+    assert_eq!(events.last().unwrap(), "ended:LoopDetected");
+
+    // The script keeps repeating the call, so three more requests prove the count restarted.
+    let events = h.turn("again", CancellationToken::new(), never_asked).await;
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 6);
+    assert_eq!(events.last().unwrap(), "ended:LoopDetected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_loop_inside_one_reply_skips_the_rest_and_keeps_history_valid() {
+    let call = ("c", "Glob", json!({"pattern": "*"}));
+    let batch = tool_reply(&vec![call; 5]);
+    let mut h = Harness::new(vec![batch, text_reply("ok")], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+    let started = events.iter().filter(|e| e.starts_with("started:")).count();
+    assert_eq!(started, 3);
+    assert_eq!(events.last().unwrap(), "ended:LoopDetected");
+
+    h.turn("next", CancellationToken::new(), never_asked).await;
+    let roles = h.roles(1).await;
+    let results = roles.iter().filter(|role| *role == "tool").count();
+    assert_eq!(results, 5);
+    assert_eq!(roles.last().unwrap(), "user");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn repeating_a_tool_with_different_arguments_finishes_normally() {
+    let mut script: Vec<String> = (0..6)
+        .map(|i| tool_reply(&[("c", "Glob", json!({"pattern": format!("*.{i}")}))]))
+        .collect();
+    script.push(text_reply("done"));
+    let mut h = Harness::new(script, 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+}
