@@ -82,3 +82,4 @@ Known before implementation. Details are in SPEC.
 - Built-in tool and parameter names are a compatibility surface for plugin hooks. Don't rename `Bash`, `Edit`, `file_path` and so on (SPEC §6).
 - Docs: the graphs in `docs/TASKS.md` mirror each task's "Needs" line, so change both together. Mermaid rejects `call` as a node id.
 - `reqwest` honours proxy environment variables, so disable proxies for a loopback LM Studio URL or local traffic may be sent to a proxy.
+- ACP handlers run inside the dispatch loop. Awaiting a client response in one deadlocks, so spawn the work and keep the responder (SPEC §11).

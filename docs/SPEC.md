@@ -691,7 +691,7 @@ Ctrl-C cancels the turn once and exits the second time. When stdout isn't a term
 
 Transport is stdio only: newline-delimited JSON-RPC, one message per line. stdout is protocol only, stderr is logs.
 
-Start from `Agent.v1()` with a `Stdio` transport and `Builder` handlers. Handlers, transports and connection futures must be `Send`. The crate has no worked agent example on its docs.rs front page, so read its cookbook and the repository's examples.
+Start from `Agent.v1()` with a `Stdio` transport and `Builder` handlers. Handlers, transports and connection futures must be `Send`. The crate has no worked agent example on its docs.rs front page, so read its `concepts` module and `examples/simple_agent.rs`.
 
 ```mermaid
 sequenceDiagram
@@ -737,7 +737,14 @@ Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancell
 
 **Cancellation:** on `session/cancel`, stop model requests and tools at once, send final updates *before* answering the prompt, and respond with `cancelled`. Treat aborted-operation errors as cancellation rather than failures.
 
-`UNVERIFIED`, check against `v1::schema`: permission option kinds (expected `allow_once`, `allow_always`, `reject_once`, `reject_always`), tool `kind` values (expected `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `other`), diff content in tool calls, and `mcpServers` on `session/new`. If `session/new` passes MCP servers, treat them as user-approved, since they come from the user's editor.
+Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-keep-acp-for-the-front-end-protocol.md)):
+
+- **Permission option kinds:** `allow_once`, `allow_always`, `reject_once`, `reject_always`. The answer's `outcome` is `selected` with an `optionId`, or `cancelled`. After `session/cancel`, the client must answer pending requests with `cancelled`.
+- **Tool `kind`:** `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`. `other` is the default, and unknown values parse as `other`.
+- **Diff content:** a `content` item on a tool call or its update, `{"type": "diff", "path", "oldText", "newText"}`. `path` is absolute, and `oldText` is omitted or `null` for new files. A permission request can carry it, which edit review needs.
+- **`mcpServers`:** required on `session/new` and `session/load`. It may be empty or `null`, but omitting it is a parse error. Agents must support stdio servers; `http` and `sse` servers are only allowed if the agent advertises them in `mcpCapabilities`. If `session/new` passes MCP servers, treat them as user-approved, since they come from the user's editor.
+
+Handlers run inside the connection's dispatch loop, and awaiting a client response in one deadlocks. The `session/prompt` handler spawns its work and keeps the responder.
 
 ### Developer experience requirements
 

@@ -73,7 +73,7 @@ flowchart LR
   - **Do:** 10-15 tasks per §14, covering a seeded bug, multi-file rename, adding a test, following `AGENTS.md`, a large file that won't fit in context, and a repo with a prompt-injection comment.
   - **Done when:** each task's `check.sh` fails on the untouched fixture and passes on a hand-applied reference solution.
 
-- [ ] **T0.5 ACP spike**
+- [x] **T0.5 ACP spike**
   - **Needs:** T0.1.
   - **Do:** throwaway agent using `agent-client-protocol` 5.x that echoes a prompt and requests one permission. Resolve the `UNVERIFIED` schema items in §11.
   - **Done when:** an in-process client test passes, §11 is updated, and an ADR records keeping ACP or replacing it with our own JSON-RPC.
