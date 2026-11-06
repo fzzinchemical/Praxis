@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
 const DEFAULT_BASE_URL: &str = "http://localhost:1234";
-// shortcut: one context size for every model; use model profiles once T2.x adds them (SPEC §5.5).
+// For models with no built-in context in their profile.
 const DEFAULT_CONTEXT: u32 = 32768;
 const API_KEY_ENV: &str = "LM_API_TOKEN";
 const EXIT_FAILURE: u8 = 1;
@@ -273,6 +273,12 @@ fn first_loaded(models: &[ModelInfo]) -> Option<(&ModelInfo, u32)> {
     })
 }
 
+fn load_context(model: &str, requested: Option<u32>) -> u32 {
+    requested
+        .or(harness_core::agent::profile::resolve(model, None, &[]).context)
+        .unwrap_or(DEFAULT_CONTEXT)
+}
+
 /// Follows SPEC §5.2: the provider refuses an unapproved load, this asks and retries.
 async fn ready_model(
     provider: &Provider,
@@ -281,7 +287,10 @@ async fn ready_model(
     terminal: &mut Option<Terminal>,
 ) -> Result<ReadyModel, ProviderError> {
     let (model, context) = match requested {
-        Some(model) => (model, settings.context.unwrap_or(DEFAULT_CONTEXT)),
+        Some(model) => {
+            let context = load_context(&model, settings.context);
+            (model, context)
+        }
         None => {
             let models = provider.list_models().await?;
             let (model, loaded) = first_loaded(&models).ok_or(ProviderError::NoModelLoaded)?;
@@ -380,7 +389,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             .any(|instance| instance.id == ready.instance_id)
     });
     let key = reported.map_or(ready.instance_id.as_str(), |m| m.key.as_str());
-    // shortcut: no user layer until config arrives in M3, which also needs `context` read earlier.
+    // shortcut: no user layer until config arrives in M3, which must also reach `load_context`.
     let profile =
         harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
     let workspace = std::env::current_dir()?;
@@ -443,6 +452,13 @@ async fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_context_prefers_the_override_then_the_model_then_the_default() {
+        assert_eq!(load_context("qwen3.5-4b", Some(4096)), 4096);
+        assert_eq!(load_context("qwen3.5-4b", None), 131_072);
+        assert_eq!(load_context("some/unknown-model", None), DEFAULT_CONTEXT);
+    }
 
     #[test]
     fn only_explicit_answers_approve() {

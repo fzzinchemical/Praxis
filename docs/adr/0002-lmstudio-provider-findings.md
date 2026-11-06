@@ -43,6 +43,17 @@ Fitting candidates were screened with 3 runs each of a single, a two-file and a 
 
 `qwen3.5-4b` was chosen: fastest, and a different family from gemma. Its cache gain is about 7x (2.9 s cold, 0.44 s shared prefix) and overflow behaves the same. Without tools, `response_format` hit the output limit during reasoning, as on gemma. With `tools` also set, it failed with `failed to parse grammar` as an SSE error on HTTP 200, so a constrained retry must omit `tools`. At 4B it is the smallest model here, and tool-call validity says nothing yet about coding quality; T2.1 measures that.
 
+## Context per model
+
+VRAM in use once loaded, including about 1.6 GB of desktop use when idle:
+
+| Model | 32768 | 65536 | 131072 |
+|---|---|---|---|
+| `qwen3.5-4b` | 6.1 GB | 7.2 GB | 9.3 GB |
+| `gemma-4-12b-qat` | 11.3 GB | 11.9 GB | not measured |
+
+The built-in contexts are 131072 for `qwen3.5-4b` and 65536 for `gemma-4-12b-qat`, leaving room on 16 GB. Other models keep the 32768 default. These measure fit, not speed: a full window takes minutes to process cold.
+
 ## Decision
 
 - Keep the prompt prefix stable as specified, and use time to first token as the cache signal.

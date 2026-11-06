@@ -21,7 +21,7 @@ pub struct ProfileLayer {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelProfile {
-    /// Context to load with. Not applied yet: the only source is the user layer, which M3 adds.
+    /// Context to load with when none is requested. The budget categories are shares of it.
     pub context: Option<u32>,
     pub max_output: Option<u32>,
     pub tool_format: ToolFormat,
@@ -75,14 +75,23 @@ fn matches(pattern: &str, model: &str) -> bool {
 }
 
 /// Built-ins are facts recorded in ADR 0002. Don't assume `native` from a name family.
-fn builtin_layers() -> [(&'static str, ProfileLayer); 1] {
-    [(
-        "*qwen2.5-coder*",
-        ProfileLayer {
-            tool_format: Some(ToolFormat::FencedJson),
-            ..ProfileLayer::default()
-        },
-    )]
+/// Contexts are sized to fit 16 GB of VRAM, as measured in ADR 0002.
+fn builtin_layers() -> [(&'static str, ProfileLayer); 3] {
+    let context = |size| ProfileLayer {
+        context: Some(size),
+        ..ProfileLayer::default()
+    };
+    [
+        (
+            "*qwen2.5-coder*",
+            ProfileLayer {
+                tool_format: Some(ToolFormat::FencedJson),
+                ..ProfileLayer::default()
+            },
+        ),
+        ("*qwen3.5-4b*", context(131_072)),
+        ("*gemma-4-12b-qat*", context(65_536)),
+    ]
 }
 
 /// Resolves `model` (its key). `capabilities` is `None` if LM Studio didn't report the model.
@@ -130,6 +139,14 @@ mod tests {
 
     fn user(pattern: &str, layer: serde_json::Value) -> (String, ProfileLayer) {
         (pattern.into(), serde_json::from_value(layer).unwrap())
+    }
+
+    #[test]
+    fn context_depends_on_the_model() {
+        let context = |model| resolve(model, None, &[]).context;
+        assert_eq!(context("qwen3.5-4b"), Some(131_072));
+        assert_eq!(context("google/gemma-4-12b-qat"), Some(65_536));
+        assert_eq!(context("some/unknown-model"), None);
     }
 
     #[test]

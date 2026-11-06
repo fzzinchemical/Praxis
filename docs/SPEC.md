@@ -324,6 +324,8 @@ strip_thinking = true
 constrained_retry = true      # on once LM Studio reports the model
 ```
 
+`--model` loads with `--config-override context=` if given, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
+
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning. The user layer and `context` take effect once config lands (M3).
 
 ## 6. Tools
