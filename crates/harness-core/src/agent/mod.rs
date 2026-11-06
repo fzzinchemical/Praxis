@@ -7,6 +7,7 @@ pub mod profile;
 pub mod recovery;
 
 use crate::context::budget::{Budget, Observation};
+use crate::context::prefix::SessionFacts;
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
@@ -19,6 +20,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -136,6 +138,9 @@ pub struct Agent {
     budget: Budget,
     /// A warning from `new`, which has no event channel, for the first turn to send.
     prefix_warning: Option<String>,
+    /// Frozen at session start: changing the array forces a full reprocess (SPEC §7).
+    tool_schemas: Vec<ToolSchema>,
+    facts: SessionFacts,
 }
 
 /// What one model request produced before it ended.
@@ -168,7 +173,9 @@ impl Reply {
 impl Agent {
     pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, config: AgentConfig) -> Self {
         let budget = Budget::new(config.context_size);
-        let (system, prefix_warning) = assemble_prefix(&config, &budget);
+        let tool_schemas = tools::schemas();
+        let facts = SessionFacts::capture(tools.workspace());
+        let (system, prefix_warning) = assemble_prefix(&config, &budget, &tool_schemas, &facts);
         let history = vec![Message::System { content: system }];
         Self {
             provider,
@@ -180,6 +187,8 @@ impl Agent {
             parse_failures: 0,
             budget,
             prefix_warning,
+            tool_schemas,
+            facts,
         }
     }
 
@@ -196,7 +205,11 @@ impl Agent {
         events: &mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) {
-        self.history.push(Message::User { content: prompt });
+        let content = match self.note_changed_facts() {
+            Some(note) => format!("{note}\n\n{prompt}"),
+            None => prompt,
+        };
+        self.history.push(Message::User { content });
         let turn = Turn {
             events,
             cancel: cancel.child_token(),
@@ -214,6 +227,13 @@ impl Agent {
         }
         let reason = self.run_requests(&turn).await;
         turn.emit(AgentEvent::TurnEnded(reason)).await;
+    }
+
+    fn note_changed_facts(&mut self) -> Option<String> {
+        let current = SessionFacts::capture(self.tools.workspace());
+        let note = self.facts.changes_in(&current);
+        self.facts = current;
+        note
     }
 
     async fn run_requests(&mut self, turn: &Turn<'_>) -> StopReason {
@@ -292,7 +312,11 @@ impl Agent {
                 };
                 stuck = stuck.or_else(|| detector.record(&call, silent));
                 if can_constrain && self.call_failures.contains_key(&call.name) {
-                    retry = tools::schemas().into_iter().find(|t| t.name == call.name);
+                    retry = self
+                        .tool_schemas
+                        .iter()
+                        .find(|t| t.name == call.name)
+                        .cloned();
                 }
                 self.history.push(Message::Tool {
                     tool_call_id: call.id,
@@ -377,7 +401,7 @@ impl Agent {
             // Text formats get their tools through the system prompt instead.
             // shortcut: history still uses tool roles, unproven on templates without tool support; render as plain text if T2.1 shows failures.
             tools: match profile.tool_format {
-                ToolFormat::Native if constrained.is_none() => tools::schemas(),
+                ToolFormat::Native if constrained.is_none() => self.tool_schemas.clone(),
                 _ => Vec::new(),
             },
             // No limit on a constrained retry: reasoning can use up a small one (ADR 0002).
@@ -405,7 +429,13 @@ impl Agent {
             }
         };
         pin_mut!(stream);
+        let started = Instant::now();
+        let mut first_chunk = true;
         while let Some(chunk) = stream.next().await {
+            if std::mem::take(&mut first_chunk) {
+                // LM Studio reports no cached tokens, so this is the cache signal (ADR 0002).
+                tracing::info!(ms = started.elapsed().as_millis(), "time to first token");
+            }
             match chunk {
                 Ok(ChatChunk::Text(delta)) => {
                     let split = if profile.strip_thinking {
@@ -549,16 +579,22 @@ impl Turn<'_> {
 }
 
 /// Builds the system message, trimming AGENTS.md first if the prefix is over budget (SPEC §7).
-fn assemble_prefix(config: &AgentConfig, budget: &Budget) -> (String, Option<String>) {
-    let teaching = config.profile.tool_format.instructions(&tools::schemas());
+fn assemble_prefix(
+    config: &AgentConfig,
+    budget: &Budget,
+    tool_schemas: &[ToolSchema],
+    facts: &SessionFacts,
+) -> (String, Option<String>) {
+    let teaching = config.profile.tool_format.instructions(tool_schemas);
     let base = config.system_prompt.clone() + teaching.as_deref().unwrap_or_default();
+    let facts = facts.render();
     let other_chars = ChatRequest {
         model: config.model.clone(),
         messages: vec![Message::System {
-            content: base.clone(),
+            content: format!("{base}\n\n{facts}"),
         }],
         tools: match config.profile.tool_format {
-            ToolFormat::Native => tools::schemas(),
+            ToolFormat::Native => tool_schemas.to_vec(),
             _ => Vec::new(),
         },
         max_tokens: None,
@@ -570,9 +606,9 @@ fn assemble_prefix(config: &AgentConfig, budget: &Budget) -> (String, Option<Str
     let (system, trimmed) = match &config.agents_md {
         Some(agents_md) => {
             let (kept, cut) = budget.fit_agents_md(agents_md, other_chars);
-            (format!("{base}\n\n{kept}"), cut)
+            (format!("{base}\n\n{kept}\n\n{facts}"), cut)
         }
-        None => (base, false),
+        None => (format!("{base}\n\n{facts}"), false),
     };
     let warning = if trimmed {
         Some("AGENTS.md is too long for the prompt budget, so it was trimmed.".to_owned())

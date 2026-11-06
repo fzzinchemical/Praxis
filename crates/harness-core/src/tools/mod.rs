@@ -150,6 +150,10 @@ impl ToolContext {
         }
     }
 
+    pub fn workspace(&self) -> &Path {
+        &self.workspace
+    }
+
     fn remember(&self, path: &Path, hash: u64) {
         self.seen
             .lock()

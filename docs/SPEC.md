@@ -388,6 +388,7 @@ flowchart TB
 - Serialize tools and JSON deterministically, with stable key order.
 - **Don't change the `tools` array mid-session.** Changing it forces a full reprocess, measured on both tested models (ADR 0002).
 - Rewrite old messages only in a compaction pass. Filter and truncate tool output once, when first recorded.
+- A fact that changed reaches the model as a note at the start of the next user message, because a separate message would break strict role alternation in some chat templates.
 - LM Studio reports no cached tokens, so log time to first token. A regression test (T2.5) asserts that consecutive request bodies share a prefix.
 
 ### Token budget

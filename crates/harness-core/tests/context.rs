@@ -74,7 +74,10 @@ struct Harness {
 
 impl Harness {
     async fn new(bodies: Vec<String>, config: AgentConfig) -> Self {
-        let workspace = new_workspace();
+        Self::in_workspace(new_workspace(), bodies, config).await
+    }
+
+    async fn in_workspace(workspace: PathBuf, bodies: Vec<String>, config: AgentConfig) -> Self {
         let server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(Script {
@@ -279,4 +282,89 @@ async fn the_front_end_still_gets_the_complete_result() {
         _ => None,
     });
     assert!(shown.unwrap().contains("line number 700\n"));
+}
+
+/// Splits a raw body into its `messages` array and everything around it. A quote inside a JSON
+/// string is escaped, so `],"` can only be structure, and no message has an array before its
+/// last key. Key order isn't assumed: it depends on serde_json features across the build.
+fn split_messages(raw: &str) -> (&str, String) {
+    let (before, after) = raw.split_once(r#""messages":["#).unwrap();
+    match after.split_once(r#"],""#) {
+        Some((messages, rest)) => (messages, format!("{before}{rest}")),
+        None => (after, before.to_owned()),
+    }
+}
+
+async fn assert_each_body_extends_the_last(h: &Harness) {
+    let requests = h.server.received_requests().await.unwrap();
+    let raw: Vec<&str> = requests
+        .iter()
+        .map(|r| std::str::from_utf8(&r.body).unwrap())
+        .collect();
+    for pair in raw.windows(2) {
+        let (old_messages, old_rest) = split_messages(pair[0]);
+        let (new_messages, new_rest) = split_messages(pair[1]);
+        assert!(
+            new_messages.starts_with(old_messages) && new_messages.len() > old_messages.len(),
+            "history was rewritten:\n{old_messages}\n---\n{new_messages}"
+        );
+        assert_eq!(old_rest, new_rest, "tools or settings changed");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_request_is_a_byte_prefix_extension_of_the_last() {
+    let thinking_then_call = sse(&[
+        json!({"choices": [{"delta": {"reasoning_content": "hmm"}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {"content": "reading", "tool_calls": [
+            {"index": 0, "id": "b", "function": {"name": "Read", "arguments": "{ \"file_path\" :\"big.txt\"}"}}
+        ]}, "finish_reason": "tool_calls"}]}),
+    ]);
+    let bodies = vec![
+        tool_reply("a", "Glob", json!({"pattern": "*"})),
+        thinking_then_call,
+        text_reply("done", 4000),
+        // The next turn fails mid-stream and the one after must still extend it.
+        "event: error\ndata: {\"error\":{\"message\":\"boom\"}}\n\n".to_owned(),
+        text_reply("again", 4000),
+    ];
+    let mut h = Harness::new(bodies, config(20_000)).await;
+    fs::write(h.workspace.join("big.txt"), big_file_lines(1500)).unwrap();
+    h.turn("first").await;
+    h.turn("second").await;
+    h.turn("third").await;
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 5);
+    assert_each_body_extends_the_last(&h).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn session_facts_sit_in_the_prefix_and_changes_are_appended() {
+    let workspace = new_workspace();
+    fs::create_dir(workspace.join(".git")).unwrap();
+    fs::write(workspace.join(".git/HEAD"), "ref: refs/heads/one\n").unwrap();
+    let mut h = Harness::in_workspace(
+        workspace.clone(),
+        vec![text_reply("ok", 4000)],
+        config(20_000),
+    )
+    .await;
+    h.turn("first").await;
+    fs::write(workspace.join(".git/HEAD"), "ref: refs/heads/two\n").unwrap();
+    h.turn("second").await;
+    h.turn("third").await;
+    assert_each_body_extends_the_last(&h).await;
+
+    let bodies = h.bodies().await;
+    let system = bodies[2]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("Branch: one"), "{system}");
+    assert!(system.contains(workspace.to_str().unwrap()), "{system}");
+    assert!(!system.contains("two"), "the prefix never changes");
+
+    assert_eq!(last_message(&bodies[0]), "first");
+    let second = last_message(&bodies[1]);
+    assert!(
+        second.contains("Branch: two") && second.ends_with("second"),
+        "{second}"
+    );
+    assert_eq!(last_message(&bodies[2]), "third", "announced only once");
 }
