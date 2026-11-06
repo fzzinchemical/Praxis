@@ -49,11 +49,11 @@ flowchart LR
     class T0_0,T0_2 human
 ```
 
-- [ ] **T0.0 Install prerequisites** `HUMAN`
+- [x] **T0.0 Install prerequisites** `HUMAN`
   - **Do:** `sudo pacman -S rust-wasm wasm-bindgen`; install LM Studio; choose 2-3 tool-capable coding models that fit 16 GB VRAM; start its server.
   - **Done when:** `curl localhost:1234/api/v1/models` lists a model, and `rustc --print target-libdir --target wasm32-unknown-unknown` points at an existing directory.
 
-- [ ] **T0.1 Repository skeleton**
+- [x] **T0.1 Repository skeleton**
   - **Needs:** nothing.
   - **Do:** `git init` with `main`; workspace per §3 with empty crates; shared lints and release profile (§2); `#![forbid(unsafe_code)]`; `.gitignore`; `scripts/verify` (§14); CI running it; PR template.
   - **Done when:** `./scripts/verify` passes on the empty workspace, and fails on a deliberately added lint violation, which is then removed.

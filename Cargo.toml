@@ -1,0 +1,23 @@
+[workspace]
+resolver = "3"
+members = ["crates/*", "xtask"]
+# Wasm crates stay out so plain `cargo test` and `cargo build` stay native.
+default-members = ["crates/harness-core", "crates/harness-cli", "xtask"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.99"
+publish = false
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+# Keep unwinding: a panicking tool task becomes a tool error, not a dead session (SPEC §2).
+panic = "unwind"

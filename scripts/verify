@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Single entry point for format, lint and tests (SPEC §14). CI calls this too.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+wasm_crates=(harness-vscode harness-vscode-ui)
+wasm_target=wasm32-unknown-unknown
+# --workspace overrides default-members, so wasm crates must be excluded by name to stay off native.
+native=(--workspace --exclude harness-vscode --exclude harness-vscode-ui)
+
+cargo fmt --all --check
+cargo clippy "${native[@]}" --all-targets -- -D warnings
+cargo test -q "${native[@]}"
+
+for crate in "${wasm_crates[@]}"; do
+    cargo clippy -p "$crate" --target "$wasm_target" --all-targets -- -D warnings
+done
+
+echo "verify: OK"

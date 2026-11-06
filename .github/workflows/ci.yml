@@ -1,0 +1,16 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          rustup toolchain install 1.99.1 --profile minimal -c rustfmt -c clippy -t wasm32-unknown-unknown
+          rustup default 1.99.1
+      - run: ./scripts/verify

@@ -3,7 +3,7 @@
 Local-first coding agent harness, written in Rust. It connects to LM Studio, the only supported model backend, and adds tools, MCP, plugins, VS Code integration and layered config. `harness` is a placeholder name.
 
 > [!IMPORTANT]
-> **State: nothing is implemented yet.** These docs are the brief.
+> **State: skeleton only (T0.1); the crates are empty.** These docs are the brief.
 
 ## Read order
 
@@ -57,12 +57,13 @@ Checked 2026-11-06. Re-check before relying on it.
 - `cargo`/`rustc` 1.99.1 from the system package. **There is no rustup**, so targets come from pacman.
 - AMD Navi 21 GPU (16 GB VRAM on the RX 6800/6800 XT/6900 XT cards using this chip), 62 GiB RAM. No `nvidia-smi`. Expect ROCm or Vulkan, and choose models accordingly.
 - VS Code 1.145.0 (`code`). Node exists on the machine, but the project must not depend on it.
-- **Not installed yet:** LM Studio, the `rust-wasm` pacman package, the `wasm-bindgen` CLI. See T0.0.
+- LM Studio with its server on port 1234 (`~/.lmstudio/bin/lms`, not on `PATH`), `rust-wasm`, and the `wasm-bindgen` CLI 0.2.128.
 
 ## Gotchas
 
 Known before implementation. Details are in SPEC.
 
+- `--workspace` overrides `default-members`, so it pulls wasm crates into native builds. Use `--exclude` as `scripts/verify` does.
 - LM Studio's native chat can't take custom tools, and its OpenAI-compatible routes can't set context size. Chat through `/v1/chat/completions` and set context when loading the model through `/api/v1/models/load` (SPEC §5).
 - Never assume a loaded model's context size. Read `loaded_instances[].config.context_length`.
 - OpenAI-style tool-call `arguments` is a string streamed in pieces, assembled by index.
