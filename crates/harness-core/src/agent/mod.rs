@@ -8,7 +8,7 @@ pub mod recovery;
 
 use crate::permissions::{Decision, Permissions};
 use crate::provider::{
-    ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall,
+    ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
 use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
@@ -139,6 +139,8 @@ struct Reply {
     calls: Vec<ToolCall>,
     finish: Option<FinishReason>,
     error: Option<ProviderError>,
+    /// The text is arguments for a constrained retry, not something to show.
+    quiet: bool,
 }
 
 impl Reply {
@@ -148,7 +150,9 @@ impl Reply {
         }
         if !split.text.is_empty() {
             self.text.push_str(&split.text);
-            turn.emit(AgentEvent::TextDelta(split.text)).await;
+            if !self.quiet {
+                turn.emit(AgentEvent::TextDelta(split.text)).await;
+            }
         }
     }
 }
@@ -204,9 +208,26 @@ impl Agent {
         let mut requests = 0;
         let mut detector = LoopDetector::default();
         self.call_failures.clear();
+        let mut can_constrain = self.config.profile.constrained_retry;
+        let mut retry: Option<ToolSchema> = None;
         loop {
             requests += 1;
-            let reply = self.request(turn).await;
+            let constrained = retry.take();
+            let mut reply = self.request(turn, constrained.clone()).await;
+            if let (Some(_), Some(error)) = (&constrained, &reply.error)
+                && !matches!(error, ProviderError::Cancelled)
+                && !turn.cancel.is_cancelled()
+            {
+                can_constrain = false;
+                turn.emit(AgentEvent::Notice {
+                    severity: Severity::Warning,
+                    title: "The server rejected a constrained retry, so retrying without it."
+                        .to_owned(),
+                    detail: Some(error.to_string()),
+                })
+                .await;
+                continue;
+            }
             if let Some(error) = reply.error {
                 // Half-streamed tool calls never arrive, so only text can need keeping.
                 let content = match reply.text.as_str() {
@@ -218,6 +239,15 @@ impl Agent {
                     tool_calls: Vec::new(),
                 });
                 return turn.provider_failure(error).await;
+            }
+            if let Some(tool) = constrained
+                && reply.calls.is_empty()
+            {
+                reply.calls.push(ToolCall {
+                    id: format!("constrained-{}", self.history.len()),
+                    name: tool.name,
+                    arguments: std::mem::take(&mut reply.text),
+                });
             }
             let id_prefix = format!("text-call-{}", self.history.len());
             let recovered = recovery::recover_calls(
@@ -248,6 +278,9 @@ impl Agent {
                     self.run_call(&call, turn).await
                 };
                 stuck = stuck.or_else(|| detector.record(&call, silent));
+                if can_constrain && self.call_failures.contains_key(&call.name) {
+                    retry = tools::schemas().into_iter().find(|t| t.name == call.name);
+                }
                 self.history.push(Message::Tool {
                     tool_call_id: call.id,
                     content,
@@ -306,22 +339,28 @@ impl Agent {
         checked
     }
 
-    async fn request(&self, turn: &Turn<'_>) -> Reply {
+    async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {
         let profile = &self.config.profile;
+        let quiet = constrained.is_some();
         let request = ChatRequest {
             model: self.config.model.clone(),
             messages: self.history.clone(),
             // Text formats get their tools through the system prompt instead.
             // shortcut: history still uses tool roles, unproven on templates without tool support; render as plain text if T2.1 shows failures.
             tools: match profile.tool_format {
-                ToolFormat::Native => tools::schemas(),
-                ToolFormat::HermesText | ToolFormat::FencedJson => Vec::new(),
+                ToolFormat::Native if constrained.is_none() => tools::schemas(),
+                _ => Vec::new(),
             },
-            max_tokens: profile.max_output,
+            // No limit on a constrained retry: reasoning can use up a small one (ADR 0002).
+            max_tokens: profile.max_output.filter(|_| constrained.is_none()),
             temperature: profile.temperature,
             stop: profile.stop.clone(),
+            response_format: constrained,
         };
-        let mut reply = Reply::default();
+        let mut reply = Reply {
+            quiet,
+            ..Reply::default()
+        };
         let mut splitter = ThinkSplitter::default();
         let stream = match self.provider.chat(request, turn.cancel.clone()).await {
             Ok(stream) => stream,

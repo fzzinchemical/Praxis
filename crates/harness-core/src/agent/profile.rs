@@ -16,6 +16,7 @@ pub struct ProfileLayer {
     pub temperature: Option<f64>,
     pub stop: Option<Vec<String>>,
     pub strip_thinking: Option<bool>,
+    pub constrained_retry: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +28,9 @@ pub struct ModelProfile {
     pub temperature: Option<f64>,
     pub stop: Vec<String>,
     pub strip_thinking: bool,
+    /// Retry a malformed call under its schema (SPEC §5.3). Falls back to a plain retry if the
+    /// server rejects that. Off until a model is reported: support is unknown until then.
+    pub constrained_retry: bool,
     /// Shown once, before the first turn.
     pub warning: Option<String>,
 }
@@ -40,6 +44,7 @@ impl Default for ModelProfile {
             temperature: None,
             stop: Vec::new(),
             strip_thinking: true,
+            constrained_retry: false,
             warning: None,
         }
     }
@@ -52,6 +57,7 @@ impl ModelProfile {
         self.tool_format = layer.tool_format.unwrap_or(self.tool_format);
         self.temperature = layer.temperature.or(self.temperature);
         self.strip_thinking = layer.strip_thinking.unwrap_or(self.strip_thinking);
+        self.constrained_retry = layer.constrained_retry.unwrap_or(self.constrained_retry);
         if let Some(stop) = &layer.stop {
             self.stop.clone_from(stop);
         }
@@ -93,6 +99,7 @@ pub fn resolve(
             profile.apply(layer);
         }
     }
+    profile.constrained_retry = capabilities.is_some();
     let no_tools = capabilities.is_some_and(|c| !c.trained_for_tool_use);
     if no_tools && profile.tool_format == ToolFormat::Native {
         profile.tool_format = ToolFormat::HermesText;
@@ -127,10 +134,10 @@ mod tests {
 
     #[test]
     fn an_unknown_model_with_tools_is_native_with_no_warning() {
-        assert_eq!(
-            resolve("google/gemma", Some(&caps(true)), &[]),
-            ModelProfile::default()
-        );
+        let got = resolve("google/gemma", Some(&caps(true)), &[]);
+        assert_eq!(got.tool_format, ToolFormat::Native);
+        assert_eq!(got.warning, None);
+        assert!(got.constrained_retry);
     }
 
     #[test]
@@ -182,6 +189,12 @@ mod tests {
         assert_eq!(got.temperature, Some(0.2));
         assert_eq!(got.stop, ["x"]);
         assert!(!got.strip_thinking);
+    }
+
+    #[test]
+    fn a_user_can_turn_constrained_retry_off() {
+        let layers = [user("m", json!({"constrained_retry": false}))];
+        assert!(!resolve("m", Some(&caps(true)), &layers).constrained_retry);
     }
 
     #[test]

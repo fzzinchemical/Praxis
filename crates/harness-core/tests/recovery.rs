@@ -155,6 +155,7 @@ async fn decode(bytes: Vec<u8>) -> (String, Vec<ToolCall>) {
         max_tokens: None,
         temperature: None,
         stop: Vec::new(),
+        response_format: None,
     };
     let stream = provider
         .chat(request, CancellationToken::new())
@@ -374,4 +375,86 @@ async fn turning_off_strip_thinking_keeps_think_tags_as_text() {
     };
     let run = run_with(vec![text_reply("<think>a</think>b")], profile, &dir).await;
     assert!(!run.saw("thinking:"), "{:?}", run.events);
+}
+
+fn constrained() -> ModelProfile {
+    ModelProfile {
+        constrained_retry: true,
+        ..ModelProfile::default()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_malformed_call_retries_under_its_schema_using_the_recorded_reply() {
+    let dir = workspace();
+    let bad = native_reply("c1", "Read", "{}");
+    let bodies = vec![bad, recording("response_format.sse"), text_reply("done")];
+    let run = run_with(bodies, constrained(), &dir).await;
+
+    let retry = run.body(1).await;
+    assert!(retry.get("tools").is_none());
+    assert!(retry.get("max_tokens").is_none());
+    let format = &retry["response_format"];
+    assert_eq!(format["type"], "json_schema");
+    assert_eq!(format["json_schema"]["name"], "Read");
+    let required = &format["json_schema"]["schema"]["required"];
+    assert_eq!(required, &json!(["file_path"]));
+
+    let next = run.body(2).await;
+    assert!(next.get("response_format").is_none());
+    assert!(next.get("tools").is_some());
+    let call = &next["messages"][4]["tool_calls"][0]["function"];
+    assert_eq!(call["name"], "Read");
+    assert_eq!(call["arguments"], r#"{"file_path":"src/main.rs"}"#);
+    assert_eq!(run.events.iter().filter(|e| *e == "text").count(), 1);
+    assert_eq!(run.events.last().unwrap(), "ended:EndTurn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn constrained_output_is_still_validated_and_goes_through_permissions() {
+    let dir = workspace();
+    let bad = native_reply("c1", "Write", r#"{"file_path":"a"}"#);
+    let bodies = vec![
+        bad,
+        text_reply(r#"{"file_path":"a"}"#),
+        text_reply(r#"{"file_path":"a","content":"hi"}"#),
+        text_reply("done"),
+    ];
+    let run = run_with(bodies, constrained(), &dir).await;
+
+    assert_eq!(run.events.iter().filter(|e| *e == "ask:Write").count(), 1);
+    assert_eq!(fs::read_to_string(dir.join("a")).unwrap(), "hi");
+    assert_eq!(run.agent.parse_failures(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_rejecting_the_schema_falls_back_to_a_plain_retry() {
+    let dir = workspace();
+    let bad = native_reply("c1", "Read", "{}");
+    let rejected =
+        b"event: error\ndata: {\"error\":{\"message\":\"failed to parse grammar\"}}\n\n".to_vec();
+    let bodies = vec![bad, rejected, text_reply("done")];
+    let run = run_with(bodies, constrained(), &dir).await;
+
+    assert_eq!(run.events.last().unwrap(), "ended:EndTurn");
+    assert!(run.saw("notice:"), "{:?}", run.events);
+    let plain = run.body(2).await;
+    assert!(plain.get("response_format").is_none());
+    assert!(plain.get("tools").is_some());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_tool_gets_a_plain_retry() {
+    let dir = workspace();
+    let bad = native_reply("c1", "Nope", "{}");
+    let run = run_with(vec![bad, text_reply("done")], constrained(), &dir).await;
+    assert!(run.body(1).await.get("response_format").is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_profile_without_constrained_retry_never_sends_a_schema() {
+    let dir = workspace();
+    let bad = native_reply("c1", "Read", "{}");
+    let run = run(vec![bad, text_reply("done")], ToolFormat::Native, &dir).await;
+    assert!(run.body(1).await.get("response_format").is_none());
 }

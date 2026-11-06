@@ -261,7 +261,7 @@ flowchart LR
   - **Needs:** T2.4.
   - **Done when:** fixture outputs keep exit codes, all failing tests and stack traces; full output stays in the spool; evals show no drop in success, or the feature is switched off by default and the result recorded.
 
-- [ ] **T2.12 Constrained retry** (§5.3) · *Should*
+- [x] **T2.12 Constrained retry** (§5.3) · *Should*
   - **Needs:** T2.2, T0.3.
   - **Done when:** if T0.3 confirms support, a malformed call retries under the schema and is still validated; if not, record that in an ADR and close this task.
 

@@ -291,7 +291,7 @@ Stages, in order:
 3. **JSON repair:** double-encoded argument strings, trailing commas, code fences, literal newlines in strings, doubled braces, single-quoted strings.
 4. **Schema validation** with `jsonschema` against the tool's input schema.
 5. **On failure,** return a structured tool error to the model naming the problem and the expected shape. Allow up to 3 failures for the same call in a row, then stop with a notice.
-6. **Constrained retry (T2.12).** The retry uses LM Studio's `response_format` JSON schema, which uses grammar sampling on GGUF models. T0.3 found no `tool_calls` come back when it is set, and sending `tools` too fails outright on `qwen3.5-4b`. So omit `tools`, read arguments from `content`, and turn reasoning off or give it enough output budget. This fixes structure only, so validation and permission checks still apply. LM Studio warns that not all models support structured output, especially those under 7B.
+6. **Constrained retry (T2.12).** The retry uses LM Studio's `response_format` JSON schema, which uses grammar sampling on GGUF models. T0.3 found no `tool_calls` come back when it is set, and sending `tools` too fails outright on `qwen3.5-4b`. So omit `tools`, read arguments from `content`, and turn reasoning off or give it enough output budget. This fixes structure only, so validation and permission checks still apply. LM Studio warns that not all models support structured output, especially those under 7B, so if the server rejects the request, the turn warns and falls back to plain retries.
 
 Rules:
 
@@ -321,6 +321,7 @@ tool_format = "native"        # native | hermes-text | ...; qwen2.5-coder is tex
 temperature = 0.2
 stop = []
 strip_thinking = true
+constrained_retry = true      # on once LM Studio reports the model
 ```
 
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning. The user layer and `context` take effect once config lands (M3).

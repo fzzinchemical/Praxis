@@ -40,6 +40,7 @@ fn request() -> ChatRequest {
         max_tokens: None,
         temperature: None,
         stop: Vec::new(),
+        response_format: None,
     }
 }
 
@@ -274,6 +275,7 @@ async fn sends_an_openai_shaped_request_with_auth() {
         max_tokens: Some(16),
         temperature: None,
         stop: Vec::new(),
+        response_format: None,
     };
     assert!(collect(&provider, req).await.iter().all(Result::is_ok));
 }

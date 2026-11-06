@@ -18,6 +18,9 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
     pub stop: Vec<String>,
+    /// Constrains the reply's `content` to this tool's arguments. LM Studio then returns no
+    /// `tool_calls`, and `tools` must stay empty or some models fail (SPEC §5.3).
+    pub response_format: Option<ToolSchema>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +112,11 @@ fn request_body(req: &ChatRequest) -> Value {
     }
     if let Some(max_tokens) = req.max_tokens {
         body["max_tokens"] = max_tokens.into();
+    }
+    if let Some(tool) = &req.response_format {
+        body["response_format"] = json!({"type": "json_schema", "json_schema": {
+            "name": tool.name, "strict": true, "schema": tool.parameters,
+        }});
     }
     if let Some(temperature) = req.temperature {
         body["temperature"] = temperature.into();
