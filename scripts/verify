@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Single entry point for format, lint and tests (SPEC §14). CI calls this too.
+# Single entry point for format, lint and tests (SPEC §14).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

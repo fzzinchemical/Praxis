@@ -149,7 +149,7 @@ flowchart TB
 - Spike: measure prefix-cache gains on real prompts
 - Spike: minimal ACP agent, tested in-process
 - Spike: Rust-only VS Code extension through `wasm-bindgen`, packaged with no npm
-- Set up the repo: git, `AGENTS.md`, `scripts/verify`, CI, a fake LM Studio server for deterministic tests
+- Set up the repo: git, `AGENTS.md`, `scripts/verify`, a fake LM Studio server for deterministic tests
 - Write 10-15 eval tasks (fix a seeded bug, multi-file rename, add a test) on fixture repos
 
 ✅ **Done when:** spike results are recorded as ADRs and the go/no-go is decided.

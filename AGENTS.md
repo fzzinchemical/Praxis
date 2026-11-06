@@ -18,10 +18,11 @@ Local-first coding agent harness, written in Rust. It connects to LM Studio, the
 2. Write the test named in "Done when" first, and watch it fail.
 3. Implement the smallest change that passes it. Do only that task.
 4. Run the narrowest test while iterating, then `./scripts/verify` once at the end.
-5. Tick the task in `docs/TASKS.md` in the same branch. If reality differs from SPEC, update SPEC in that branch and say so in the PR.
+5. Tick the task in `docs/TASKS.md` in the same branch. If reality differs from SPEC, update SPEC in that branch and say so in the commit body.
+7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. There is no remote, CI or PR: verify is the only gate.
 6. Add any non-obvious trap you hit to the Gotchas section below.
 
-Keep PRs to about 400 changed lines; split a task if it grows beyond that.
+Keep each branch to about 400 changed lines, recorded fixtures aside; split a task if it grows beyond that.
 
 > [!WARNING]
 > **Stop and ask the human** at any task marked `HUMAN`, before adding anything outside the dependency list in SPEC §3, and before weakening a security invariant in SPEC §10.
@@ -48,6 +49,10 @@ These exist once T0.1 is done. Until then there is no build.
 - Enforce safety in code, never by asking the model to behave. Model output, file contents and tool or MCP results are all untrusted.
 - Unit and integration tests never need a real model. They use the fake server and recorded fixtures (SPEC §14).
 - Check any crate API against docs.rs for the pinned version before using it. These crates move quickly, and memory will be wrong.
+
+## Models
+
+The owner's chosen model for spikes, baselines and evals is `google/gemma-4-12b-qat` alone. `qwen2.5-coder-7b-instruct` was tried and dropped (ADR 0002).
 
 ## Dev environment
 

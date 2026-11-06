@@ -3,7 +3,7 @@
 The ordered work list and the source of truth for status. Workflow is in [AGENTS.md](../AGENTS.md); `§` refers to [SPEC.md](SPEC.md).
 
 > [!IMPORTANT]
-> Take the first unchecked task whose dependencies are done. Each task is one branch and one PR of about 400 lines; split it if it grows. "Done when" names the check that proves it, so write that check first. `HUMAN` means stop and get a person's input or decision. Tasks marked *Should* or *Could* can be cut if the owner chooses ([priorities](USER_STORIES.md)); unmarked tasks are Must or enabling work.
+> Take the first unchecked task whose dependencies are done. Each task is one branch of about 400 lines, merged locally; split it if it grows. "Done when" names the check that proves it, so write that check first. `HUMAN` means stop and get a person's input or decision. Tasks marked *Should* or *Could* can be cut if the owner chooses ([priorities](USER_STORIES.md)); unmarked tasks are Must or enabling work.
 
 | | Milestone | Tasks | Goal |
 |---|---|---|---|
@@ -55,12 +55,12 @@ flowchart LR
 
 - [x] **T0.1 Repository skeleton**
   - **Needs:** nothing.
-  - **Do:** `git init` with `main`; workspace per §3 with empty crates; shared lints and release profile (§2); `#![forbid(unsafe_code)]`; `.gitignore`; `scripts/verify` (§14); CI running it; PR template.
+  - **Do:** `git init` with `main`; workspace per §3 with empty crates; shared lints and release profile (§2); `#![forbid(unsafe_code)]`; `.gitignore`; `scripts/verify` (§14).
   - **Done when:** `./scripts/verify` passes on the empty workspace, and fails on a deliberately added lint violation, which is then removed.
 
 - [ ] **T0.2 Baseline existing tools** `HUMAN` decides the outcome
   - **Needs:** T0.0, T0.4.
-  - **Do:** run OpenCode and Goose on the T0.4 tasks with the chosen models; record outcomes and failure kinds in `docs/baseline.md`.
+  - **Do:** run OpenCode and Goose on the T0.4 tasks with the chosen model; record outcomes and failure kinds in `docs/baseline.md`.
   - **Done when:** `docs/baseline.md` has results per tool and model, and **the human has decided to build, narrow scope, or contribute upstream**, recorded as an ADR. The rest of this file assumes "build".
 
 - [x] **T0.3 Provider spike and fixture recording**

@@ -1,7 +1,7 @@
 # ADR 0002: LM Studio provider findings
 
 > [!NOTE]
-> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/harness-core/tests/fixtures/lmstudio/`.
+> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/harness-core/tests/fixtures/lmstudio/`. **Amended the same day:** the owner dropped qwen2.5-coder after these findings, so `gemma-4-12b-qat` is the only chosen model.
 
 ## Context
 
@@ -37,8 +37,8 @@ An early change costs the full reprocess, and so does changing `tools`, which co
 - Treat an SSE `event: error` as a failure even on HTTP 200; `exceed_context_size_error` forces compaction.
 - Address models by instance id from `ensure_ready`.
 - Constrained retry sends `response_format` for one known tool and reads the arguments from `content`. Allow enough output for reasoning on reasoning models, or turn reasoning off for that request.
-- qwen2.5-coder needs a text-call parser for the fenced format and stronger repair. Don't assume `native` from a `qwen*` name.
+- Don't assume `native` from a `qwen*` name. The fenced qwen recordings stay as malformed-output test data for recovery.
 
 ## Consequences
 
-Native calling is not universal even among the chosen models, so T2.2's recovery is required for qwen rather than an edge case. Not tested: cache eviction, concurrent clients (`parallel` loads as 4), output running past the context limit, real code prompts (the 2.1 chars per token here comes from synthetic text and does not challenge the §7 estimate), and larger contexts.
+Native calling is not universal among models LM Studio serves, so T2.2 still applies to any model a user brings, though the chosen model did not need it here. Not tested: cache eviction, concurrent clients (`parallel` loads as 4), output running past the context limit, real code prompts (the 2.1 chars per token here comes from synthetic text and does not challenge the §7 estimate), and larger contexts.
