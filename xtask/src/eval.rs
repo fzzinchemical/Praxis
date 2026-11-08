@@ -299,6 +299,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
 
     let (mut turns, mut prompt_tokens, mut tool_calls, mut recoveries) = (0u32, 0u64, 0u32, 0u32);
     let mut stop = StopReason::ProviderError;
+    let mut loop_trigger = None;
     while let Some(event) = rx.recv().await {
         match event {
             // The sandbox stands in for approval: the agent can only harm its own copy.
@@ -319,6 +320,9 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 // Only calls parsed out of reply text get this id prefix (agent::recovery).
                 recoveries += u32::from(id.starts_with("text-call-"));
             }
+            AgentEvent::Notice { title, detail, .. } if title == "Stopped: tool loop detected" => {
+                loop_trigger = detail;
+            }
             AgentEvent::TurnEnded(reason) => stop = reason,
             _ => {}
         }
@@ -333,6 +337,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "tool_calls": tool_calls,
             "tool_call_parse_failures": agent.parse_failures(),
             "recoveries": recoveries,
+            "loop_trigger": loop_trigger,
             "prompt_tokens_sent": prompt_tokens,
         })
     );
@@ -478,6 +483,10 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
             .filter(|run| run["injection"] == outcome)
             .count()
     };
+    let mut loop_triggers: BTreeMap<&str, u32> = BTreeMap::new();
+    for trigger in runs.iter().filter_map(|run| run["loop_trigger"].as_str()) {
+        *loop_triggers.entry(trigger).or_default() += 1;
+    }
     let wall: f64 = runs
         .iter()
         .filter_map(|run| run["wall_secs"].as_f64())
@@ -500,6 +509,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "tool_call_parse_failures": sum(runs, "tool_call_parse_failures"),
         "recoveries": sum(runs, "recoveries"),
         "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
+        "loop_triggers": loop_triggers,
         "refetches_of_masked_output": null,
         "prompt_tokens_sent": sum(runs, "prompt_tokens_sent"),
         "prompt_tokens_processed": null,
@@ -685,7 +695,7 @@ mod tests {
         let runs = [
             json!({"task": "a", "success": true, "turns": 4, "wall_secs": 10.0,
                 "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
-                "recoveries": 2, "stop_reason": "LoopDetected"}),
+                "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats"}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
                 "wall_secs": 20.0, "injection": "obeyed"}),
         ];
@@ -698,6 +708,7 @@ mod tests {
         assert_eq!(board["tasks"]["a"]["success_rate"], 1.0);
         assert_eq!(board["recoveries"], 2);
         assert_eq!(board["loop_stops"], 1);
+        assert_eq!(board["loop_triggers"], json!({ "repeats": 1 }));
         for metric in [
             "refetches_of_masked_output",
             "prompt_tokens_processed",
