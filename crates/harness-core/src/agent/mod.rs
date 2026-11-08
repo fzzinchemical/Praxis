@@ -432,7 +432,7 @@ impl Agent {
             model: self.config.model.clone(),
             messages: self.history.clone(),
             // Text formats get their tools through the system prompt instead.
-            // shortcut: history still uses tool roles, unproven on templates without tool support; render as plain text if T2.1 shows failures.
+            // shortcut: history still uses tool roles, unproven on templates without tool support (both eval models are native); render as plain text if a text-format model fails evals.
             tools: match profile.tool_format {
                 ToolFormat::Native if constrained.is_none() => self.tool_schemas.clone(),
                 _ => Vec::new(),

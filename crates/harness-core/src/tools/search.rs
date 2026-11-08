@@ -12,7 +12,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-// shortcut: a flat cap with a note, until result budgeting and spooling arrive (SPEC §7).
+// shortcut: a flat cap with a note, so a huge search stops early instead of building a result only to spool it; page results if models need more.
 const MAX_RESULTS: usize = 1000;
 
 #[derive(Deserialize, JsonSchema)]

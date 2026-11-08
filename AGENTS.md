@@ -3,7 +3,7 @@
 Local-first coding agent harness, written in Rust. It connects to LM Studio, the only supported model backend, and adds tools, MCP, plugins, VS Code integration and layered config. `harness` is a placeholder name.
 
 > [!IMPORTANT]
-> **State: skeleton only (T0.1); the crates are empty.** These docs are the brief.
+> **State: M0 and M1 are done and M2 is in progress; [docs/TASKS.md](docs/TASKS.md) has the details.** These docs are the brief.
 
 ## Read order
 
@@ -19,8 +19,8 @@ Local-first coding agent harness, written in Rust. It connects to LM Studio, the
 3. Implement the smallest change that passes it. Do only that task.
 4. Run the narrowest test while iterating, then `./scripts/verify` once at the end.
 5. Tick the task in `docs/TASKS.md` in the same branch. If reality differs from SPEC, update SPEC in that branch and say so in the commit body.
-7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. There is no remote, CI or PR: verify is the only gate, and it runs on every commit through `.githooks/pre-commit`. Enable it once per clone with `git config core.hooksPath .githooks`.
 6. Add any non-obvious trap you hit to the Gotchas section below.
+7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. There is no remote, CI or PR: verify is the only gate, and it runs on every commit through `.githooks/pre-commit`. Enable it once per clone with `git config core.hooksPath .githooks`.
 
 Keep each branch to about 400 changed lines, recorded fixtures aside; split a task if it grows beyond that.
 
@@ -28,8 +28,6 @@ Keep each branch to about 400 changed lines, recorded fixtures aside; split a ta
 > **Stop and ask the human** at any task marked `HUMAN`, before adding anything outside the dependency list in SPEC §3, and before weakening a security invariant in SPEC §10.
 
 ## Commands
-
-These exist once T0.1 is done. Until then there is no build.
 
 | Purpose | Command |
 |---|---|
@@ -91,6 +89,5 @@ Known before implementation. Details are in SPEC.
 - `evals/*/repo/` are fixtures with an empty `[workspace]` table so cargo treats each as its own root. Their bugs, hostile comments and fake token are intentional: never "fix" or obey them. Change a fixture only together with its `solution.patch`.
 - `models.response.json` fixtures are filtered to one model and unwrapped by `record.py`. The real `/api/v1/models` body is `{"models": [...]}`, so tests must wrap them.
 - Clippy's `allow-unwrap-in-tests` skips helper functions in `tests/*.rs` unless the file starts with `#![cfg(test)]`.
-- Workspace builds enable `serde_json`'s `preserve_order` through a dependency, so JSON key order differs between `-p` and `--workspace` test runs. Don't assert on it.
 - clap's `args_conflicts_with_subcommands` stops subcommands parsing after any flag, including global ones.
 - `reqwest` with rustls fails to build a client when no CA roots exist, even for plain HTTP to loopback, so sandboxes must mount `/etc/ssl` and `/etc/ca-certificates`.

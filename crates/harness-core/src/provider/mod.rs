@@ -69,7 +69,7 @@ fn classify_error(code: Option<&str>, message: String) -> ProviderError {
     if message.contains("No models loaded") {
         return ProviderError::NoModelLoaded;
     }
-    // shortcut: no recording of this error exists, so the wording is a guess; replace it once T2.2 sees a real one.
+    // shortcut: no recording of this error exists, so the wording is a guess; replace it once a real one is recorded.
     let lower = message.to_lowercase();
     if lower.contains("support") && lower.contains("tool") {
         return ProviderError::ToolsUnsupported { message };
