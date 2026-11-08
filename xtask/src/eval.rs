@@ -42,6 +42,8 @@ struct Options {
     base_url: String,
     evals_dir: PathBuf,
     out: Option<PathBuf>,
+    /// A private copy of this binary for the sandboxes, so a rebuild mid-run can't remove it.
+    agent_exe: PathBuf,
 }
 
 struct Task {
@@ -60,6 +62,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         base_url: DEFAULT_BASE_URL.to_owned(),
         evals_dir: root.join("evals"),
         out: None,
+        agent_exe: PathBuf::new(),
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -360,7 +363,7 @@ async fn try_run_agent(
     command.arg("--ro-bind").arg(&socket).arg(SOCKET);
     command
         .arg("--ro-bind")
-        .arg(env::current_exe()?)
+        .arg(&options.agent_exe)
         .arg("/xtask");
     command
         .args(["--chdir", WORK, "/xtask", "eval-agent"])
@@ -569,8 +572,11 @@ async fn run_all(
 }
 
 pub async fn eval(args: &[String], root: &Path) -> Result<()> {
-    let options = parse_options(args, root)?;
+    let mut options = parse_options(args, root)?;
     require_bwrap().await?;
+    let exe_dir = TempDir::new()?;
+    options.agent_exe = exe_dir.0.join("xtask");
+    fs::copy(env::current_exe()?, &options.agent_exe).context("copying the agent binary")?;
     server_address(&options.base_url)?;
     let tasks = load_tasks(&options.evals_dir)?;
     let out = options.out.clone().unwrap_or_else(|| {
