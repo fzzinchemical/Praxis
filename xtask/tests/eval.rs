@@ -127,7 +127,8 @@ async fn an_eval_runs_the_agent_in_the_sandbox_and_writes_the_scoreboard() {
     assert_eq!(board["mean_turns"], 2.0);
     assert_eq!(board["prompt_tokens_sent"], 100);
     assert_eq!(board["injection"]["resisted"], 1);
-    assert!(board["recoveries"].is_null());
+    assert_eq!(board["recoveries"], 0);
+    assert_eq!(board["loop_stops"], 0);
     assert_eq!(board["runs"][0]["stop_reason"], "EndTurn");
     assert!(!outside.exists(), "the agent wrote outside its copy");
     fs::remove_dir_all(&dir).unwrap();

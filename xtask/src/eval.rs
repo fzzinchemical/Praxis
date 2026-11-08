@@ -291,9 +291,10 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let turn_cancel = cancel.clone();
     let turn = tokio::spawn(async move {
         agent.run_turn(prompt, &tx, turn_cancel).await;
+        agent
     });
 
-    let (mut turns, mut prompt_tokens, mut tool_calls, mut invalid) = (0u32, 0u64, 0u32, 0u32);
+    let (mut turns, mut prompt_tokens, mut tool_calls, mut recoveries) = (0u32, 0u64, 0u32, 0u32);
     let mut stop = StopReason::ProviderError;
     while let Some(event) = rx.recv().await {
         match event {
@@ -310,15 +311,16 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 turns += 1;
                 prompt_tokens += u64::from(sent);
             }
-            AgentEvent::ToolStarted { input, .. } => {
+            AgentEvent::ToolStarted { id, .. } => {
                 tool_calls += 1;
-                invalid += u32::from(input.is_null());
+                // Only calls parsed out of reply text get this id prefix (agent::recovery).
+                recoveries += u32::from(id.starts_with("text-call-"));
             }
             AgentEvent::TurnEnded(reason) => stop = reason,
             _ => {}
         }
     }
-    turn.await?;
+    let agent = turn.await?;
     println!(
         "{}",
         json!({
@@ -326,7 +328,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "stop_reason": format!("{stop:?}"),
             "wall_time_exceeded": cancel.is_cancelled(),
             "tool_calls": tool_calls,
-            "tool_call_parse_failures": invalid,
+            "tool_call_parse_failures": agent.parse_failures(),
+            "recoveries": recoveries,
             "prompt_tokens_sent": prompt_tokens,
         })
     );
@@ -436,12 +439,10 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
 /// Metrics the harness can't produce yet stay null, each with its reason.
 fn null_reasons() -> Value {
     json!({
-        "recoveries": "tool-call recovery doesn't exist until T2.2",
-        "loop_stops": "loop detection doesn't exist until T2.7",
-        "refetches_of_masked_output": "output masking doesn't exist until T2.4",
+        "refetches_of_masked_output": "the agent reports no event linking a call to masked output",
         "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report",
         "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
-        "context_features_off_comparison": "no context features exist until T2.4",
+        "context_features_off_comparison": "the runner has no switch to turn context features off",
         "seed": "the provider sends no seed yet, so runs aren't reproducible",
     })
 }
@@ -485,7 +486,8 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
         "metric_notes": {
             "turns": "model requests, counted from usage reports",
-            "tool_call_parse_failures": "native tool calls whose arguments weren't a JSON object; calls written as text aren't detected until T2.2",
+            "tool_call_parse_failures": "calls rejected as invalid JSON or failing their schema (Agent::parse_failures)",
+            "recoveries": "calls parsed out of reply text; repaired JSON in native calls isn't counted",
         },
         "null_reasons": null_reasons(),
         "runs_total": runs.len(),
@@ -493,8 +495,8 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "mean_turns": sum(runs, "turns") as f64 / count,
         "mean_wall_secs": wall / count,
         "tool_call_parse_failures": sum(runs, "tool_call_parse_failures"),
-        "recoveries": null,
-        "loop_stops": null,
+        "recoveries": sum(runs, "recoveries"),
+        "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
         "refetches_of_masked_output": null,
         "prompt_tokens_sent": sum(runs, "prompt_tokens_sent"),
         "prompt_tokens_processed": null,
@@ -676,7 +678,8 @@ mod tests {
     fn the_scoreboard_counts_real_runs_and_leaves_missing_metrics_null() {
         let runs = [
             json!({"task": "a", "success": true, "turns": 4, "wall_secs": 10.0,
-                "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null}),
+                "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
+                "recoveries": 2, "stop_reason": "LoopDetected"}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
                 "wall_secs": 20.0, "injection": "obeyed"}),
         ];
@@ -687,9 +690,9 @@ mod tests {
         assert_eq!(board["prompt_tokens_sent"], 100);
         assert_eq!(board["injection"]["obeyed"], 1);
         assert_eq!(board["tasks"]["a"]["success_rate"], 1.0);
+        assert_eq!(board["recoveries"], 2);
+        assert_eq!(board["loop_stops"], 1);
         for metric in [
-            "recoveries",
-            "loop_stops",
             "refetches_of_masked_output",
             "prompt_tokens_processed",
             "prompt_tokens_cached",
