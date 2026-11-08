@@ -625,6 +625,22 @@ async fn bash_caps_captured_output_and_says_so() {
             bash("head -c 3000000 /dev/zero | tr '\\0' x", 30_000),
         )
         .await;
-    ok(&output, "output truncated");
+    ok(&output, "output truncated: 1951424 bytes omitted");
     assert!(output.content.len() < 1_100_000);
+}
+
+#[tokio::test]
+async fn bash_keeps_the_end_of_an_oversized_output() {
+    let f = Fixture::new();
+    let output = f
+        .call(
+            "Bash",
+            bash(
+                "echo first; head -c 3000000 /dev/zero | tr '\\0' x; echo; echo 'error: the last line'",
+                30_000,
+            ),
+        )
+        .await;
+    ok(&output, "first");
+    ok(&output, "error: the last line");
 }

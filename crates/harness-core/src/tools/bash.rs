@@ -9,6 +9,7 @@ use super::{ToolContext, ToolError, ToolOutput};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
@@ -20,7 +21,8 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
 /// How long to wait for output after the kill: a process that escaped the group may hold the pipe.
 const DRAIN_GRACE: Duration = Duration::from_secs(2);
-// shortcut: keeps the head of each stream, until spooling keeps the rest (SPEC §7).
+/// Per stream; the first and last halves are kept, since errors usually come last (SPEC §7).
+// shortcut: the middle of a huge stream is dropped before spooling sees it; spool while reading if the middle matters.
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 
 /// An allowlist, so a secret under an unexpected name stays out too (SPEC §9, §10).
@@ -65,13 +67,33 @@ pub fn child_env(
 
 #[derive(Default)]
 struct Captured {
-    bytes: Vec<u8>,
-    truncated: bool,
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    omitted: u64,
 }
 
 impl Captured {
+    fn push(&mut self, mut bytes: &[u8]) {
+        let half = MAX_CAPTURE_BYTES / 2;
+        let into_head = bytes.len().min(half - self.head.len());
+        self.head.extend_from_slice(&bytes[..into_head]);
+        bytes = &bytes[into_head..];
+        let overflow = (self.tail.len() + bytes.len()).saturating_sub(half);
+        let from_tail = overflow.min(self.tail.len());
+        self.tail.drain(..from_tail);
+        self.omitted += overflow as u64;
+        self.tail.extend(&bytes[overflow - from_tail..]);
+    }
+
+    /// Lossy, so a character cut at either edge of the gap shows as U+FFFD.
     fn text(&self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
+        let head = String::from_utf8_lossy(&self.head);
+        let tail: Vec<u8> = self.tail.iter().copied().collect();
+        let tail = String::from_utf8_lossy(&tail);
+        match self.omitted {
+            0 => format!("{head}{tail}"),
+            n => format!("{head}\n[output truncated: {n} bytes omitted]\n{tail}"),
+        }
     }
 }
 
@@ -85,9 +107,7 @@ async fn capture(mut pipe: impl AsyncRead + Unpin, stop: CancellationToken) -> C
             () = stop.cancelled() => break,
         };
         let Ok(n @ 1..) = read else { break };
-        let room = MAX_CAPTURE_BYTES - captured.bytes.len();
-        captured.bytes.extend_from_slice(&chunk[..n.min(room)]);
-        captured.truncated |= n > room;
+        captured.push(&chunk[..n]);
     }
     captured
 }
@@ -197,11 +217,6 @@ pub async fn run(
     };
     let (stdout, stderr) = tokio::join!(collect(stdout), collect(stderr));
 
-    if stdout.truncated || stderr.truncated {
-        notes.push(format!(
-            "[output truncated to {MAX_CAPTURE_BYTES} bytes per stream]"
-        ));
-    }
     let (stdout, stderr) = (stdout.text(), stderr.text());
     let is_error = interrupted || !matches!(&ending, Ending::Exited(Ok(s)) if s.success());
     let content: Vec<&str> = [stdout.as_str(), stderr.as_str()]
