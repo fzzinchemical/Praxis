@@ -25,6 +25,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **Developer** | Runs coding models in LM Studio on their own machine and wants a capable agent with nothing leaving it |
 | **VS Code user** | The same developer, working from the editor instead of the terminal |
 | **Plugin user** | Wants to reuse existing skills, hooks and MCP servers without rewriting them |
+| **Hybrid user** | The same developer, who opts in to a Claude model for work a local model can't do |
 | **Maintainer** | Builds the harness and needs evidence that it works |
 
 ---
@@ -41,6 +42,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **VS Code** | US-21 to US-23 | US-35 editor context, US-49 turn summary, US-50 change-set review, US-51 plan first | US-40 Zed, US-41 diagnostics, US-43 VSCodium | Marketplace publishing, proactive suggestions, automatic LLM review |
 | **Plugins** | US-24 to US-28 | US-36 agents, US-37 plugin settings | US-42 plugin `bin/` | Marketplace, JS workflows and mods, other components |
 | **Performance and evidence** | US-29 | | US-52 timed trial | |
+| **Anthropic and per-agent models** | | US-53 Anthropic backend, US-54 per-agent models | US-55 Anthropic scoreboard | Automatic model routing, other cloud providers |
 
 ---
 
@@ -132,6 +134,8 @@ Painful to leave out, but each has a workaround.
 | **US-35** | As a VS Code user, I want my active file, selection and unsaved changes available, plus a model picker, so that I don't have to spell out context. | `Read` returns unsaved buffer contents, and I can switch models in the panel. | T5.5 | Name files in the prompt, set the model in config |
 | **US-36** | As a plugin user, I want plugin agent definitions to run, so that specialised agents can take delegated work. | A delegated agent runs sequentially with its own history and tool limits. | T6.5 | Use skills instead |
 | **US-37** | As a plugin user, I want plugins to ask for their settings and keep secrets safe, so that I don't edit config by hand. | Sensitive values stay out of logs and config. | Part of T6.4 | Set environment variables |
+| **US-53** | As a hybrid user, I want to opt in to a Claude model through the same agent loop, so that hard tasks don't depend on what my GPU can run. | The same tools, permissions and sandbox apply. Only user config or a flag enables it, a repository can't, and the first request says content is leaving the machine. | T8.1-T8.5 | Use a separate tool for hard tasks |
+| **US-54** | As a hybrid user, I want each delegated agent to use its own model, local or Claude, so that each job runs on a model that fits it. | An agent's `model` resolves through aliases to either backend, falls back to the session model, and never switches to a disabled backend. | T8.6 | Restart the session with another `--model` |
 | **US-45** | As a developer, I want repeat reads of unchanged files to be cheap and stale files flagged, so that context isn't wasted and the agent isn't misled. | A stub replaces unchanged content, with full content once masked or changed. Evals show no loss. | T2.10 | Larger context |
 | **US-46** | As a developer, I want noise removed from command output, so that logs don't crowd out the task. | Exit codes, failures and stack traces are always kept, and the full output stays available. Evals show no loss. | T2.11 | Truncation from US-07 |
 | **US-47** | As a developer, I want malformed tool calls retried under a schema where supported, so that fewer turns are wasted. | The retry is still validated, or an ADR records that LM Studio can't do it. | T2.12 | Plain retry from US-05 |
@@ -155,6 +159,7 @@ The first things to cut.
 | **US-42** | As a plugin user, I want plugin `bin/` tools on the agent's `PATH`, so that plugins can ship command-line tools. | Part of T6.4 |
 | **US-43** | As a VS Code user, I want the extension to work in VSCodium, so that I can avoid the proprietary build. | Part of T5.6 |
 | **US-52** | As a maintainer, I want a timed trial of real tasks with and without the harness, so that its value is measured rather than felt. | T7.5 |
+| **US-55** | As a maintainer, I want a scoreboard on a Claude model, so that local results have a reference ceiling. | T8.7 |
 
 ---
 
@@ -164,10 +169,10 @@ Not stories to build, but recorded so nobody builds them by accident.
 
 | Feature | Why not | Revisit if |
 |---|---|---|
-| **Ollama, other OpenAI-compatible servers, cloud providers** | LM Studio is the only backend | LM Studio stops meeting the need |
+| **Ollama, other OpenAI-compatible servers, cloud providers other than Anthropic** | LM Studio plus opt-in Anthropic covers the need ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)) | Those two stop meeting the need |
 | **Hosting or running models** | The harness connects to a server | Not planned |
 | **Parallel subagents** | One GPU means contention or model swaps | Hardware allows real parallelism |
-| **Model routing** | Swapping models costs load time | M2 measurements show a gain |
+| **Automatic model routing** | Swapping local models costs load time; US-54 lets the user choose per agent instead | M2 measurements show a gain |
 | **Embeddings or RAG index** | The repo map and `Grep` come first | Evals show they aren't enough |
 | **Plugin marketplace** | Git URLs are enough | Plugin sharing becomes common |
 | **VS Code Marketplace publishing** | Local `.vsix` install is enough, and publishing without `vsce` is unresolved | Others want to install it |
@@ -200,13 +205,13 @@ These tasks have no user story because they make the rest possible. They aren't 
 
 Task counts are only a rough proxy for effort.
 
-| Scope | Must tasks | Share of 44 feature tasks |
+| Scope | Must tasks | Share of 60 feature tasks |
 |---|---|---|
-| **As requested** | 37 | 70% |
-| Plugins moved to Should | 31 | 58% |
-| Plugins and VS Code moved to Should | 26 | 49% |
+| **As requested** | 37 | 62% |
+| Plugins moved to Should | 31 | 52% |
+| Plugins and VS Code moved to Should | 26 | 43% |
 
-The research work added one Must task and eight optional ones, so the share fell from 82% only because the total grew. Must itself got slightly bigger. Moving plugins out of Must now reaches the 60% guideline, but that's a decision for the project owner. Plugins are the natural candidate: they come last, they build on MCP, and a working release is still useful without them.
+The research work added one Must task and eight optional ones, so the share fell from 82% only because the total grew. Must itself got slightly bigger. Moving plugins out of Must now reaches the 60% guideline, but that's a decision for the project owner. M8 (ADR 0004) added seven Should or Could tasks and no Must ones, so as requested the share is now close to the guideline. Plugins are the natural candidate: they come last, they build on MCP, and a working release is still useful without them.
 
 > [!NOTE]
 > Should and Could tasks are marked in [TASKS.md](TASKS.md). No Must task depends on one, so they can be cut without blocking anything. Agents still build them in order unless the project owner says otherwise.

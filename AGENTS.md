@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Local-first coding agent harness, written in Rust. It connects to LM Studio, the only supported model backend, and adds tools, MCP, plugins, VS Code integration and layered config. `harness` is a placeholder name.
+Local-first coding agent harness, written in Rust. It connects to LM Studio (the default) and, opt-in, to the Anthropic Messages API, lets each agent use its own model, and adds tools, MCP, plugins, VS Code integration and layered config. `harness` is a placeholder name.
 
 > [!IMPORTANT]
 > **State: M0 and M1 are done and M2 is in progress; [docs/TASKS.md](docs/TASKS.md) has the details.** These docs are the brief.

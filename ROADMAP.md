@@ -1,6 +1,6 @@
 # Roadmap: local-first AI coding harness
 
-**A Rust agent harness for local models served by LM Studio, with tools, MCP, plugins, VS Code integration and layered config.** Nothing leaves the machine unless the user configures it to.
+**A Rust agent harness for local models served by LM Studio, with tools, MCP, plugins, VS Code integration and layered config.** An opt-in Anthropic backend covers tasks local models can't, and each agent can run on its own model. Nothing leaves the machine unless the user configures it to.
 
 > [!NOTE]
 > **Status: planning, nothing implemented.** `harness` is a placeholder name.
@@ -53,6 +53,7 @@ flowchart TB
     subgraph outside["What it drives"]
         direction LR
         lms[("LM Studio")]
+        claude[("Anthropic API<br/>opt-in")]
         tools["Built-in tools<br/>sandboxed shell"]
         mcp["MCP servers<br/>via rmcp"]
     end
@@ -62,13 +63,14 @@ flowchart TB
     other --> acp
     acp --> core
     core --> lms
+    core -.-> claude
     core --> tools
     core --> mcp
 
     classDef harness fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef external fill:#f3f4f6,stroke:#6b7280,color:#111827
     class cli,vscode,acp,loop,context,perms,registry,plugins,sessions,tools harness
-    class other,lms,mcp external
+    class other,lms,claude,mcp external
 ```
 
 Crates: `harness-core`, `harness-cli`, and two wasm crates for the VS Code extension and its webview. The layout is in [docs/SPEC.md](docs/SPEC.md) §3.
@@ -83,7 +85,8 @@ Crates: `harness-core`, `harness-cli`, and two wasm crates for the VS Code exten
 | **Plugin format** | Claude Code's layout (`plugin.json`, `skills/`, `commands/`, `agents/`, `hooks/`, `.mcp.json`) | Existing plugins and skills become reusable, and it is plain files. |
 | **Plugin code** | External processes only | No dynamic Rust loading or WASM: hooks and MCP servers already cover extension. |
 | **Config** | TOML, layered | Defaults < user < project < env < CLI flags. |
-| **Model backend** | LM Studio only | A single backend to get right, with no provider abstraction to maintain. |
+| **Model backend** | LM Studio by default, Anthropic opt-in | Local-first stays the default. A closed two-variant enum, not a provider trait, keeps the abstraction small ([ADR 0004](docs/adr/0004-anthropic-backend-and-per-agent-models.md)). |
+| **Models per agent** | Session model plus a `model` per delegated agent, chosen by the user | Mixes local and Claude models where each fits, without automatic routing ([ADR 0004](docs/adr/0004-anthropic-backend-and-per-agent-models.md)). |
 | **Model hosting** | Out of scope | We connect to servers; we never run models. |
 
 ### LM Studio facts that shape the design
@@ -121,11 +124,13 @@ flowchart TB
     m4 --> m6["M6<br/>Plugins"]
     m5 --> m7["M7<br/>First release"]
     m6 --> m7
+    m3 --> m8["M8<br/>Anthropic and<br/>per-agent models"]
+    m6 -.-> m8
 
     classDef core fill:#dbeafe,stroke:#2563eb,color:#1e3a8a,stroke-width:3px
     classDef step fill:#f3f4f6,stroke:#6b7280,color:#111827
     class m2 core
-    class m0,m1,m3,m4,m5,m6,m7 step
+    class m0,m1,m3,m4,m5,m6,m7,m8 step
 ```
 
 | | Milestone | Size | Outcome |
@@ -138,6 +143,7 @@ flowchart TB
 | **M5** | [VS Code](#m5-vs-code-integration) | L | Fix, review and accept without leaving the editor |
 | **M6** | [Plugins](#m6-plugins) | M | An unmodified Claude Code plugin works |
 | **M7** | [First release](#m7-first-release) | S | Packaged, documented, measured |
+| **M8** | [Anthropic and per-agent models](#m8-anthropic-backend-and-per-agent-models) | M | A Claude model runs the same loop, and each agent can use its own model |
 
 ### M0: Prove the premise and answer the unknowns
 
@@ -231,6 +237,14 @@ flowchart TB
 - Threat model written down
 - Rich TUI (ratatui), only if the REPL proves insufficient in daily use
 
+### M8: Anthropic backend and per-agent models
+
+- Opt-in Anthropic backend over the Messages API: streaming, native tool calls, prompt caching, thinking kept intact ([ADR 0004](docs/adr/0004-anthropic-backend-and-per-agent-models.md), SPEC §5.6)
+- `<backend>/<model>` references and `[models]` aliases; delegated agents resolve their `model` through them
+- A repository can't turn a cloud backend on; the first cloud request in a session says so
+- Scoreboard on a Claude model as a reference ceiling for the local results
+- Needs M3 for config and trust. The per-agent part also needs T6.5. It can land before or after M7
+
 ---
 
 ## Deliberately left out
@@ -244,8 +258,8 @@ Add these only when real use demands them:
 | **Embeddings/RAG index** | Try the repo map and grep first. |
 | **Prompt compression, minification, helper models** | [Research](docs/RESEARCH.md#token-reduction) shows they harm results on code or need a second model the GPU can't spare. |
 | **Proactive suggestions** | They keep inference running on the only GPU. |
-| **Other model backends** | Ollama, other OpenAI-compatible servers and cloud providers. LM Studio is the only backend. |
-| **Model routing** (small model for summaries, big for coding) | Attractive, but swapping costs load time. Measure in M2 before building. |
+| **Other model backends** | Ollama, other OpenAI-compatible servers and cloud providers other than Anthropic. |
+| **Automatic model routing** (the harness picks the model per step) | Swapping local models costs load time. M8 lets the user or agent definition choose instead. |
 | **Windows and macOS sandboxing** | Linux first. |
 | **Telemetry** | None, ever. |
 
@@ -262,13 +276,14 @@ Add these only when real use demands them:
 | Rust-only VS Code extension proves impractical | M0 spike before any UI work; ask the project owner if it needs more than the glue ADR 0001 allows |
 | Server APIs drift (LM Studio's API has already changed versions) | Keep backend layers thin; contract tests against recorded responses |
 | Relying on a single closed-source server | Chat uses LM Studio's OpenAI-compatible route, so moving later would mostly mean replacing the thin model-management layer |
+| Cloud backend leaks code or runs up cost without the user noticing | Opt-in in user config only, a notice on first use, and repositories can't enable it (SPEC §10) |
 | Large scope for one project | Each milestone is usable alone; M2 is the priority if time runs short |
 
 ---
 
 ## Sources
 
-- [LM Studio REST API](https://lmstudio.ai/docs/developer/rest)
+- [LM Studio REST API](https://lmstudio.ai/docs/developer/rest) · [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)
 - [rmcp 3.9.0](https://docs.rs/crate/rmcp/3.9.0/source/README.md)
 - [ACP](https://zed.dev/acp) · [ACP Rust SDK](https://github.com/agentclientprotocol/rust-sdk)
 - [Open source CLI agents comparison](https://pinggy.io/blog/best_open_source_cli_coding_agents/)

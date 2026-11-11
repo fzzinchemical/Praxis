@@ -27,7 +27,7 @@ In priority order:
 3. **Fast.** See §2.
 4. **Compatible.** MCP, ACP and Claude Code's plugin layout work unmodified where supported.
 
-Out of scope: hosting models, any model backend other than LM Studio, helper models for compression or tool calling (one GPU, see [RESEARCH.md](RESEARCH.md)), plugin marketplace, RAG, parallel subagents, telemetry, Windows and macOS sandboxing.
+Out of scope: hosting models, any model backend other than LM Studio and Anthropic ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)), automatic model routing, helper models for compression or tool calling (one GPU, see [RESEARCH.md](RESEARCH.md)), plugin marketplace, RAG, parallel subagents, telemetry, Windows and macOS sandboxing.
 
 ## 2. Performance
 
@@ -58,7 +58,7 @@ Cargo.toml                 workspace, shared lints, release profile
 crates/
   harness-core/            library: everything below except front ends
     src/
-      provider/            mod.rs, chat.rs, admin.rs, stream.rs
+      provider/            mod.rs, chat.rs, admin.rs, stream.rs, anthropic.rs (T8.3)
       agent/               loop, events, recovery
       context/             budget, compaction, repo map
       tools/               builtin tools, registry
@@ -211,7 +211,9 @@ impl Provider {
 }
 ```
 
-LM Studio is the only backend. Chat goes through its OpenAI-compatible route and model management through its native API. No provider trait or enum: tests go through HTTP against the fake server, so nothing needs a mock.
+Two backends ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)). LM Studio is the default: chat goes through its OpenAI-compatible route and model management through its native API. Anthropic is opt-in (§5.6). `Provider` holds a closed `enum Backend { LmStudio, Anthropic }`, chosen by the model reference, not a trait: tests go through HTTP against the fake server, so nothing needs a mock. `ensure_ready` and `list_models` load nothing on Anthropic; they read the Models API.
+
+**Model references** are `<backend>/<model>` (`lmstudio/qwen3.5-4b`, `anthropic/claude-sonnet-5-5`) or an alias from `[models]` (§8). A bare name means LM Studio.
 
 - **Base URL:** LM Studio `http://localhost:1234` (seen on the dev machine, T0.3; configurable).
 - **Proxies:** call `.no_proxy()` on loopback clients.
@@ -297,7 +299,7 @@ Rules:
 
 - Never parse tool calls out of tool results. Recovered calls go through the same permission path as native ones.
 - Never execute a call that failed validation.
-- Strip reasoning (`<think>` blocks or a reasoning field) before storing the assistant message, so history stays compact and stable. Still emit it as `ThinkingDelta`.
+- On LM Studio, strip reasoning (`<think>` blocks or a reasoning field) before storing the assistant message, so history stays compact and stable. Still emit it as `ThinkingDelta`.
 - Record parse failures for the scoreboard (`Agent::parse_failures`).
 - A text format is parsed only when the profile selects it, and only if the reply has no native calls. "The same call" means the same tool name. Stopping uses `StopReason::LoopDetected`.
 
@@ -327,6 +329,32 @@ constrained_retry = true      # on once LM Studio reports the model
 `--model` loads with `--config-override context=` if given, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
 
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning. The user layer and `context` take effect once config lands (M3).
+
+### 5.6 Anthropic facts
+
+Opt-in backend from [ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md). Raw HTTP over `reqwest`; there is no official Rust SDK and no new crate. Facts are from Anthropic's docs as of 2026-11-03 and stay `UNVERIFIED` until T8.1 records fixtures.
+
+| Item | Fact |
+|---|---|
+| Endpoint | `POST https://api.anthropic.com/v1/messages` with `stream: true` |
+| Headers | `x-api-key` (from `anthropic.api_key_env`), `anthropic-version: 2026-10-21`, `content-type: application/json` |
+| Stream | SSE `message_start`, `content_block_start`/`_delta`/`_stop`, `message_delta` (stop reason, output usage), `message_stop`, `ping`, and `error` (which can arrive after HTTP 200) |
+| Tool calls | `tool_use` content blocks; arguments stream as `input_json_delta` pieces, assembled by block index. Results go back as `tool_result` blocks in **one** user message, with `is_error: true` for failures |
+| Tools | `input_schema` plus `strict: true`. Forced `tool_choice` (`any`, `tool`) is rejected on current models, so use `auto` |
+| Sampling | `temperature`, `top_p`, `top_k` are rejected under this API version. Profiles must not send them |
+| Thinking | `thinking: {type: "adaptive"}`, depth through `output_config.effort`. Thinking blocks must be sent back unchanged; editing earlier history can invalidate them |
+| Caching | Top-level `cache_control: {type: "ephemeral"}`; `usage.cache_read_input_tokens` and `cache_creation_input_tokens` |
+| Context | `GET /v1/models/{id}`: `max_input_tokens` (context) and `max_tokens` (output cap). Never assume it |
+| Stop reasons | `end_turn`, `tool_use`, `max_tokens`, `pause_turn`, `refusal` (check before reading content) |
+| Errors | 401 bad key, 429 rate limit and 529 overload (retry after `retry-after`, at most twice), 400 `invalid_request_error` |
+
+Mapping rules:
+
+- Text-embedded call parsing (§5.3 stage 2) and constrained retry are off; JSON repair, schema validation and the permission path stay on.
+- `refusal` ends the turn as `ProviderError` with the category in the message. `pause_turn` resends the conversation unchanged.
+- The first Anthropic request in a session emits a `Notice` naming the backend and model, because content leaves the machine.
+- `cached_tokens` in `AgentEvent::Usage` is filled from `cache_read_input_tokens`.
+- The profile layer "capabilities reported by LM Studio" (§5.5) comes from the Models API instead.
 
 ## 6. Tools
 
@@ -498,6 +526,16 @@ default_model = "your-model"
 base_url = "http://localhost:1234"
 api_key_env = "LM_API_TOKEN"      # optional; names the variable holding the token
 
+[anthropic]                       # opt-in, user config or flags only (§10)
+enabled = false
+api_key_env = "ANTHROPIC_API_KEY"
+effort = "medium"
+
+[models.sonnet]                   # aliases for --model and agents' `model:`
+model = "anthropic/claude-sonnet-5-5"
+[models.local]
+model = "lmstudio/qwen3.5-4b"
+
 [agent]
 max_turn_requests = 50
 auto_load = false
@@ -531,7 +569,7 @@ Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with 
 
 ```mermaid
 flowchart TD
-    item["Project config item"] --> never{{"lmstudio.* or sandbox.*?"}}
+    item["Project config item"] --> never{{"lmstudio.*, anthropic.* or sandbox.*?"}}
     never -->|"Yes"| ignored(["Never honoured"])
     never -->|"No"| narrows{{"Narrows, or only<br/>chooses a model?"}}
     narrows -->|"Yes"| applied(["Applied"])
@@ -549,10 +587,10 @@ flowchart TD
 
 | Project config item | Without approval |
 |---|---|
-| `deny` rules, model choice, stricter mode | Applied |
+| `deny` rules, model choice (within backends the user enabled), stricter mode | Applied |
 | `allow` rules, wider mode | Ignored with a notice |
 | MCP servers, hooks, plugins | Not started |
-| `lmstudio.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
+| `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
 | `AGENTS.md` | Loaded as context; it can't grant anything |
 
 Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json`, per project path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive.
@@ -675,10 +713,11 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 5. **Hard denials,** even under `auto-edit`: `.git/hooks/**`, `.git/config`, `.harness/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
 6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
 7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
-8. No network traffic except to the configured LM Studio server and MCP servers, and whatever the user approves.
+8. No network traffic except to the configured LM Studio server, the Anthropic API when enabled in user config or a flag, MCP servers, and whatever the user approves.
 9. Plugins are pinned to a commit, and what they can run is shown before enabling.
 10. In the webview, model text never becomes raw HTML (§11).
 11. An MCP tool whose name, description or schema changed since approval isn't offered to the model until it's approved again (§13).
+12. Project config, plugins and agent definitions can't enable a cloud backend or change its URL or key variable. An agent's `model` that resolves to a disabled backend is an error, never a silent switch (ADR 0004).
 
 ## 11. Front ends
 
@@ -842,7 +881,7 @@ Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference
 | Manifest | `.claude-plugin/plugin.json`, optional; only `name` is required | Yes. Unknown top-level keys are warnings |
 | Skills | `skills/<name>/SKILL.md` | Yes |
 | Commands | `commands/*.md` (same frontmatter as skills) | Yes, invoked as `/<plugin>:<name>` |
-| Agents | `agents/**/*.md` | Sequential only; `name`, `description`, `model`, `tools`, `disallowedTools`, `maxTurns`. `model` values like `sonnet` map through config, or fall back to the session model |
+| Agents | `agents/**/*.md` | Sequential only; `name`, `description`, `model`, `tools`, `disallowedTools`, `maxTurns`. `model` values like `sonnet` map through `[models]` aliases (§8), possibly to another backend, or fall back to the session model |
 | Hooks | `hooks/hooks.json` | `type: "command"` only |
 | MCP servers | `.mcp.json`, with or without wrapper; `mcpServers` in manifest | Yes; `.mcpb` bundles no |
 | `userConfig` | Manifest | Yes; `sensitive` values kept out of config and session logs, and stored in a `0600` file |
@@ -917,7 +956,7 @@ Start with tools, then resources and prompts.
 | Layer | What | How |
 |---|---|---|
 | Unit | Parsers, budgets, rules, recovery, config merge, hook matching | Plain `#[test]`, no I/O |
-| Integration | Agent loop, provider, tools, sessions | `wiremock` fake server with fixtures in `crates/harness-core/tests/fixtures/lmstudio/`; temp directories |
+| Integration | Agent loop, provider, tools, sessions | `wiremock` fake server with fixtures in `crates/harness-core/tests/fixtures/lmstudio/` and `.../anthropic/` (T8.1); temp directories |
 | Security | §10 invariants | `crates/harness-core/tests/security.rs` plus hostile fixture repo |
 | Protocol | ACP | In-process via the crate's `Channel` transport; mock client |
 | MCP | Client | Small test server built with `rmcp`'s server features as a dev-dependency |
@@ -948,6 +987,7 @@ Scoreboard per model: success rate, turns, wall time, tool-call parse failures, 
 
 Research behind the context, review and security decisions is in [RESEARCH.md](RESEARCH.md).
 
+- Anthropic: [Messages API](https://platform.claude.com/docs/en/api/messages/create), [streaming](https://platform.claude.com/docs/en/build-with-claude/streaming), [tool use](https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview), [prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 - LM Studio: [REST overview](https://lmstudio.ai/docs/developer/rest), [load](https://lmstudio.ai/docs/developer/rest/load), [list](https://lmstudio.ai/docs/developer/rest/list)
 - ACP: [overview](https://agentclientprotocol.com/protocol/overview), [prompt turn](https://agentclientprotocol.com/protocol/prompt-turn), [transports](https://agentclientprotocol.com/protocol/transports), [Rust crate 5.0.0](https://docs.rs/agent-client-protocol/5.0.0/agent_client_protocol/)
 - MCP: [rmcp 3.9.0](https://docs.rs/crate/rmcp/3.9.0/source/README.md), [spec 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28)
