@@ -901,7 +901,7 @@ Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference
 
 Path rules from the manifest reference: component paths must begin with `./` (`skills` may also be `.`), must exist, and must resolve inside the plugin root. `commands` and `agents` replace the default scan, `skills` adds to it, and `hooks` and `mcpServers` merge with their default files.
 
-Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/harness/plugins/`.
+Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/harness/plugins/`. `harness plugin install <path|git URL>` clones into `plugins/<name>/`, pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. The session doesn't load enabled plugins yet.
 
 ### Skills
 

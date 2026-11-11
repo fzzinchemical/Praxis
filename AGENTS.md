@@ -97,5 +97,6 @@ Known before implementation. Details are in SPEC.
 - Two `cargo xtask eval` runs on one LM Studio can race on model load and unload ("Model does not exist"), so run them one at a time.
 - LM Studio keys contain a publisher slash (`google/gemma-4-12b-qat`), so only `lmstudio/` and `anthropic/` prefixes pick a backend; anything else is a bare LM Studio name (`Config::resolve_model`).
 - `harness = false` test targets build without `cfg(test)`, so `#![cfg(test)]` removes `main` and clippy's test allowances don't apply (`tests/mcp.rs`).
+- The pre-commit hook exports `GIT_DIR` and `GIT_INDEX_FILE`, so any `git` a test spawns must `env_remove` them (and `GIT_WORK_TREE`), or it writes to this repo's index and config (`tests/plugin_cli.rs`).
 - Once the CLI starts its terminal reader, it owns stdin: later prompts must read its channel (`approve_mcp_change` uses `block_in_place`), never `stdin().read_line`.
 - The ACP crate rejects `session/new` sent before the `initialize` answer arrives, so clients and tests must wait for it. `Stdio` needs the crate's `stdio` feature.

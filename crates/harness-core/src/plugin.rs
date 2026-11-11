@@ -435,3 +435,175 @@ fn collect_markdown(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<
     }
     Ok(())
 }
+
+impl Plugin {
+    /// The plugin's command hooks: files wrap the event map in `"hooks"`, inline objects don't.
+    pub fn hooks(&self) -> Result<(Vec<crate::hooks::Hook>, Vec<String>), String> {
+        let (mut hooks, mut warnings) = (Vec::new(), Vec::new());
+        for source in &self.hooks {
+            let events = match source {
+                Source::Inline(value) => value.clone(),
+                Source::File(file) => fs::read_to_string(file)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))
+                    .map_err(|e| format!("{}: {e}", file.display()))?
+                    .get("hooks")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+            };
+            let (found, skipped) = crate::hooks::parse(&events);
+            hooks.extend(found);
+            warnings.extend(skipped);
+        }
+        Ok((hooks, warnings))
+    }
+
+    /// Everything the plugin can run, one per line, shown before it is enabled (SPEC §10.9).
+    pub fn runs(&self, data_root: &Path) -> Result<Vec<String>, String> {
+        let (hooks, warnings) = self.hooks()?;
+        let mut lines: Vec<String> = hooks
+            .iter()
+            .map(|h| {
+                let args = h.args.as_ref().map(|a| a.join(" ")).unwrap_or_default();
+                format!("hook {} {:?}: {} {args}", h.event, h.matcher, h.command)
+            })
+            .collect();
+        for (name, server) in self.mcp_servers(&self.root, data_root)? {
+            let args = server.args.join(" ");
+            lines.push(format!("MCP server {name}: {} {args}", server.command));
+        }
+        if let Ok(entries) = fs::read_dir(self.root.join("bin")) {
+            for entry in entries.flatten() {
+                lines.push(format!("bin/{}", entry.file_name().to_string_lossy()));
+            }
+        }
+        let warnings = warnings.into_iter().chain(self.warnings.iter().cloned());
+        lines.extend(warnings.map(|w| format!("warning: {w}")));
+        Ok(lines)
+    }
+}
+
+/// One entry in `installed.json`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Installed {
+    pub source: String,
+    pub commit: String,
+    pub enabled: bool,
+}
+
+/// Installed plugins under `<root>/<name>/`, their data under `<root>/data/<name>/`.
+pub struct Store {
+    pub root: PathBuf,
+}
+
+impl Store {
+    pub fn data_root(&self) -> PathBuf {
+        self.root.join("data")
+    }
+
+    pub fn list(&self) -> Result<BTreeMap<String, Installed>, String> {
+        let path = self.root.join("installed.json");
+        match fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    fn save(&self, list: &BTreeMap<String, Installed>) -> Result<(), String> {
+        let path = self.root.join("installed.json");
+        let text = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
+        fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+    }
+
+    pub fn get(&self, name: &str) -> Result<(Installed, Plugin), String> {
+        let entry = self
+            .list()?
+            .remove(name)
+            .ok_or_else(|| format!("no plugin `{name}` is installed"))?;
+        Ok((entry, load(&self.root.join(name))?))
+    }
+
+    /// Clones a git URL or local repo and pins its HEAD commit. Installs disabled.
+    // shortcut: pins the default branch's HEAD only; add `--rev` when someone needs another.
+    pub fn install(&self, source: &str) -> Result<(Installed, Plugin), String> {
+        let staging = self.root.join(".install");
+        let _ = fs::remove_dir_all(&staging);
+        fs::create_dir_all(&staging).map_err(|e| format!("{}: {e}", staging.display()))?;
+        // A plugin without a manifest is named after its directory, so keep the source's.
+        let base = source
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or("plugin");
+        let clone = staging.join(base.strip_suffix(".git").unwrap_or(base));
+        let target = clone.to_string_lossy();
+        git(&staging, &["clone", "--quiet", "--", source, &target])?;
+        let commit = git(&clone, &["rev-parse", "HEAD"])?;
+        let name = load(&clone)?.name;
+        let valid = name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !valid || name == "data" {
+            return Err(format!(
+                "plugin name `{name}` must be letters, digits, `-` or `_`, and not `data`"
+            ));
+        }
+        let mut list = self.list()?;
+        if list.contains_key(&name) {
+            return Err(format!(
+                "plugin `{name}` is already installed; remove it first"
+            ));
+        }
+        let dest = self.root.join(&name);
+        fs::rename(&clone, &dest).map_err(|e| format!("{}: {e}", dest.display()))?;
+        let _ = fs::remove_dir_all(&staging);
+        let entry = Installed {
+            source: source.to_owned(),
+            commit,
+            enabled: false,
+        };
+        list.insert(name, entry.clone());
+        self.save(&list)?;
+        Ok((entry, load(&dest)?))
+    }
+
+    pub fn set_enabled(&self, name: &str, enabled: bool) -> Result<Plugin, String> {
+        let (_, plugin) = self.get(name)?;
+        let mut list = self.list()?;
+        if let Some(entry) = list.get_mut(name) {
+            entry.enabled = enabled;
+        }
+        self.save(&list)?;
+        Ok(plugin)
+    }
+
+    /// Removes the plugin but not its data directory, which needs its own confirmation.
+    pub fn remove(&self, name: &str) -> Result<(), String> {
+        let mut list = self.list()?;
+        if list.remove(name).is_none() {
+            return Err(format!("no plugin `{name}` is installed"));
+        }
+        let dir = self.root.join(name);
+        fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        self.save(&list)
+    }
+}
+
+fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        // Inherited from a git hook, these would aim the clone at some other repo.
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env_remove("GIT_INDEX_FILE")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("git: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(format!("git {}: {}", args.join(" "), stderr.trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}

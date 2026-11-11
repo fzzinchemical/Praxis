@@ -548,7 +548,7 @@ flowchart LR
   - **Needs:** T6.2.
   - **Done when:** a delegated agent runs sequentially with its own history and tool restrictions, and returns a summary to the parent.
 
-- [ ] **T6.6 `harness plugin` commands** (§8, §12)
+- [x] **T6.6 `harness plugin` commands** (§8, §12)
   - **Needs:** T6.3, T6.4.
   - **Done when:** install from path or git pins a commit, lists what it can run before enabling, and removal cleans up, with data removal confirmed separately.
 

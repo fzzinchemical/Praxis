@@ -59,6 +59,105 @@ enum Command {
     Models,
     /// Serve the Agent Client Protocol on stdio, for editors.
     Acp,
+    /// Install, list, enable, disable or remove plugins (SPEC §12).
+    #[command(subcommand)]
+    Plugin(PluginCommand),
+}
+
+#[derive(Subcommand)]
+enum PluginCommand {
+    /// Clone a git URL or local repo, pin its commit and show what it can run. Starts disabled.
+    Install {
+        source: String,
+    },
+    List,
+    /// Show what the plugin can run, then enable it.
+    Enable {
+        name: String,
+    },
+    Disable {
+        name: String,
+    },
+    /// Remove the plugin. Its data is kept unless removal is confirmed separately.
+    Remove {
+        name: String,
+        /// Also delete `plugins/data/<name>/` without asking.
+        #[arg(long)]
+        delete_data: bool,
+    },
+}
+
+/// `harness plugin ...`: no model or server needed.
+fn plugin_command(command: PluginCommand) -> Result<u8> {
+    let root = xdg_path("XDG_DATA_HOME", ".local/share", "plugins")
+        .ok_or_else(|| anyhow::anyhow!("no XDG_DATA_HOME or HOME to install plugins under"))?;
+    std::fs::create_dir_all(&root)?;
+    let store = harness_core::plugin::Store { root };
+    let show = |plugin: &harness_core::plugin::Plugin| -> Result<()> {
+        println!("{} can run:", plugin.name);
+        for line in plugin
+            .runs(&store.data_root())
+            .map_err(anyhow::Error::msg)?
+        {
+            println!("  {}", sanitize(&line));
+        }
+        Ok(())
+    };
+    match command {
+        PluginCommand::Install { source } => {
+            let (entry, plugin) = store.install(&source).map_err(anyhow::Error::msg)?;
+            show(&plugin)?;
+            println!("Installed {} at {}, disabled.", plugin.name, entry.commit);
+            println!("Run `harness plugin enable {}` to enable it.", plugin.name);
+        }
+        PluginCommand::List => {
+            for (name, entry) in store.list().map_err(anyhow::Error::msg)? {
+                let state = if entry.enabled { "enabled" } else { "disabled" };
+                println!(
+                    "{name} {} {state} {}",
+                    entry.commit,
+                    sanitize(&entry.source)
+                );
+            }
+        }
+        PluginCommand::Enable { name } => {
+            show(&store.get(&name).map_err(anyhow::Error::msg)?.1)?;
+            store.set_enabled(&name, true).map_err(anyhow::Error::msg)?;
+            println!("Enabled {name}.");
+        }
+        PluginCommand::Disable { name } => {
+            store
+                .set_enabled(&name, false)
+                .map_err(anyhow::Error::msg)?;
+            println!("Disabled {name}.");
+        }
+        PluginCommand::Remove { name, delete_data } => {
+            store.remove(&name).map_err(anyhow::Error::msg)?;
+            println!("Removed {name}.");
+            let data = store.data_root().join(&name);
+            if !data.exists() {
+                return Ok(0);
+            }
+            let confirmed = delete_data
+                || std::io::stdin().is_terminal() && {
+                    ask(&format!(
+                        "Also delete its data at {}? [y/N]: ",
+                        data.display()
+                    ));
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).is_ok()
+                        && parse_reply(&line, false) == PermissionReply::AllowOnce
+                };
+            if confirmed {
+                std::fs::remove_dir_all(&data)?;
+                println!("Deleted {}.", data.display());
+            } else {
+                let data = data.display();
+                println!("Kept its data at {data}. Pass --delete-data to remove it too.");
+            }
+        }
+    }
+    Ok(0)
 }
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.
@@ -467,8 +566,10 @@ async fn run(
     workspace: PathBuf,
     provider: Provider,
 ) -> Result<u8> {
-    if matches!(cli.command, Some(Command::Models)) {
-        return list_models(&provider).await;
+    match cli.command {
+        Some(Command::Models) => return list_models(&provider).await,
+        Some(Command::Plugin(command)) => return plugin_command(command),
+        Some(Command::Acp) | None => {}
     }
     let acp = matches!(cli.command, Some(Command::Acp));
     // In ACP mode stdin carries the protocol, so nobody can answer at a terminal.
