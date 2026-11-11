@@ -111,6 +111,7 @@ fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {
         .current_dir(dir)
         // Keeps the developer's own user config out of the tests.
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
         .args([
             "--config-override",
             &format!("lmstudio.base_url={server_url}"),
@@ -386,6 +387,7 @@ async fn in_terminal(url: &str, dir: &Path, args: &str, typed: &str) -> Output {
         .args(["-qec", &cmd, "/dev/null"])
         .current_dir(dir)
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
+        .env("XDG_DATA_HOME", dir.join("xdg-data"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -431,6 +433,28 @@ async fn repl_asks_to_load_then_asks_before_writing_and_keeps_context_between_pr
     // The prompt shows the exact path, and Write may offer "always".
     assert!(out(&output).contains(approved.to_str().unwrap()));
     assert!(out(&output).contains("[a]lways"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn approving_project_config_at_the_terminal_is_remembered() {
+    let dir = workspace();
+    fs::create_dir_all(dir.join(".harness")).unwrap();
+    fs::write(
+        dir.join(".harness/config.toml"),
+        "[agent]\nauto_load = true\n",
+    )
+    .unwrap();
+    let server = server(None, Replies(vec![text_reply("one"), text_reply("two")])).await;
+
+    let output = in_terminal(&server.uri(), &dir, "--model m hi", "y\n").await;
+    assert_eq!(output.status.code(), Some(0), "{}", out(&output));
+    assert!(out(&output).contains("wants to widen"), "{}", out(&output));
+    assert_eq!(requests_to(&server, LOAD).await.len(), 1);
+
+    // Stored: a later non-interactive run uses it without asking.
+    let output = run(&server, &dir, &["--model", "m", "again"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(!err(&output).contains("Ignored"), "{}", err(&output));
 }
 
 #[tokio::test(flavor = "multi_thread")]

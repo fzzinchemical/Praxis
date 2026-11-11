@@ -518,7 +518,7 @@ flowchart LR
     class final result
 ```
 
-Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `sandbox.*`, `agent.auto_load`, `permissions.allow` and any `permissions.mode` wider than the user's, with a notice.
+Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below.
 
 Variables and flags use dotted keys: `HARNESS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `HARNESS_LOG_CONTENT` is not a config key.
 
@@ -597,7 +597,9 @@ flowchart TD
 | `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
 | `AGENTS.md` | Loaded as context; it can't grant anything |
 
-Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json`, per project path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive.
+Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
+
+The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. MCP servers, hooks and plugins join this list in their own tasks. The hostile fixture in `crates/harness-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
 
 ### Sessions
 

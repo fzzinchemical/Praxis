@@ -325,7 +325,7 @@ flowchart LR
   - **Do:** `harness sandbox-exec`; `Bash` always uses it.
   - **Done when:** tests prove a sandboxed command can't write outside the workspace, read `~/.ssh` (use a fake home), or open a TCP connection; and that it refuses to run when Landlock is unavailable (simulate through injected ABI check).
 
-- [ ] **T3.4 Trust gate** (§8)
+- [x] **T3.4 Trust gate** (§8)
   - **Needs:** T3.1.
   - **Done when:** the hostile fixture repo can't activate anything without approval; changing approved content needs re-approval; and project `sandbox.*` and `lmstudio.*` are ignored even after approval.
 

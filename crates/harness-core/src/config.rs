@@ -6,9 +6,10 @@ use crate::agent::DEFAULT_MAX_TURN_REQUESTS;
 use crate::agent::profile::ProfileLayer;
 use crate::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use crate::permissions::Mode;
+use crate::trust::{TrustStore, hash};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use toml::{Table, Value};
 
@@ -17,15 +18,8 @@ const ENV_PREFIX: &str = "HARNESS_";
 const ENV_RESERVED: [&str; 1] = ["HARNESS_LOG_CONTENT"];
 /// Lists that append across layers instead of replacing.
 const MERGED_LISTS: [&str; 2] = ["permissions.allow", "permissions.deny"];
-// shortcut: until the trust gate (T3.4), project config drops everything that could widen
-// what runs; T3.4 lets approved widening items through. `lmstudio` and `sandbox` stay dropped
-// for good (SPEC §8).
-const PROJECT_DROPPED: [&str; 4] = [
-    "lmstudio",
-    "sandbox",
-    "agent.auto_load",
-    "permissions.allow",
-];
+/// Never honoured from project config, even when approved (SPEC §8, §10).
+const PROJECT_NEVER: [&str; 2] = ["lmstudio", "sandbox"];
 
 /// The effective config. Every key has a default, so any layer may set any subset.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -131,6 +125,8 @@ pub struct Sources {
     pub env: Vec<(String, String)>,
     /// `--config-override` entries, as `KEY=VALUE` with dotted keys.
     pub overrides: Vec<String>,
+    /// Where approvals of widening project config persist. `None` keeps none between runs.
+    pub trust: Option<TrustStore>,
 }
 
 #[derive(Debug)]
@@ -155,7 +151,18 @@ fn error(origin: &str, message: impl ToString) -> ConfigError {
     }
 }
 
+/// Loads without anyone to ask, so widening project config stays inactive unless it was
+/// approved before.
 pub fn load(sources: Sources) -> Result<Loaded, ConfigError> {
+    load_with_approval(sources, &mut |_, _| false)
+}
+
+/// `approve(project config path, widening items as TOML)` asks the user. It is only called
+/// when the items differ from what was approved before.
+pub fn load_with_approval(
+    sources: Sources,
+    approve: &mut dyn FnMut(&Path, &str) -> bool,
+) -> Result<Loaded, ConfigError> {
     let mut merged = Table::new();
     let mut notices = Vec::new();
     if let Some(path) = &sources.user {
@@ -163,21 +170,39 @@ pub fn load(sources: Sources) -> Result<Loaded, ConfigError> {
     }
     if let Some(path) = &sources.project {
         let mut project = read_file(path)?;
-        for key in PROJECT_DROPPED {
-            if remove(&mut project, key) {
+        for key in PROJECT_NEVER {
+            if remove(&mut project, key).is_some() {
                 notices.push(format!(
                     "Ignored `{key}` from {}: project config can't set it.",
                     path.display()
                 ));
             }
         }
-        // A project may make the mode stricter, never wider.
-        if mode_of(&project) > Some(mode_of(&merged).unwrap_or_default()) {
-            remove(&mut project, "permissions.mode");
-            notices.push(format!(
-                "Ignored `permissions.mode` from {}: project config can only make it stricter.",
-                path.display()
-            ));
+        let (widening, keys) = split_widening(&mut project, mode_of(&merged).unwrap_or_default());
+        if !keys.is_empty() {
+            let text = toml::to_string(&widening).map_err(|e| error("config", e))?;
+            let digest = hash(&text);
+            let store_error = |e: String| error("trust store", e);
+            let stored = match &sources.trust {
+                Some(store) => store.is_approved(path, &digest).map_err(store_error)?,
+                None => false,
+            };
+            let approved = stored || approve(path, &text);
+            if approved
+                && !stored
+                && let Some(store) = &sources.trust
+            {
+                store.approve(path, &digest).map_err(store_error)?;
+            }
+            if approved {
+                merge(&mut project, widening, "");
+            } else {
+                notices.push(format!(
+                    "Ignored {} from {}: widening project config needs your approval.",
+                    keys.join(", "),
+                    path.display()
+                ));
+            }
         }
         merge(&mut merged, project, "");
     }
@@ -223,15 +248,47 @@ fn entry(origin: &str, key: &str, raw: &str) -> Result<Table, ConfigError> {
         .ok()
         .and_then(|mut t| t.remove("v"))
         .unwrap_or_else(|| Value::String(raw.to_owned()));
+    let table = nested(key, value);
+    Config::deserialize(table.clone())
+        .map_err(|e| error(origin, format!("`{key}`: {}", e.message())))?;
+    Ok(table)
+}
+
+/// `a.b.c = value` as nested tables.
+fn nested(key: &str, value: Value) -> Table {
     let mut table = Table::new();
     let mut parts = key.rsplit('.');
     table.insert(parts.next().unwrap_or(key).to_owned(), value);
     for part in parts {
         table = Table::from_iter([(part.to_owned(), Value::Table(table))]);
     }
-    Config::deserialize(table.clone())
-        .map_err(|e| error(origin, format!("`{key}`: {}", e.message())))?;
-    Ok(table)
+    table
+}
+
+/// Moves the items that widen what runs out of `project`, and names them.
+fn split_widening(project: &mut Table, user_mode: Mode) -> (Table, Vec<String>) {
+    let mut keys = Vec::new();
+    if mode_of(project) > Some(user_mode) {
+        keys.push("permissions.mode");
+    }
+    if project
+        .get("permissions")
+        .and_then(|p| p.get("allow"))
+        .is_some()
+    {
+        keys.push("permissions.allow");
+    }
+    let auto_load = project.get("agent").and_then(|a| a.get("auto_load"));
+    if auto_load.and_then(Value::as_bool) == Some(true) {
+        keys.push("agent.auto_load");
+    }
+    let mut widening = Table::new();
+    for key in &keys {
+        if let Some(value) = remove(project, key) {
+            merge(&mut widening, nested(key, value), "");
+        }
+    }
+    (widening, keys.iter().map(|k| format!("`{k}`")).collect())
 }
 
 fn merge(base: &mut Table, over: Table, path: &str) {
@@ -255,14 +312,14 @@ fn merge(base: &mut Table, over: Table, path: &str) {
     }
 }
 
-/// Removes a dotted key. Returns whether it was there.
-fn remove(table: &mut Table, key: &str) -> bool {
+/// Removes a dotted key and returns its value.
+fn remove(table: &mut Table, key: &str) -> Option<Value> {
     match key.split_once('.') {
         Some((head, rest)) => match table.get_mut(head) {
             Some(Value::Table(inner)) => remove(inner, rest),
-            _ => false,
+            _ => None,
         },
-        None => table.remove(key).is_some(),
+        None => table.remove(key),
     }
 }
 

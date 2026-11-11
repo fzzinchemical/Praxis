@@ -3,9 +3,11 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::config::{Loaded, Sources, load};
+use harness_core::config::{Loaded, Sources, load, load_with_approval};
+use harness_core::permissions::Mode;
+use harness_core::trust::TrustStore;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
 fn file(content: &str) -> PathBuf {
@@ -59,6 +61,7 @@ fn later_layers_win_over_earlier_ones() {
             ("PATH", "/bin"),
         ]),
         overrides: flags(&["default_model=flag", "lmstudio.base_url=http://127.0.0.1:9"]),
+        trust: None,
     })
     .unwrap();
     let config = loaded.config;
@@ -80,6 +83,7 @@ fn permission_rule_lists_merge_and_other_values_replace() {
         project: Some(project),
         env: env(&[("HARNESS_PERMISSIONS__ALLOW", "[\"Bash(ls)\"]")]),
         overrides: flags(&["permissions.deny=[\"Write\"]"]),
+        trust: None,
     })
     .unwrap()
     .config;
@@ -194,7 +198,6 @@ fn project_config_cannot_change_the_server_or_widen_permissions() {
 
 #[test]
 fn project_config_can_make_the_mode_stricter_but_not_wider() {
-    use harness_core::permissions::Mode;
     let mode_with = |user: &str, project: &str| {
         let loaded = load(Sources {
             user: Some(file(&format!("[permissions]\nmode = \"{user}\"\n"))),
@@ -224,4 +227,131 @@ fn sandbox_settings_come_from_the_user_and_never_from_the_project() {
     assert!(config.sandbox.network);
     assert_eq!(config.sandbox.extra_read, [PathBuf::from("/data")]);
     assert!(notices.join("\n").contains("`sandbox`"), "{notices:?}");
+}
+
+const HOSTILE: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fixtures/hostile-repo/.harness/config.toml"
+);
+
+/// A copy of the hostile fixture, so a test can change it, and an empty trust store.
+fn hostile() -> (PathBuf, TrustStore) {
+    let project = file(&fs::read_to_string(HOSTILE).unwrap());
+    let store = TrustStore::new(project.with_file_name("trust.json"));
+    (project, store)
+}
+
+fn load_hostile(project: &Path, store: &TrustStore, answer: bool) -> (Loaded, Vec<String>) {
+    let mut asked = Vec::new();
+    let loaded = load_with_approval(
+        Sources {
+            project: Some(project.to_owned()),
+            trust: Some(store.clone()),
+            ..Sources::default()
+        },
+        &mut |_, items| {
+            asked.push(items.to_owned());
+            answer
+        },
+    )
+    .unwrap();
+    (loaded, asked)
+}
+
+#[test]
+fn a_hostile_project_activates_nothing_without_approval() {
+    let (project, store) = hostile();
+    let (Loaded { config, notices }, asked) = load_hostile(&project, &store, false);
+    assert_eq!(asked.len(), 1);
+    assert_eq!(config.permissions.mode, Mode::Ask);
+    assert!(config.permissions.allow.is_empty());
+    assert!(!config.agent.auto_load);
+    // Narrowing and model choice still apply.
+    assert_eq!(config.permissions.deny, ["Read(**/.env*)"]);
+    assert_eq!(config.default_model.as_deref(), Some("qwen3.5-4b"));
+    let all = notices.join("\n");
+    for key in [
+        "permissions.mode",
+        "permissions.allow",
+        "agent.auto_load",
+        "lmstudio",
+        "sandbox",
+    ] {
+        assert!(all.contains(key), "{key} not in {all}");
+    }
+    // A refusal isn't remembered as an approval.
+    let (loaded, asked) = load_hostile(&project, &store, false);
+    assert!(loaded.config.permissions.allow.is_empty());
+    assert_eq!(asked.len(), 1);
+}
+
+#[test]
+fn approval_is_remembered_until_the_content_changes() {
+    let (project, store) = hostile();
+    let (Loaded { config, .. }, asked) = load_hostile(&project, &store, true);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].contains("Bash"), "{}", asked[0]);
+    assert_eq!(config.permissions.mode, Mode::AutoEdit);
+    assert_eq!(config.permissions.allow, ["Bash"]);
+    assert!(config.agent.auto_load);
+
+    // Approved before: no prompt, still active.
+    let (loaded, asked) = load_hostile(&project, &store, false);
+    assert!(asked.is_empty());
+    assert_eq!(loaded.config.permissions.allow, ["Bash"]);
+
+    // Changing any widening item asks again, and a refusal drops all of them.
+    let changed = fs::read_to_string(&project)
+        .unwrap()
+        .replace("allow = [\"Bash\"]", "allow = [\"Bash\", \"Write\"]");
+    fs::write(&project, changed).unwrap();
+    let (loaded, asked) = load_hostile(&project, &store, false);
+    assert_eq!(asked.len(), 1);
+    assert!(loaded.config.permissions.allow.is_empty());
+    assert_eq!(loaded.config.permissions.mode, Mode::Ask);
+}
+
+#[test]
+fn server_and_sandbox_settings_are_ignored_even_after_approval() {
+    let (project, store) = hostile();
+    let (Loaded { config, .. }, asked) = load_hostile(&project, &store, true);
+    assert!(
+        !asked[0].contains("lmstudio") && !asked[0].contains("sandbox"),
+        "{}",
+        asked[0]
+    );
+    assert_eq!(config.lmstudio.base_url, "http://localhost:1234");
+    assert_eq!(config.lmstudio.api_key_env, "LM_API_TOKEN");
+    assert_eq!(config.sandbox.mode, harness_core::config::SandboxMode::On);
+    assert!(!config.sandbox.network);
+}
+
+#[test]
+fn narrowing_project_config_needs_no_approval() {
+    let project = file(
+        "default_model = \"m\"\n[permissions]\nmode = \"read-only\"\ndeny = [\"Bash\"]\n[agent]\nauto_load = false\n",
+    );
+    let (Loaded { config, notices }, asked) = load_hostile(
+        &project,
+        &TrustStore::new(project.with_file_name("t.json")),
+        false,
+    );
+    assert!(asked.is_empty());
+    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(config.permissions.mode, Mode::ReadOnly);
+}
+
+#[test]
+fn a_broken_trust_store_is_an_error_not_a_reset() {
+    let (project, store) = hostile();
+    fs::write(project.with_file_name("trust.json"), "{broken").unwrap();
+    let result = load_with_approval(
+        Sources {
+            project: Some(project),
+            trust: Some(store),
+            ..Sources::default()
+        },
+        &mut |_, _| true,
+    );
+    assert!(result.unwrap_err().to_string().contains("trust.json"));
 }

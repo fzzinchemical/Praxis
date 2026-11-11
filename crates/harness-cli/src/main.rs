@@ -13,6 +13,7 @@ use harness_core::permissions::Policy;
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::tools::ToolContext;
+use harness_core::trust::TrustStore;
 use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
@@ -51,26 +52,43 @@ enum Command {
     Models,
 }
 
-/// `$XDG_CONFIG_HOME/harness/config.toml`, else `~/.config/harness/config.toml`.
-fn user_config_path() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+/// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.
+fn xdg_path(xdg_var: &str, fallback: &str, file: &str) -> Option<PathBuf> {
+    let base = match std::env::var_os(xdg_var) {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+        _ => PathBuf::from(std::env::var_os("HOME")?).join(fallback),
     };
-    Some(base.join("harness/config.toml"))
+    Some(base.join("harness").join(file))
+}
+
+/// Only a person at a terminal can approve; anything else leaves the items inactive (SPEC §8).
+fn approve_project_config(path: &Path, items: &str) -> bool {
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    ask(&format!(
+        "\n{} wants to widen what runs here:\n{}\nApprove? Any later change asks again. [y/N]: ",
+        path.display(),
+        sanitize(items)
+    ));
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line).is_ok()
+        && parse_reply(&line, false) == PermissionReply::AllowOnce
 }
 
 fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Policy), String> {
-    let loaded = config::load(Sources {
-        user: user_config_path(),
+    let sources = Sources {
+        user: xdg_path("XDG_CONFIG_HOME", ".config", "config.toml"),
         project: Some(workspace.join(".harness/config.toml")),
         // Non-Unicode variables can't hold config values, so they're skipped.
         env: std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect(),
         overrides,
-    })
-    .map_err(|e| e.to_string())?;
+        trust: xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new),
+    };
+    let loaded = config::load_with_approval(sources, &mut approve_project_config)
+        .map_err(|e| e.to_string())?;
     for notice in &loaded.notices {
         eprintln!("{notice}");
     }
