@@ -312,7 +312,7 @@ flowchart LR
     class T1_6,T1_7,T1_9,T2_4 other
 ```
 
-- [ ] **T3.1 Layered config** (§8)
+- [x] **T3.1 Layered config** (§8)
   - **Needs:** T1.9.
   - **Done when:** tests cover precedence, list merging, and errors naming file and key for unknown keys or wrong types.
 

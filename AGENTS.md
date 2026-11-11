@@ -92,4 +92,5 @@ Known before implementation. Details are in SPEC.
 - clap's `args_conflicts_with_subcommands` stops subcommands parsing after any flag, including global ones.
 - `reqwest` with rustls fails to build a client when no CA roots exist, even for plain HTTP to loopback, so sandboxes must mount `/etc/ssl` and `/etc/ca-certificates`.
 - Grep defaults to `content`, unlike Claude Code. With file names only, small models re-grep in loops (SPEC §6).
+- CLI tests set `XDG_CONFIG_HOME` to their temp dir, or the developer's own `~/.config/harness/config.toml` changes their results.
 - Two `cargo xtask eval` runs on one LM Studio can race on model load and unload ("Model does not exist"), so run them one at a time.

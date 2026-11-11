@@ -4,25 +4,24 @@
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use harness_core::agent::profile::ProfileLayer;
 use harness_core::agent::{
-    Agent, AgentConfig, AgentEvent, DEFAULT_MAX_TURN_REQUESTS, PermissionReply, StopReason,
-    ToolOutcome, system_prompt,
+    Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome, system_prompt,
 };
-use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
+use harness_core::config::{self, Config, Sources};
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::tools::ToolContext;
 use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_BASE_URL: &str = "http://localhost:1234";
 // For models with no built-in context in their profile.
 const DEFAULT_CONTEXT: u32 = 32768;
-const API_KEY_ENV: &str = "LM_API_TOKEN";
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_CANCELLED: u8 = 130;
@@ -35,7 +34,7 @@ struct Cli {
     /// Model key. Defaults to the first model LM Studio has loaded.
     #[arg(long, global = true)]
     model: Option<String>,
-    /// base_url, context or auto_load, as KEY=VALUE.
+    /// Set a config key for this run, as KEY=VALUE with a dotted key: `agent.auto_load=true`.
     #[arg(long = "config-override", value_name = "KEY=VALUE", global = true)]
     overrides: Vec<String>,
     #[command(subcommand)]
@@ -48,30 +47,39 @@ enum Command {
     Models,
 }
 
-// shortcut: only the keys T1.9 needs, from flags alone; config files arrive with the config task.
-struct Settings {
-    base_url: String,
-    context: Option<u32>,
-    auto_load: bool,
+/// `$XDG_CONFIG_HOME/harness/config.toml`, else `~/.config/harness/config.toml`.
+fn user_config_path() -> Option<PathBuf> {
+    let base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => PathBuf::from(dir),
+        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
+    };
+    Some(base.join("harness/config.toml"))
 }
 
-fn parse_settings(overrides: &[String]) -> Result<Settings, String> {
-    let mut settings = Settings {
-        base_url: DEFAULT_BASE_URL.to_owned(),
-        context: None,
-        auto_load: false,
-    };
-    for entry in overrides {
-        let invalid = || format!("Invalid --config-override `{entry}`.");
-        let (key, value) = entry.split_once('=').ok_or_else(invalid)?;
-        match key {
-            "base_url" => value.clone_into(&mut settings.base_url),
-            "context" => settings.context = Some(value.parse().map_err(|_| invalid())?),
-            "auto_load" => settings.auto_load = value.parse().map_err(|_| invalid())?,
-            _ => return Err(format!("Unknown config key `{key}`.")),
-        }
+fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<Config, config::ConfigError> {
+    let loaded = config::load(Sources {
+        user: user_config_path(),
+        project: Some(workspace.join(".harness/config.toml")),
+        // Non-Unicode variables can't hold config values, so they're skipped.
+        env: std::env::vars_os()
+            .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+            .collect(),
+        overrides,
+    })?;
+    for notice in &loaded.notices {
+        eprintln!("{notice}");
     }
-    Ok(settings)
+    let rules = &loaded.config.permissions;
+    if !rules.allow.is_empty() || !rules.deny.is_empty() {
+        eprintln!(
+            "Permission rules in config aren't enforced yet; every tool still asks as before."
+        );
+    }
+    Ok(loaded.config)
+}
+
+fn user_profiles(config: &Config) -> Vec<(String, ProfileLayer)> {
+    config.profiles.clone().into_iter().collect()
 }
 
 /// Lines typed at the terminal, shared by the REPL and approvals. Stdin only ever counts as a
@@ -259,7 +267,7 @@ fn exit_code(stop: StopReason) -> u8 {
             EXIT_FAILURE
         }
         StopReason::MaxTurnRequests => {
-            eprintln!("Stopped at the limit of {DEFAULT_MAX_TURN_REQUESTS} requests in one turn.");
+            eprintln!("Stopped at the request limit for one turn (`agent.max_turn_requests`).");
             EXIT_FAILURE
         }
         StopReason::LoopDetected | StopReason::ProviderError => EXIT_FAILURE,
@@ -273,9 +281,9 @@ fn first_loaded(models: &[ModelInfo]) -> Option<(&ModelInfo, u32)> {
     })
 }
 
-fn load_context(model: &str, requested: Option<u32>) -> u32 {
+fn load_context(model: &str, requested: Option<u32>, profiles: &[(String, ProfileLayer)]) -> u32 {
     requested
-        .or(harness_core::agent::profile::resolve(model, None, &[]).context)
+        .or(harness_core::agent::profile::resolve(model, None, profiles).context)
         .unwrap_or(DEFAULT_CONTEXT)
 }
 
@@ -283,21 +291,21 @@ fn load_context(model: &str, requested: Option<u32>) -> u32 {
 async fn ready_model(
     provider: &Provider,
     requested: Option<String>,
-    settings: &Settings,
+    config: &Config,
     terminal: &mut Option<Terminal>,
 ) -> Result<ReadyModel, ProviderError> {
     let (model, context) = match requested {
         Some(model) => {
-            let context = load_context(&model, settings.context);
+            let context = load_context(&model, config.lmstudio.context, &user_profiles(config));
             (model, context)
         }
         None => {
             let models = provider.list_models().await?;
             let (model, loaded) = first_loaded(&models).ok_or(ProviderError::NoModelLoaded)?;
-            (model.key.clone(), settings.context.unwrap_or(loaded))
+            (model.key.clone(), config.lmstudio.context.unwrap_or(loaded))
         }
     };
-    let policy = if settings.auto_load {
+    let policy = if config.agent.auto_load {
         LoadPolicy::Allowed
     } else {
         LoadPolicy::AskFirst
@@ -361,7 +369,7 @@ async fn list_models(provider: &Provider) -> Result<u8> {
     Ok(0)
 }
 
-async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
+async fn run(cli: Cli, config: Config, workspace: PathBuf, provider: Provider) -> Result<u8> {
     if matches!(cli.command, Some(Command::Models)) {
         return list_models(&provider).await;
     }
@@ -381,7 +389,8 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
     };
     let mut terminal = interactive.then(spawn_terminal_reader);
     let interrupt = Interrupt::install();
-    let ready = ready_model(&provider, cli.model, &settings, &mut terminal).await?;
+    let requested = cli.model.or_else(|| config.default_model.clone());
+    let ready = ready_model(&provider, requested, &config, &mut terminal).await?;
     let models = provider.list_models().await?;
     let reported = models.iter().find(|m| {
         m.loaded_instances
@@ -389,10 +398,11 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             .any(|instance| instance.id == ready.instance_id)
     });
     let key = reported.map_or(ready.instance_id.as_str(), |m| m.key.as_str());
-    // shortcut: no user layer until config arrives in M3, which must also reach `load_context`.
-    let profile =
-        harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
-    let workspace = std::env::current_dir()?;
+    let profile = harness_core::agent::profile::resolve(
+        key,
+        reported.map(|m| &m.capabilities),
+        &user_profiles(&config),
+    );
     let agent = Agent::new(
         Arc::new(provider),
         Arc::new(ToolContext::new(&workspace)?),
@@ -401,8 +411,8 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
             agents_md: None,
-            mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
-            max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
+            mask_keep_turns: config.context.mask_keep_turns,
+            max_turn_requests: config.agent.max_turn_requests,
             profile,
             seed: None,
             masking: true,
@@ -425,24 +435,31 @@ async fn main() -> ExitCode {
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
         .init();
-    let cli = Cli::parse();
-    let settings = match parse_settings(&cli.overrides) {
-        Ok(settings) => settings,
-        Err(message) => {
-            eprintln!("{message}");
+    let mut cli = Cli::parse();
+    let workspace = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(error) => {
+            eprintln!("Can't read the current directory: {error}");
+            return ExitCode::from(EXIT_FAILURE);
+        }
+    };
+    let config = match load_config(&workspace, std::mem::take(&mut cli.overrides)) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("{error}");
             return ExitCode::from(EXIT_USAGE);
         }
     };
     // An unset or non-Unicode variable both just mean no key.
-    let api_key = std::env::var(API_KEY_ENV).ok();
-    let provider = match Provider::new(&settings.base_url, api_key) {
+    let api_key = std::env::var(&config.lmstudio.api_key_env).ok();
+    let provider = match Provider::new(&config.lmstudio.base_url, api_key) {
         Ok(provider) => provider,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::from(EXIT_USAGE);
         }
     };
-    match run(cli, settings, provider).await {
+    match run(cli, config, workspace, provider).await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error:#}");
@@ -457,9 +474,18 @@ mod tests {
 
     #[test]
     fn load_context_prefers_the_override_then_the_model_then_the_default() {
-        assert_eq!(load_context("qwen3.5-4b", Some(4096)), 4096);
-        assert_eq!(load_context("qwen3.5-4b", None), 131_072);
-        assert_eq!(load_context("some/unknown-model", None), DEFAULT_CONTEXT);
+        assert_eq!(load_context("qwen3.5-4b", Some(4096), &[]), 4096);
+        assert_eq!(load_context("qwen3.5-4b", None, &[]), 131_072);
+        assert_eq!(
+            load_context("some/unknown-model", None, &[]),
+            DEFAULT_CONTEXT
+        );
+        let user = ProfileLayer {
+            context: Some(2048),
+            ..ProfileLayer::default()
+        };
+        let profiles = [("qwen3*".to_owned(), user)];
+        assert_eq!(load_context("qwen3.5-4b", None, &profiles), 2048);
     }
 
     #[test]

@@ -326,9 +326,9 @@ strip_thinking = true
 constrained_retry = true      # on once LM Studio reports the model
 ```
 
-`--model` loads with `--config-override context=` if given, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
+`--model` loads with `lmstudio.context` if set, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
 
-A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning. The user layer and `context` take effect once config lands (M3).
+A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning.
 
 ### 5.6 Anthropic facts
 
@@ -518,7 +518,9 @@ flowchart LR
     class final result
 ```
 
-Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors. The project layer is untrusted and passes through the trust gate below.
+Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `agent.auto_load` and `permissions.allow` with a notice.
+
+Variables and flags use dotted keys: `HARNESS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `HARNESS_LOG_CONTENT` is not a config key.
 
 ```toml
 default_model = "your-model"
@@ -526,6 +528,7 @@ default_model = "your-model"
 [lmstudio]
 base_url = "http://localhost:1234"
 api_key_env = "LM_API_TOKEN"      # optional; names the variable holding the token
+context = 32768                   # optional; context to load a model with, over the profile's
 
 [anthropic]                       # opt-in, user config or flags only (§10)
 enabled = false
@@ -733,7 +736,7 @@ harness plugin <install|list|enable|disable|remove>
 harness sandbox-exec         hidden helper
 ```
 
-Flags: `--model`, `--mode`, `--config-override KEY=VALUE`. So far only `--model` and `--config-override` with `base_url`, `context` and `auto_load` exist. Without `--model`, the first loaded model is used. Piped stdin can't answer prompts: only a terminal can approve, so non-interactive runs deny. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled.
+Flags: `--model`, `--mode`, `--config-override KEY=VALUE`. So far only `--model` and `--config-override` exist. Without `--model`, the first loaded model is used. Piped stdin can't answer prompts: only a terminal can approve, so non-interactive runs deny. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled.
 
 Ctrl-C cancels the turn once and exits the second time. When stdout isn't a terminal, output plain text.
 

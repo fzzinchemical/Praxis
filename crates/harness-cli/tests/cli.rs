@@ -109,7 +109,12 @@ fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(BIN);
     command
         .current_dir(dir)
-        .args(["--config-override", &format!("base_url={server_url}")])
+        // Keeps the developer's own user config out of the tests.
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
+        .args([
+            "--config-override",
+            &format!("lmstudio.base_url={server_url}"),
+        ])
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -227,13 +232,55 @@ async fn non_interactive_never_loads_a_model_without_auto_load() {
 #[tokio::test(flavor = "multi_thread")]
 async fn auto_load_maps_to_an_allowed_load() {
     let server = server(None, Replies(vec![text_reply("loaded")])).await;
-    let args = ["--config-override", "auto_load=true", "--model", "m", "hi"];
+    let args = [
+        "--config-override",
+        "agent.auto_load=true",
+        "--model",
+        "m",
+        "hi",
+    ];
 
     let output = run(&server, &workspace(), &args).await;
 
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     assert_eq!(requests_to(&server, LOAD).await.len(), 1);
     assert_eq!(requests_to(&server, CHAT).await[0]["model"], "m:2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn user_config_chooses_the_model_and_allows_loading() {
+    let server = server(None, Replies(vec![text_reply("loaded")])).await;
+    let dir = workspace();
+    fs::create_dir_all(dir.join("xdg/harness")).unwrap();
+    let config = "default_model = \"m\"\n[agent]\nauto_load = true\n";
+    fs::write(dir.join("xdg/harness/config.toml"), config).unwrap();
+
+    let output = run(&server, &dir, &["hi"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert_eq!(requests_to(&server, CHAT).await[0]["model"], "m:2");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn project_config_cannot_allow_loading() {
+    let server = server(Some(1024), Replies(vec![text_reply("no")])).await;
+    let dir = workspace();
+    fs::create_dir_all(dir.join(".harness")).unwrap();
+    fs::write(
+        dir.join(".harness/config.toml"),
+        "[agent]\nauto_load = true\n",
+    )
+    .unwrap();
+
+    let output = run(&server, &dir, &["--model", "m", "hi"]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        err(&output).contains("Ignored `agent.auto_load`"),
+        "{}",
+        err(&output)
+    );
+    assert!(requests_to(&server, LOAD).await.is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -256,7 +303,8 @@ async fn usage_and_config_errors_exit_2() {
     for args in [
         vec!["--no-such-flag"],
         vec!["--config-override", "nonsense=1", "hi"],
-        vec!["--config-override", "base_url=ftp://x", "hi"],
+        vec!["--config-override", "lmstudio.base_url=ftp://x", "hi"],
+        vec!["--config-override", "agent.auto_load=maybe", "hi"],
     ] {
         let output = command("http://127.0.0.1:9", &dir, &args)
             .output()
@@ -333,10 +381,11 @@ async fn terminal_escapes_from_the_model_never_reach_the_terminal() {
 
 /// `script` gives the binary a real terminal, the only way to reach the REPL and approvals.
 async fn in_terminal(url: &str, dir: &Path, args: &str, typed: &str) -> Output {
-    let cmd = format!("'{BIN}' --config-override base_url={url} {args}");
+    let cmd = format!("'{BIN}' --config-override lmstudio.base_url={url} {args}");
     let mut child = Command::new("script")
         .args(["-qec", &cmd, "/dev/null"])
         .current_dir(dir)
+        .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
