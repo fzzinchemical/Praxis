@@ -7,6 +7,7 @@
 
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use harness_core::config::{HttpServer, McpServer, StdioServer};
+use harness_core::hooks::{Hook, Matcher};
 use harness_core::mcp::Mcp;
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
@@ -142,6 +143,17 @@ struct Run {
 }
 
 async fn run_agent(tool: &str, arguments: &str, allow: &[&str], deny: &[&str]) -> Run {
+    run_agent_with(tool, arguments, allow, deny, 100_000, Vec::new()).await
+}
+
+async fn run_agent_with(
+    tool: &str,
+    arguments: &str,
+    allow: &[&str],
+    deny: &[&str],
+    context_size: u32,
+    hooks: Vec<(Hook, std::path::PathBuf)>,
+) -> Run {
     let model = MockServer::start().await;
     let call = json!({"index": 0, "id": "c1", "function": {"name": tool, "arguments": arguments}});
     Mock::given(matchers::method("POST"))
@@ -172,7 +184,7 @@ async fn run_agent(tool: &str, arguments: &str, allow: &[&str], deny: &[&str]) -
         Arc::new(ToolContext::new(&std::env::temp_dir()).unwrap()),
         AgentConfig {
             model: "m".into(),
-            context_size: 100_000,
+            context_size,
             system_prompt: "sys".into(),
             agents_md: None,
             mask_keep_turns: 10,
@@ -183,6 +195,7 @@ async fn run_agent(tool: &str, arguments: &str, allow: &[&str], deny: &[&str]) -
             masking: true,
         },
     )
+    .with_hooks(hooks)
     .with_mcp(Arc::new(mcp));
     let (tx, mut rx) = mpsc::channel(16);
     let task = tokio::spawn(async move {
@@ -433,6 +446,109 @@ async fn http_headers_resolve_from_the_environment_without_being_logged() {
     assert!(!shown.contains(&secret), "{shown}");
 }
 
+/// Small enough that the test server's schemas pass 10% of it, so the session is indexed.
+const SMALL_CONTEXT: u32 = 1_000;
+
+fn tool_names(request: &Value) -> Vec<String> {
+    request["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn indexed(tool: &str, arguments: &str, allow: &[&str], deny: &[&str]) -> Run {
+    run_agent_with(tool, arguments, allow, deny, SMALL_CONTEXT, Vec::new()).await
+}
+
+const ECHO_CALL: &str = r#"{"name":"mcp__test__echo","arguments":{"text":"hi"}}"#;
+
+async fn indexed_mode_hides_mcp_schemas_behind_search_and_call() {
+    let run = indexed("CallTool", ECHO_CALL, &["mcp__test"], &[]).await;
+    assert!(!run.asked);
+    assert_eq!(run.output.content, "echo: hi");
+    let names = tool_names(&run.requests[0]);
+    assert!(names.contains(&"ToolSearch".to_owned()) && names.contains(&"CallTool".to_owned()));
+    assert!(!names.iter().any(|n| n.starts_with("mcp__")), "{names:?}");
+    let system = run.requests[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("- mcp__test__echo: Test tool."), "{system}");
+    // Direct mode keeps the schemas in `tools`.
+    let direct = run_agent("mcp__test__echo", r#"{"text":"hi"}"#, &["mcp__test"], &[]).await;
+    assert!(!tool_names(&direct.requests[0]).contains(&"CallTool".to_owned()));
+
+    let search = indexed("ToolSearch", r#"{"query":"echo"}"#, &[], &[]).await;
+    assert!(!search.asked);
+    let found = &search.output.content;
+    assert!(
+        found.contains("mcp__test__echo") && found.contains("required"),
+        "{found}"
+    );
+    assert!(!found.contains("mcp__test__crash"), "{found}");
+}
+
+async fn indexed_permissions_hooks_and_validation_see_the_inner_tool() {
+    let run = indexed("CallTool", ECHO_CALL, &[], &["mcp__test__echo"]).await;
+    assert!(!run.asked);
+    let out = &run.output;
+    assert!(
+        out.is_error && out.content.contains("deny rule"),
+        "{}",
+        out.content
+    );
+    // A `CallTool` rule matches nothing: the inner tool still asks.
+    assert!(
+        indexed("CallTool", ECHO_CALL, &["CallTool"], &[])
+            .await
+            .asked
+    );
+    let hook = Hook {
+        event: "PreToolUse".to_owned(),
+        matcher: Matcher::Names(vec!["mcp__test__echo".to_owned()]),
+        command: "echo hooked >&2; exit 2".to_owned(),
+        args: None,
+        timeout: Duration::from_secs(10),
+    };
+    let hooks = vec![(hook, std::env::temp_dir())];
+    let run = run_agent_with(
+        "CallTool",
+        ECHO_CALL,
+        &["mcp__test"],
+        &[],
+        SMALL_CONTEXT,
+        hooks,
+    )
+    .await;
+    let out = &run.output;
+    assert!(
+        out.is_error && out.content.contains("hooked"),
+        "{}",
+        out.content
+    );
+    let bad = r#"{"name":"mcp__test__echo","arguments":{"text":3}}"#;
+    let out = indexed("CallTool", bad, &["mcp__test"], &[]).await.output;
+    assert!(
+        out.is_error && !out.content.contains("echo:"),
+        "{}",
+        out.content
+    );
+    let builtin = r#"{"name":"Bash","arguments":{"command":"true"}}"#;
+    let run = indexed("CallTool", builtin, &[], &[]).await;
+    assert!(run.output.is_error && !run.asked, "{}", run.output.content);
+}
+
+/// The T2.5 check in indexed mode: each request extends the last byte for byte.
+async fn indexed_requests_keep_a_stable_prefix() {
+    let run = indexed("CallTool", ECHO_CALL, &["mcp__test"], &[]).await;
+    assert_eq!(run.requests.len(), 2);
+    let (old, new) = (&run.requests[0], &run.requests[1]);
+    let old_messages = old["messages"].as_array().unwrap();
+    let new_messages = new["messages"].as_array().unwrap();
+    assert!(new_messages.len() > old_messages.len());
+    assert_eq!(&new_messages[..old_messages.len()], &old_messages[..]);
+    assert_eq!(old["tools"].to_string(), new["tools"].to_string());
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -460,4 +576,10 @@ fn main() {
     println!("plugin_tools_take_the_plugin_name_and_are_pinned ... ok");
     runtime.block_on(http_headers_resolve_from_the_environment_without_being_logged());
     println!("http_headers_resolve_from_the_environment_without_being_logged ... ok");
+    runtime.block_on(indexed_mode_hides_mcp_schemas_behind_search_and_call());
+    println!("indexed_mode_hides_mcp_schemas_behind_search_and_call ... ok");
+    runtime.block_on(indexed_permissions_hooks_and_validation_see_the_inner_tool());
+    println!("indexed_permissions_hooks_and_validation_see_the_inner_tool ... ok");
+    runtime.block_on(indexed_requests_keep_a_stable_prefix());
+    println!("indexed_requests_keep_a_stable_prefix ... ok");
 }

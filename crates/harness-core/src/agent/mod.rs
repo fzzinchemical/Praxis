@@ -176,6 +176,8 @@ pub struct Agent {
     skills: Vec<Skill>,
     /// `PreToolUse` hooks from enabled plugins, with each plugin's root.
     hooks: Vec<(Hook, PathBuf)>,
+    /// Indexed mode's list of MCP tools for the prefix; empty in direct mode (SPEC §7).
+    mcp_index: String,
 }
 
 /// What one model request produced before it ended.
@@ -212,7 +214,7 @@ impl Agent {
         let tool_schemas = tools::schemas();
         let facts = SessionFacts::capture(tools.workspace());
         let (system, prefix_warning) =
-            assemble_prefix(&config, &budget, &tool_schemas, &facts, &[]);
+            assemble_prefix(&config, &budget, &tool_schemas, &facts, &[], "");
         let history = vec![Message::System { content: system }];
         let permissions = Permissions::new(config.policy.clone(), tools.workspace());
         Self {
@@ -237,6 +239,7 @@ impl Agent {
             mcp: None,
             skills: Vec::new(),
             hooks: Vec::new(),
+            mcp_index: String::new(),
         }
     }
 
@@ -248,9 +251,33 @@ impl Agent {
     }
 
     /// Adds `mcp`'s tools after the built-in ones. Call before the first turn: the tool list
-    /// is part of the prefix.
+    /// is part of the prefix. Schemas over 10% of `C` switch to indexed mode: `ToolSearch`
+    /// and `CallTool` stand in for them, and the prefix lists their names (SPEC §7).
     pub fn with_mcp(mut self, mcp: Arc<Mcp>) -> Self {
-        self.tool_schemas.extend(mcp.schemas());
+        let schemas = mcp.schemas();
+        let chars: usize = schemas
+            .iter()
+            .map(|s| s.name.len() + s.description.len() + s.parameters.to_string().len())
+            .sum();
+        if self.budget.estimate(chars) > self.budget.share(10) {
+            self.tool_schemas.extend(indexed_schemas());
+            let lines: Vec<String> = schemas
+                .iter()
+                .map(|s| {
+                    format!(
+                        "- {}: {}",
+                        s.name,
+                        s.description.lines().next().unwrap_or("")
+                    )
+                })
+                .collect();
+            self.mcp_index = format!(
+                "MCP tools (get a schema with ToolSearch, run one with CallTool):\n{}",
+                lines.join("\n")
+            );
+        } else {
+            self.tool_schemas.extend(schemas);
+        }
         self.mcp = Some(mcp);
         self.reassemble_prefix();
         self
@@ -274,6 +301,7 @@ impl Agent {
             &self.tool_schemas,
             &self.facts,
             &self.skills,
+            &self.mcp_index,
         );
         self.history[0] = Message::System { content: system };
         self.prefix_warning = warning;
@@ -536,10 +564,61 @@ impl Agent {
             .map(|(name, _)| name.clone())
     }
 
+    /// Matching MCP schemas as text, for indexed mode's `ToolSearch`.
+    fn search_tools(&self, input: &Value) -> ToolOutput {
+        let query = input["query"].as_str().unwrap_or_default().to_lowercase();
+        let words: Vec<&str> = query.split_whitespace().collect();
+        let found: Vec<String> = self
+            .mcp
+            .iter()
+            .flat_map(|mcp| mcp.schemas())
+            .filter(|s| {
+                let text = format!("{} {}", s.name, s.description).to_lowercase();
+                words.iter().any(|w| text.contains(w))
+            })
+            .map(|s| {
+                let schema = json!({"name": s.name, "description": s.description, "parameters": s.parameters});
+                format!("{schema:#}")
+            })
+            .collect();
+        if found.is_empty() {
+            return ToolOutput::error(format!("No MCP tool matches `{query}`."));
+        }
+        ToolOutput {
+            content: found.join("\n\n"),
+            is_error: false,
+            structured: Value::Null,
+        }
+    }
+
+    /// Indexed mode's `CallTool` becomes the inner call, so validation, hooks, permissions
+    /// and logs all see the MCP tool's own name (SPEC §7). Anything else is left as is.
+    fn unwrap_call_tool(&self, call: &ToolCall) -> Option<ToolCall> {
+        if self.mcp_index.is_empty() || call.name != "CallTool" {
+            return None;
+        }
+        let input = recovery::parse_arguments(&call.arguments)?;
+        let name = input.get("name")?.as_str()?;
+        self.mcp.as_ref()?.schema(name)?;
+        Some(ToolCall {
+            id: call.id.clone(),
+            name: name.to_owned(),
+            arguments: input.get("arguments").unwrap_or(&json!({})).to_string(),
+        })
+    }
+
     /// Only a call that passes this may reach the permission path (SPEC §5.3).
     fn validate(&self, name: &str, input: &Value) -> Result<(), String> {
-        let skill = (name == "Skill")
-            .then(|| self.tool_schemas.iter().find(|t| t.name == "Skill"))
+        if name == "CallTool" && !self.mcp_index.is_empty() {
+            // A valid `CallTool` was unwrapped before it got here.
+            return Err(
+                "`CallTool` needs `name` set to an MCP tool from the index and \
+                `arguments` as an object."
+                    .to_owned(),
+            );
+        }
+        let skill = matches!(name, "Skill" | "ToolSearch")
+            .then(|| self.tool_schemas.iter().find(|t| t.name == name))
             .flatten();
         match skill.or_else(|| self.mcp.as_ref()?.schema(name)) {
             Some(schema) => tools::validate_schema(schema, input),
@@ -672,6 +751,8 @@ impl Agent {
 
     /// Returns the result to show the model.
     async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> String {
+        let inner = self.unwrap_call_tool(call);
+        let call = inner.as_ref().unwrap_or(call);
         let checked = self.check_call(call);
         let input = checked.as_ref().ok();
         turn.emit(AgentEvent::ToolStarted {
@@ -693,6 +774,7 @@ impl Agent {
             Ok(input) => match self.check_permission(call, input, turn).await {
                 Ok(input) => match &self.mcp {
                     _ if call.name == "Skill" => self.load_skill(&input),
+                    _ if call.name == "ToolSearch" => self.search_tools(&input),
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }
@@ -849,10 +931,14 @@ fn assemble_prefix(
     tool_schemas: &[ToolSchema],
     facts: &SessionFacts,
     skills: &[Skill],
+    mcp_index: &str,
 ) -> (String, Option<String>) {
     let teaching = config.profile.tool_format.instructions(tool_schemas);
     let base = config.system_prompt.clone() + teaching.as_deref().unwrap_or_default();
     let mut facts = facts.render();
+    if !mcp_index.is_empty() {
+        facts = format!("{mcp_index}\n\n{facts}");
+    }
     if !skills.is_empty() {
         let index: Vec<String> = skills
             .iter()
@@ -905,6 +991,36 @@ fn title(name: &str, input: Option<&Value>) -> String {
         Some(subject) => format!("{name} {subject}"),
         None => name.to_owned(),
     }
+}
+
+/// Indexed mode's stand-ins for MCP schemas (SPEC §7).
+fn indexed_schemas() -> [ToolSchema; 2] {
+    [
+        ToolSchema {
+            name: "ToolSearch".to_owned(),
+            description: "Find MCP tools from the index; returns their full schemas.".to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "Words from a tool's name or description."}},
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        },
+        ToolSchema {
+            name: "CallTool".to_owned(),
+            description: "Run an MCP tool from the index with arguments that match its schema."
+                .to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "The tool's full name, such as `mcp__server__tool`."},
+                    "arguments": {"type": "object"}
+                },
+                "required": ["name", "arguments"],
+                "additionalProperties": false
+            }),
+        },
+    ]
 }
 
 fn skill_schema() -> ToolSchema {

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 pub const DEFAULT_MASK_KEEP_TURNS: u32 = 10;
 pub const SUMMARY_PROMPT: &str = "The conversation is being compacted. Summarise it for yourself using exactly these headings: Goal, Decisions, Files changed, Current state, Next step. Don't call any tools. Quote names and paths exactly.";
 
-pub(crate) const READ_ONLY_TOOLS: [&str; 4] = ["Read", "Grep", "Glob", "Skill"];
+pub(crate) const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "Skill", "ToolSearch"];
 const MAX_ARGUMENT_CHARS: usize = 200;
 const STUB: &str = "[Output removed.]";
 

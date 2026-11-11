@@ -392,7 +392,7 @@ flowchart LR
   - **Needs:** T4.1.
   - **Done when:** `mcp__server__tool` rules apply; oversized results truncate; a mid-session crash returns tool errors and reconnects once; `list_changed` doesn't alter the `tools` array.
 
-- [ ] **T4.4 Indexed tool mode** (§7)
+- [x] **T4.4 Indexed tool mode** (§7)
   - **Needs:** T4.3, T2.5.
   - **Done when:** above the threshold, `tools` holds only built-ins plus `ToolSearch` and `CallTool`; permission and hook checks see the inner name; the T2.5 prefix test passes in this mode.
 
