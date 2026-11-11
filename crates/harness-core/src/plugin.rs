@@ -474,8 +474,12 @@ impl Plugin {
             })
             .collect();
         for (name, server) in self.mcp_servers(&self.root, data_root)? {
-            let args = server.args.join(" ");
-            lines.push(format!("MCP server {name}: {} {args}", server.command));
+            lines.push(match server {
+                McpServer::Stdio(s) => {
+                    format!("MCP server {name}: {} {}", s.command, s.args.join(" "))
+                }
+                McpServer::Http(s) => format!("MCP server {name}: {}", s.url),
+            });
         }
         if let Ok(entries) = fs::read_dir(self.root.join("bin")) {
             for entry in entries.flatten() {
