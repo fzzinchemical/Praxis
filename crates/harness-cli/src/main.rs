@@ -471,7 +471,7 @@ async fn run(
             model: ready.instance_id,
             context_size: ready.context_length,
             system_prompt: system_prompt(&workspace),
-            agents_md: None,
+            agents_md: harness_core::context::prefix::load_agents_md(&workspace),
             mask_keep_turns: config.context.mask_keep_turns,
             max_turn_requests: config.agent.max_turn_requests,
             profile,

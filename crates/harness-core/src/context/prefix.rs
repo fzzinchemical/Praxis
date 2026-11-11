@@ -53,6 +53,13 @@ impl SessionFacts {
     }
 }
 
+/// The workspace's `AGENTS.md`, or `None` if it is missing, unreadable or a symlink leading
+/// outside. It is only prompt text: the budget trims it and it never touches the policy.
+pub fn load_agents_md(workspace: &Path) -> Option<String> {
+    let path = crate::tools::confine::resolve(workspace, "AGENTS.md").ok()?;
+    fs::read_to_string(path).ok()
+}
+
 /// The current branch from `HEAD`. The repository is untrusted and this lands in the prompt, so
 /// anything but a plain ref name counts as no branch.
 fn read_branch(workspace: &Path) -> Option<String> {
@@ -147,6 +154,22 @@ mod tests {
         assert_eq!(read_branch(&dir).as_deref(), Some("feat/a-1.2_b"));
         fs::write(dir.join(".git/HEAD"), "0123abc\n").unwrap();
         assert_eq!(read_branch(&dir), None);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn loads_agents_md_only_from_inside_the_workspace() {
+        let dir = std::env::temp_dir().join(format!("harness-agents-{}", std::process::id()));
+        let workspace = dir.join("w");
+        fs::create_dir_all(&workspace).unwrap();
+        let workspace = workspace.canonicalize().unwrap();
+        assert_eq!(load_agents_md(&workspace), None);
+        fs::write(workspace.join("AGENTS.md"), "Use tabs.").unwrap();
+        assert_eq!(load_agents_md(&workspace).as_deref(), Some("Use tabs."));
+        fs::remove_file(workspace.join("AGENTS.md")).unwrap();
+        fs::write(dir.join("secret"), "token").unwrap();
+        std::os::unix::fs::symlink(dir.join("secret"), workspace.join("AGENTS.md")).unwrap();
+        assert_eq!(load_agents_md(&workspace), None);
         fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -334,7 +334,7 @@ flowchart LR
   - **Needs:** T3.2, T3.3, T3.4.
   - **Done when:** `tests/security.rs` has a test for every invariant in §10 applicable so far, under every mode. Mark the rest as pending, naming the task that will cover them.
 
-- [ ] **T3.6 `AGENTS.md` loading** (§7) · *Should*
+- [x] **T3.6 `AGENTS.md` loading** (§7) · *Should*
   - **Needs:** T2.4.
   - **Done when:** it's loaded within budget, trimmed with a warning when oversized, and can't change permissions.
 
