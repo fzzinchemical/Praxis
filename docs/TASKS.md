@@ -651,7 +651,7 @@ flowchart LR
 - [ ] **T8.1 Record Anthropic fixtures** `HUMAN` provides a key (paid) (§5.6)
   - **Done when:** `crates/harness-core/tests/fixtures/anthropic/` holds recorded streams for a text reply, a reply with two `tool_use` blocks, adaptive thinking, a `max_tokens` stop, an SSE `error` event, a 401 and a 429 or 529, plus one `GET /v1/models/{id}` body. Each `UNVERIFIED` fact in §5.6 is confirmed or corrected.
 
-- [ ] **T8.2 Backends and model references** (§5.1, §8)
+- [x] **T8.2 Backends and model references** (§5.1, §8)
   - **Needs:** T3.1.
   - **Done when:** tests resolve `lmstudio/x`, `anthropic/x`, bare names and `[models]` aliases; an unknown backend or alias is an error naming the key; and all existing LM Studio tests pass unchanged.
 

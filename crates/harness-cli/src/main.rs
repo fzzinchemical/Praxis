@@ -450,7 +450,18 @@ async fn run(
     };
     let mut terminal = interactive.then(spawn_terminal_reader);
     let interrupt = Interrupt::install();
-    let requested = cli.model.or_else(|| config.default_model.clone());
+    let requested = match cli.model.or_else(|| config.default_model.clone()) {
+        Some(reference) => {
+            let resolved = config.resolve_model(&reference)?;
+            if resolved.backend == harness_core::config::Backend::Anthropic {
+                // shortcut: no Anthropic client yet; T8.3 adds it.
+                eprintln!("`{reference}` is an Anthropic model, which this build can't run yet.");
+                return Ok(EXIT_USAGE);
+            }
+            Some(resolved.model)
+        }
+        None => None,
+    };
     let ready = ready_model(&provider, requested, &config, &mut terminal).await?;
     let models = provider.list_models().await?;
     let reported = models.iter().find(|m| {

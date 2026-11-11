@@ -19,7 +19,7 @@ const ENV_RESERVED: [&str; 1] = ["HARNESS_LOG_CONTENT"];
 /// Lists that append across layers instead of replacing.
 const MERGED_LISTS: [&str; 2] = ["permissions.allow", "permissions.deny"];
 /// Never honoured from project config, even when approved (SPEC §8, §10).
-const PROJECT_NEVER: [&str; 2] = ["lmstudio", "sandbox"];
+const PROJECT_NEVER: [&str; 3] = ["lmstudio", "anthropic", "sandbox"];
 
 /// The effective config. Every key has a default, so any layer may set any subset.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -27,6 +27,9 @@ const PROJECT_NEVER: [&str; 2] = ["lmstudio", "sandbox"];
 pub struct Config {
     pub default_model: Option<String>,
     pub lmstudio: LmStudio,
+    pub anthropic: Anthropic,
+    /// `[models.<alias>]`, names for `--model` and agents' `model:` (SPEC §5.1).
+    pub models: BTreeMap<String, ModelAlias>,
     pub agent: AgentSettings,
     pub context: ContextSettings,
     pub permissions: PermissionRules,
@@ -54,6 +57,86 @@ impl Default for LmStudio {
             api_key_env: "LM_API_TOKEN".to_owned(),
             context: None,
         }
+    }
+}
+
+/// `[anthropic]`, opt-in and never read from project config (SPEC §5.6, §10).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Anthropic {
+    pub enabled: bool,
+    /// Names the variable holding the key; the key itself is never in config.
+    pub api_key_env: String,
+    pub effort: String,
+}
+
+impl Default for Anthropic {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key_env: "ANTHROPIC_API_KEY".to_owned(),
+            effort: "medium".to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelAlias {
+    /// Always `<backend>/<model>`; an alias can't name another alias.
+    pub model: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    LmStudio,
+    Anthropic,
+}
+
+/// A resolved model reference (SPEC §5.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRef {
+    pub backend: Backend,
+    pub model: String,
+}
+
+fn with_backend(reference: &str) -> Option<ModelRef> {
+    let (prefix, model) = reference.split_once('/')?;
+    let backend = match prefix {
+        "lmstudio" => Backend::LmStudio,
+        "anthropic" => Backend::Anthropic,
+        _ => return None,
+    };
+    Some(ModelRef {
+        backend,
+        model: model.to_owned(),
+    })
+}
+
+impl Config {
+    /// Resolves `<backend>/<model>`, an alias from `[models]`, or a bare LM Studio name.
+    /// Any other prefix stays a bare name, since LM Studio keys such as
+    /// `google/gemma-4-12b-qat` contain a publisher slash. An alias whose target lacks a
+    /// known backend is an error naming its key.
+    pub fn resolve_model(&self, reference: &str) -> Result<ModelRef, ConfigError> {
+        if let Some(resolved) = with_backend(reference) {
+            return Ok(resolved);
+        }
+        let Some(alias) = self.models.get(reference) else {
+            return Ok(ModelRef {
+                backend: Backend::LmStudio,
+                model: reference.to_owned(),
+            });
+        };
+        with_backend(&alias.model).ok_or_else(|| {
+            error(
+                &format!("models.{reference}.model"),
+                format!(
+                    "`{}` must be `lmstudio/<model>` or `anthropic/<model>`",
+                    alias.model
+                ),
+            )
+        })
     }
 }
 

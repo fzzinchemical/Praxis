@@ -213,7 +213,7 @@ impl Provider {
 
 Two backends ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)). LM Studio is the default: chat goes through its OpenAI-compatible route and model management through its native API. Anthropic is opt-in (§5.6). `Provider` holds a closed `enum Backend { LmStudio, Anthropic }`, chosen by the model reference, not a trait: tests go through HTTP against the fake server, so nothing needs a mock. `ensure_ready` and `list_models` load nothing on Anthropic; they read the Models API.
 
-**Model references** are `<backend>/<model>` (`lmstudio/qwen3.5-4b`, `anthropic/claude-sonnet-5-5`) or an alias from `[models]` (§8). A bare name means LM Studio.
+**Model references** are `<backend>/<model>` (`lmstudio/qwen3.5-4b`, `anthropic/claude-sonnet-5-5`) or an alias from `[models]` (§8). A bare name means LM Studio.  Only `lmstudio/` and `anthropic/` are backend prefixes: any other prefix is part of a bare LM Studio key (`google/gemma-4-12b-qat`), so an unknown backend can only be caught in an alias, whose `model` must carry a known prefix and can't name another alias.
 
 - **Base URL:** LM Studio `http://localhost:1234` (seen on the dev machine, T0.3; configurable).
 - **Proxies:** call `.no_proxy()` on loopback clients.

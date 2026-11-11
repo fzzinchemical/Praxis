@@ -3,7 +3,7 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::config::{Loaded, Sources, load, load_with_approval};
+use harness_core::config::{Backend, Loaded, ModelRef, Sources, load, load_with_approval};
 use harness_core::permissions::Mode;
 use harness_core::trust::TrustStore;
 use std::fs;
@@ -354,4 +354,85 @@ fn a_broken_trust_store_is_an_error_not_a_reset() {
         &mut |_, _| true,
     );
     assert!(result.unwrap_err().to_string().contains("trust.json"));
+}
+
+fn resolve(config_toml: &str, reference: &str) -> Result<ModelRef, String> {
+    let Loaded { config, .. } = load(Sources {
+        user: Some(file(config_toml)),
+        ..Sources::default()
+    })
+    .unwrap();
+    config.resolve_model(reference).map_err(|e| e.to_string())
+}
+
+fn model_ref(backend: Backend, model: &str) -> ModelRef {
+    ModelRef {
+        backend,
+        model: model.to_owned(),
+    }
+}
+
+#[test]
+fn model_references_name_their_backend() {
+    assert_eq!(
+        resolve("", "lmstudio/qwen3.5-4b"),
+        Ok(model_ref(Backend::LmStudio, "qwen3.5-4b"))
+    );
+    assert_eq!(
+        resolve("", "anthropic/claude-sonnet-5-5"),
+        Ok(model_ref(Backend::Anthropic, "claude-sonnet-5-5"))
+    );
+}
+
+#[test]
+fn a_bare_name_means_lm_studio_even_with_a_publisher_slash() {
+    assert_eq!(
+        resolve("", "qwen3.5-4b"),
+        Ok(model_ref(Backend::LmStudio, "qwen3.5-4b"))
+    );
+    assert_eq!(
+        resolve("", "google/gemma-4-12b-qat"),
+        Ok(model_ref(Backend::LmStudio, "google/gemma-4-12b-qat"))
+    );
+}
+
+#[test]
+fn aliases_resolve_through_the_models_table() {
+    let config = "[models.sonnet]\nmodel = \"anthropic/claude-sonnet-5-5\"\n[models.local]\nmodel = \"lmstudio/google/gemma-4-12b-qat\"\n";
+    assert_eq!(
+        resolve(config, "sonnet"),
+        Ok(model_ref(Backend::Anthropic, "claude-sonnet-5-5"))
+    );
+    assert_eq!(
+        resolve(config, "local"),
+        Ok(model_ref(Backend::LmStudio, "google/gemma-4-12b-qat"))
+    );
+}
+
+#[test]
+fn an_alias_with_an_unknown_backend_is_an_error_naming_the_key() {
+    let err = resolve("[models.fast]\nmodel = \"openai/gpt\"\n", "fast").unwrap_err();
+    assert!(err.contains("models.fast.model"), "{err}");
+    assert!(err.contains("openai/gpt"), "{err}");
+}
+
+#[test]
+fn an_alias_naming_another_alias_is_an_error_naming_the_key() {
+    let err = resolve("[models.fast]\nmodel = \"sonnet\"\n", "fast").unwrap_err();
+    assert!(err.contains("models.fast.model"), "{err}");
+    assert!(err.contains("sonnet"), "{err}");
+}
+
+#[test]
+fn project_config_cannot_set_anthropic() {
+    let Loaded { config, notices } = load(Sources {
+        project: Some(file("[anthropic]\nenabled = true\n")),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert!(!config.anthropic.enabled);
+    assert!(
+        notices.iter().any(|n| n.contains("`anthropic`")),
+        "{notices:?}"
+    );
 }
