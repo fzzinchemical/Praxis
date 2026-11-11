@@ -102,6 +102,7 @@ pub enum AgentEvent {
     TurnEnded(StopReason),
 }
 
+#[derive(Clone)]
 pub struct AgentConfig {
     /// A model key or, preferably, the instance id from `Provider::ensure_ready`.
     pub model: String,

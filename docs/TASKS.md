@@ -450,7 +450,7 @@ flowchart TB
     class T3_8 other
 ```
 
-- [ ] **T5.1 `harness acp`** (§11)
+- [x] **T5.1 `harness acp`** (§11)
   - **Needs:** T3.2, T3.7, T0.5.
   - **Done when:** in-process tests cover the event mapping table, permission round trip, `session/load`, and cancellation ordering; and a test confirms nothing but protocol messages reach stdout.
 

@@ -1,7 +1,10 @@
 #![forbid(unsafe_code)]
 
-//! The `harness` binary: one-shot runs, the REPL and `harness models` (SPEC §11).
+//! The `harness` binary: one-shot runs, the REPL, `harness models` and `harness acp` (SPEC §11).
 
+mod acp;
+
+use agent_client_protocol::ConnectTo;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use harness_core::agent::profile::ProfileLayer;
@@ -54,6 +57,8 @@ struct Cli {
 enum Command {
     /// List models and their effective context.
     Models,
+    /// Serve the Agent Client Protocol on stdio, for editors.
+    Acp,
 }
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.
@@ -465,9 +470,12 @@ async fn run(
     if matches!(cli.command, Some(Command::Models)) {
         return list_models(&provider).await;
     }
-    let interactive = std::io::stdin().is_terminal();
+    let acp = matches!(cli.command, Some(Command::Acp));
+    // In ACP mode stdin carries the protocol, so nobody can answer at a terminal.
+    let interactive = !acp && std::io::stdin().is_terminal();
     let prompt = match (cli.prompt, interactive) {
         (Some(prompt), _) => Some(prompt),
+        (None, false) if acp => None,
         (None, true) => None,
         (None, false) => {
             let mut piped = String::new();
@@ -506,24 +514,20 @@ async fn run(
         reported.map(|m| &m.capabilities),
         &user_profiles(&config),
     );
-    let agent = Agent::new(
-        Arc::new(provider),
-        Arc::new(tool_context(&workspace, &config)?),
-        AgentConfig {
-            model: ready.instance_id,
-            context_size: ready.context_length,
-            system_prompt: system_prompt(&workspace),
-            agents_md: harness_core::context::prefix::load_agents_md(&workspace),
-            mask_keep_turns: config.context.mask_keep_turns,
-            max_turn_requests: config.agent.max_turn_requests,
-            profile,
-            seed: None,
-            policy,
-            masking: true,
-        },
-    );
-    let agent = if config.mcp.is_empty() {
-        agent
+    let agent_config = AgentConfig {
+        model: ready.instance_id,
+        context_size: ready.context_length,
+        system_prompt: system_prompt(&workspace),
+        agents_md: harness_core::context::prefix::load_agents_md(&workspace),
+        mask_keep_turns: config.context.mask_keep_turns,
+        max_turn_requests: config.agent.max_turn_requests,
+        profile,
+        seed: None,
+        policy,
+        masking: true,
+    };
+    let mcp = if config.mcp.is_empty() {
+        None
     } else {
         let (mut mcp, mut notices) =
             harness_core::mcp::Mcp::connect(&config.mcp, harness_core::mcp::CONNECT_TIMEOUT).await;
@@ -534,9 +538,29 @@ async fn run(
         for notice in notices {
             eprintln!("{}", sanitize(&notice));
         }
-        agent.with_mcp(Arc::new(mcp))
+        Some(Arc::new(mcp))
     };
-    let agent = with_session(agent, cli.resume.as_deref())?;
+    let provider = Arc::new(provider);
+    let new_agent = move || {
+        let tools = Arc::new(tool_context(&workspace, &config)?);
+        let agent = Agent::new(provider.clone(), tools, agent_config.clone());
+        Ok(match &mcp {
+            Some(mcp) => agent.with_mcp(mcp.clone()),
+            None => agent,
+        })
+    };
+    if acp {
+        let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
+            eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
+            return Ok(EXIT_USAGE);
+        };
+        let agent = acp::agent(Box::new(new_agent), dir);
+        agent
+            .connect_to(agent_client_protocol::Stdio::new())
+            .await?;
+        return Ok(0);
+    }
+    let agent = with_session(new_agent()?, cli.resume.as_deref())?;
     match prompt {
         Some(prompt) => {
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;

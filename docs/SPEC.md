@@ -803,6 +803,8 @@ Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-k
 
 Handlers run inside the connection's dispatch loop, and awaiting a client response in one deadlocks. The `session/prompt` handler spawns its work and keeps the responder.
 
+So far (T5.1): `session/set_mode` isn't implemented, sessions run in the launch directory whatever `cwd` says, `mcpServers` from the client are ignored, only text prompt blocks reach the model, `notice` always falls back to a message chunk and compaction isn't shown. `session/load` replays user and assistant text only. Turns that end in a provider or log failure, or a detected loop, answer with a JSON-RPC error rather than a stop reason.
+
 ### Developer experience requirements
 
 These apply to every front end where they fit. Evidence is in [RESEARCH.md](RESEARCH.md#developers-in-the-ide).

@@ -98,3 +98,4 @@ Known before implementation. Details are in SPEC.
 - LM Studio keys contain a publisher slash (`google/gemma-4-12b-qat`), so only `lmstudio/` and `anthropic/` prefixes pick a backend; anything else is a bare LM Studio name (`Config::resolve_model`).
 - `harness = false` test targets build without `cfg(test)`, so `#![cfg(test)]` removes `main` and clippy's test allowances don't apply (`tests/mcp.rs`).
 - Once the CLI starts its terminal reader, it owns stdin: later prompts must read its channel (`approve_mcp_change` uses `block_in_place`), never `stdin().read_line`.
+- The ACP crate rejects `session/new` sent before the `initialize` answer arrives, so clients and tests must wait for it. `Stdio` needs the crate's `stdio` feature.

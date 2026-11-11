@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -486,4 +486,55 @@ async fn bash_prompts_never_offer_always() {
     assert!(!out(&output).contains("[a]lways"), "{}", out(&output));
     // "a" isn't on offer here, so it must not count as approval.
     assert!(!dir.join("ran").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_mode_writes_only_protocol_messages_to_stdout() {
+    let server = server(Some(4096), Replies(vec![text_reply("hello")])).await;
+    let dir = workspace();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .env("RUST_LOG", "debug")
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    // Each request waits for the previous answer, as an editor's would.
+    let mut next = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": 1}});
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let mut seen = Vec::new();
+    loop {
+        if !next.is_null() {
+            let line = format!("{}\n", next.take());
+            stdin.write_all(line.as_bytes()).await.unwrap();
+        }
+        let line = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_or_else(|| panic!("stdout closed after {seen:?}"));
+        let message: Value = serde_json::from_str(&line).expect("stdout line is not JSON");
+        assert_eq!(message["jsonrpc"], "2.0", "{line}");
+        if message["id"] == 0 {
+            next = json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+                "params": {"cwd": dir, "mcpServers": []}});
+        }
+        if message["id"] == 1 {
+            next = json!({"jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                "params": {"sessionId": message["result"]["sessionId"],
+                    "prompt": [{"type": "text", "text": "hi"}]}});
+        }
+        let done = message["id"] == 2;
+        seen.push(message);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(
+        seen.last().unwrap()["result"]["stopReason"],
+        "end_turn",
+        "{seen:?}"
+    );
+    let chunk = |m: &Value| m["params"]["update"]["sessionUpdate"] == "agent_message_chunk";
+    assert!(seen.iter().any(chunk), "{seen:?}");
 }
