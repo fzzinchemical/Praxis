@@ -241,6 +241,7 @@ flowchart TB
 
 - Opt-in Anthropic backend over the Messages API: streaming, native tool calls, prompt caching, thinking kept intact ([ADR 0004](docs/adr/0004-anthropic-backend-and-per-agent-models.md), SPEC §5.6)
 - `<backend>/<model>` references and `[models]` aliases; delegated agents resolve their `model` through them
+- Orchestrator workflow: a larger model, Claude or a large local one, plans and delegates steps to local worker agents and sees only their reports ([ADR 0005](docs/adr/0005-orchestrator-model-delegates-to-local-workers.md))
 - A repository can't turn a cloud backend on; the first cloud request in a session says so
 - Scoreboard on a Claude model as a reference ceiling for the local results
 - Needs M3 for config and trust. The per-agent part also needs T6.5. It can land before or after M7

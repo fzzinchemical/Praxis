@@ -42,7 +42,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **VS Code** | US-21 to US-23 | US-35 editor context, US-49 turn summary, US-50 change-set review, US-51 plan first | US-40 Zed, US-41 diagnostics, US-43 VSCodium | Marketplace publishing, proactive suggestions, automatic LLM review |
 | **Plugins** | US-24 to US-28 | US-36 agents, US-37 plugin settings | US-42 plugin `bin/` | Marketplace, JS workflows and mods, other components |
 | **Performance and evidence** | US-29 | | US-52 timed trial | |
-| **Anthropic and per-agent models** | | US-53 Anthropic backend, US-54 per-agent models | US-55 Anthropic scoreboard | Automatic model routing, other cloud providers |
+| **Anthropic and per-agent models** | | US-53 Anthropic backend, US-54 per-agent models, US-56 orchestrator workflow | US-55 Anthropic scoreboard | Automatic model routing, other cloud providers |
 
 ---
 
@@ -136,6 +136,7 @@ Painful to leave out, but each has a workaround.
 | **US-37** | As a plugin user, I want plugins to ask for their settings and keep secrets safe, so that I don't edit config by hand. | Sensitive values stay out of logs and config. | Part of T6.4 | Set environment variables |
 | **US-53** | As a hybrid user, I want to opt in to a Claude model through the same agent loop, so that hard tasks don't depend on what my GPU can run. | The same tools, permissions and sandbox apply. Only user config or a flag enables it, a repository can't, and the first request says content is leaving the machine. | T8.1-T8.5 | Use a separate tool for hard tasks |
 | **US-54** | As a hybrid user, I want each delegated agent to use its own model, local or Claude, so that each job runs on a model that fits it. | An agent's `model` resolves through aliases to either backend, falls back to the session model, and never switches to a disabled backend. | T8.6 | Restart the session with another `--model` |
+| **US-56** | As a hybrid user, I want a larger model, Claude or a large local one, to plan and send commands to local worker models, so that hard tasks get a strong planner while most work stays local. | The orchestrator is any model reference, delegates through agent definitions on local models, sees only their reports, and the same task runs with a Claude or a local orchestrator by config alone. | T8.8 | Delegate by hand from a separate Claude session |
 | **US-45** | As a developer, I want repeat reads of unchanged files to be cheap and stale files flagged, so that context isn't wasted and the agent isn't misled. | A stub replaces unchanged content, with full content once masked or changed. Evals show no loss. | T2.10 | Larger context |
 | **US-46** | As a developer, I want noise removed from command output, so that logs don't crowd out the task. | Exit codes, failures and stack traces are always kept, and the full output stays available. Evals show no loss. | T2.11 | Truncation from US-07 |
 | **US-47** | As a developer, I want malformed tool calls retried under a schema where supported, so that fewer turns are wasted. | The retry is still validated, or an ADR records that LM Studio can't do it. | T2.12 | Plain retry from US-05 |

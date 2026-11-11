@@ -882,7 +882,7 @@ Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference
 | Manifest | `.claude-plugin/plugin.json`, optional; only `name` is required | Yes. Unknown top-level keys are warnings |
 | Skills | `skills/<name>/SKILL.md` | Yes |
 | Commands | `commands/*.md` (same frontmatter as skills) | Yes, invoked as `/<plugin>:<name>` |
-| Agents | `agents/**/*.md` | Sequential only; `name`, `description`, `model`, `tools`, `disallowedTools`, `maxTurns`. `model` values like `sonnet` map through `[models]` aliases (§8), possibly to another backend, or fall back to the session model |
+| Agents | `agents/**/*.md` | Sequential only; `name`, `description`, `model`, `tools`, `disallowedTools`, `maxTurns`. `model` values like `sonnet` map through `[models]` aliases (§8), possibly to another backend, or fall back to the session model. The session model can act as an orchestrator that delegates to local workers ([ADR 0005](adr/0005-orchestrator-model-delegates-to-local-workers.md)) |
 | Hooks | `hooks/hooks.json` | `type: "command"` only |
 | MCP servers | `.mcp.json`, with or without wrapper; `mcpServers` in manifest | Yes; `.mcpb` bundles no |
 | `userConfig` | Manifest | Yes; `sensitive` values kept out of config and session logs, and stored in a `0600` file |

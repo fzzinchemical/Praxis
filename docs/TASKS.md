@@ -15,9 +15,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M5** | [VS Code](#m5-vs-code) | 9 | Fix, review and accept without leaving the editor. |
 | **M6** | [Plugins](#m6-plugins) | 7 | An unmodified Claude Code plugin works. |
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
-| **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 7 | A Claude model runs the same loop, and each agent can use its own model. |
+| **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 
-70 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+71 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -620,6 +620,7 @@ flowchart LR
     T8_5["T8.5<br/>Cloud opt-in safety"]
     T8_6["T8.6<br/>Per-agent models"]
     T8_7["T8.7<br/>Anthropic scoreboard"]
+    T8_8["T8.8<br/>Orchestrator workflow"]
     T2_1(["T2.1"])
     T2_5(["T2.5"])
     T3_1(["T3.1"])
@@ -636,11 +637,12 @@ flowchart LR
     T6_5 -.-> T8_6
     T8_4 --> T8_7
     T2_1 -.-> T8_7
+    T8_6 --> T8_8
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class T8_2,T8_3,T8_4,T8_5,T8_6 task
+    class T8_2,T8_3,T8_4,T8_5,T8_6,T8_8 task
     class T8_1,T8_7 human
     class T2_1,T2_5,T3_1,T3_5,T6_5 other
 ```
@@ -671,3 +673,7 @@ flowchart LR
 - [ ] **T8.7 Anthropic scoreboard** `HUMAN` approves the spend · *Could*
   - **Needs:** T8.4, T2.1.
   - **Done when:** `cargo xtask eval --model anthropic/<id>` writes a scoreboard to `evals/results/` with the cost of the run, the task sandbox's only network path is to the Anthropic endpoint, and it is compared with the local models as a reference ceiling.
+
+- [ ] **T8.8 Orchestrator workflow** ([ADR 0005](adr/0005-orchestrator-model-delegates-to-local-workers.md)) · *Should*
+  - **Needs:** T8.6.
+  - **Done when:** on the fake server, an orchestrator session delegates two steps to a worker on another model, and only the workers' reports enter its history; the same test passes with the orchestrator on `anthropic/` and on `lmstudio/`; a worker can't use a tool the session denies; and an eval run records success, wall time and model swaps for a local orchestrator with a local worker.
