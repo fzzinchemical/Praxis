@@ -106,6 +106,8 @@ pub struct AgentConfig {
     pub agents_md: Option<String>,
     /// How many recent turns keep their tool output when history is masked (SPEC §7).
     pub mask_keep_turns: u32,
+    /// Off skips the masking stage, so evals can compare against it (T2.6).
+    pub masking: bool,
     pub max_turn_requests: u32,
     pub profile: ModelProfile,
     /// Sent with every request; evals fix it so runs repeat where the server allows (SPEC §14).

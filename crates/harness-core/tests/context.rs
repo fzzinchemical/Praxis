@@ -77,6 +77,7 @@ fn config(context_size: u32) -> AgentConfig {
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
         seed: None,
+        masking: true,
     }
 }
 
@@ -540,6 +541,18 @@ async fn counts_calls_that_fetch_masked_output_again() {
     assert!(refetched("s") && refetched("again"), "both calls ran");
     // The spooled Bash output and the repeated read count; a read with new arguments doesn't.
     assert_eq!(h.agent.as_ref().unwrap().refetches(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn with_masking_off_compaction_starts_at_the_summary() {
+    let mut cfg = config(10_000);
+    cfg.masking = false;
+    let mut h = Harness::new(read_script(9), cfg).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let events = h.turn("go").await;
+    let stages = starts_and_ends(&compactions(&events));
+    assert_eq!(stages.first().map(String::as_str), Some("started:Summary"));
+    assert!(!stages.iter().any(|s| s.contains("Masking")), "{stages:?}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

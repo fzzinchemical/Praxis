@@ -32,7 +32,9 @@ impl Agent {
             true => self.budget.mask_target().min(before / 5 * 3),
             false => self.budget.mask_target(),
         };
-        self.mask(before, target, turn).await;
+        if self.config.masking {
+            self.mask(before, target, turn).await;
+        }
         let enough = if forced {
             target
         } else {

@@ -97,6 +97,7 @@ impl Harness {
                 max_turn_requests,
                 profile: harness_core::agent::profile::ModelProfile::default(),
                 seed: None,
+                masking: true,
             },
         );
         Self {

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, Severity, StopReason, system_prompt,
 };
+use harness_core::context::compaction::CompactionState;
 use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use harness_core::provider::{LoadPolicy, Provider, ReadyModel};
 use harness_core::tools::ToolContext;
@@ -44,6 +45,8 @@ struct Options {
     base_url: String,
     evals_dir: PathBuf,
     out: Option<PathBuf>,
+    /// `None` turns masking off, for the T2.6 comparison.
+    mask_keep_turns: Option<u32>,
     /// A private copy of this binary for the sandboxes, so a rebuild mid-run can't remove it.
     agent_exe: PathBuf,
 }
@@ -64,6 +67,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         base_url: DEFAULT_BASE_URL.to_owned(),
         evals_dir: root.join("evals"),
         out: None,
+        mask_keep_turns: Some(DEFAULT_MASK_KEEP_TURNS),
         agent_exe: PathBuf::new(),
     };
     let mut args = args.iter();
@@ -77,12 +81,19 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
             "--base-url" => value.clone_into(&mut options.base_url),
             "--evals-dir" => options.evals_dir = value.into(),
             "--out" => options.out = Some(value.into()),
+            "--mask-keep-turns" if value == "off" => options.mask_keep_turns = None,
+            "--mask-keep-turns" => {
+                let turns = value
+                    .parse()
+                    .context("--mask-keep-turns needs a number or off")?;
+                options.mask_keep_turns = Some(turns);
+            }
             other => bail!("unknown flag {other}"),
         }
     }
     ensure!(
         !options.model.is_empty() && options.runs > 0,
-        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE]"
+        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off]"
     );
     Ok(options)
 }
@@ -260,6 +271,10 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         }
     });
 
+    let keep_turns = spec["mask_keep_turns"]
+        .as_u64()
+        .map(u32::try_from)
+        .transpose()?;
     let base = format!("http://127.0.0.1:{SANDBOX_PORT}");
     let provider = Provider::new(&base, None)?;
     let instance = text("instance")?.to_owned();
@@ -279,7 +294,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
             agents_md: None,
-            mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
+            mask_keep_turns: keep_turns.unwrap_or(DEFAULT_MASK_KEEP_TURNS),
+            masking: keep_turns.is_some(),
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
             seed: Some(EVAL_SEED),
@@ -304,6 +320,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let mut stop = StopReason::ProviderError;
     let mut loop_trigger = None;
     let mut last_error = None;
+    let mut rewrites: BTreeMap<String, u32> = BTreeMap::new();
     while let Some(event) = rx.recv().await {
         match event {
             // The sandbox stands in for approval: the agent can only harm its own copy.
@@ -332,6 +349,9 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 title,
                 ..
             } => last_error = Some(title),
+            AgentEvent::Compaction(CompactionState::Finished { stage, .. }) => {
+                *rewrites.entry(format!("{stage:?}")).or_default() += 1;
+            }
             AgentEvent::TurnEnded(reason) => stop = reason,
             _ => {}
         }
@@ -347,6 +367,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "tool_call_parse_failures": agent.parse_failures(),
             "refetches_of_masked_output": agent.refetches(),
             "first_token_ms": agent.first_token_ms(),
+            // Each finished compaction rewrote history, forcing reprocessing from there (SPEC §7).
+            "history_rewrites": rewrites,
             "recoveries": recoveries,
             "loop_trigger": loop_trigger,
             "prompt_tokens_sent": prompt_tokens,
@@ -375,6 +397,7 @@ async fn try_run_agent(
         "prompt": task.prompt,
         "max_turns": task.max_turns,
         "wall_secs": task.wall_secs,
+        "mask_keep_turns": options.mask_keep_turns,
     });
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
@@ -488,6 +511,20 @@ fn first_token_means(runs: &[Value]) -> Value {
     json!({ "first_request": mean(&first), "later_requests": mean(&later) })
 }
 
+/// Finished compactions per stage across all runs.
+fn history_rewrites(runs: &[Value]) -> BTreeMap<String, u64> {
+    let mut total = BTreeMap::new();
+    for stages in runs
+        .iter()
+        .filter_map(|run| run["history_rewrites"].as_object())
+    {
+        for (stage, count) in stages {
+            *total.entry(stage.clone()).or_default() += count.as_u64().unwrap_or(0);
+        }
+    }
+    total
+}
+
 fn rate(part: usize, whole: usize) -> f64 {
     part as f64 / whole.max(1) as f64
 }
@@ -542,6 +579,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "loop_triggers": loop_triggers,
         "refetches_of_masked_output": sum(runs, "refetches_of_masked_output"),
         "mean_first_token_ms": first_token_means(runs),
+        "history_rewrites": history_rewrites(runs),
         "prompt_tokens_sent": sum(runs, "prompt_tokens_sent"),
         "prompt_tokens_processed": null,
         "prompt_tokens_cached": null,
@@ -605,7 +643,9 @@ async fn run_all(
                 result["check_message"]
             );
             runs.push(result);
-            let board = scoreboard(&options.model, &date, &runs);
+            let mut board = scoreboard(&options.model, &date, &runs);
+            board["mask_keep_turns"] =
+                json!(options.mask_keep_turns.map_or(json!("off"), |n| json!(n)));
             fs::write(out, serde_json::to_string_pretty(&board)? + "\n")?;
         }
     }
@@ -727,9 +767,11 @@ mod tests {
             json!({"task": "a", "success": true, "turns": 4, "wall_secs": 10.0,
                 "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
                 "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats",
-                "refetches_of_masked_output": 3, "first_token_ms": [900, 100, 300]}),
+                "refetches_of_masked_output": 3, "first_token_ms": [900, 100, 300],
+                "history_rewrites": {"Masking": 1}}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
-                "wall_secs": 20.0, "injection": "obeyed"}),
+                "wall_secs": 20.0, "injection": "obeyed",
+                "history_rewrites": {"Masking": 1, "Summary": 1}}),
         ];
         let board = scoreboard("m", "d", &runs);
         assert_eq!(board["success_rate"], 0.5);
@@ -742,6 +784,10 @@ mod tests {
         assert_eq!(board["loop_stops"], 1);
         assert_eq!(board["loop_triggers"], json!({ "repeats": 1 }));
         assert_eq!(board["refetches_of_masked_output"], 3);
+        assert_eq!(
+            board["history_rewrites"],
+            json!({ "Masking": 2, "Summary": 1 })
+        );
         assert_eq!(
             board["mean_first_token_ms"],
             json!({ "first_request": 900.0, "later_requests": 200.0 })
@@ -760,5 +806,16 @@ mod tests {
             parse_options(&args, Path::new("/")).unwrap().runs,
             DEFAULT_RUNS
         );
+    }
+
+    #[test]
+    fn masking_can_be_tuned_or_turned_off() {
+        let parse = |value: &str| {
+            let args = ["--model", "m", "--mask-keep-turns", value].map(str::to_owned);
+            parse_options(&args, Path::new("/")).map(|o| o.mask_keep_turns)
+        };
+        assert_eq!(parse("5").unwrap(), Some(5));
+        assert_eq!(parse("off").unwrap(), None);
+        assert!(parse("lots").is_err());
     }
 }

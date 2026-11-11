@@ -120,6 +120,7 @@ async fn run_with(bodies: Vec<Vec<u8>>, profile: ModelProfile, dir: &Path) -> Ru
             max_turn_requests: 20,
             profile,
             seed: None,
+            masking: true,
         },
     );
     let (tx, mut rx) = mpsc::channel(16);

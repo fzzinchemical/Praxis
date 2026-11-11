@@ -405,6 +405,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
             profile,
             seed: None,
+            masking: true,
         },
     );
     match prompt {
