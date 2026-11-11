@@ -309,7 +309,7 @@ Stop with `LoopDetected` when any of these happen:
 
 - The same tool and arguments occur 3 times in a row.
 - The same tool and arguments occur 5 times within the last 20 calls.
-- There are 10 consecutive read-only calls with an empty assistant message and no new files read.
+- There are 10 consecutive read-only calls with an empty assistant message and nothing new read. A `Read` with arguments not seen before in the turn (a new file or a new range) counts as new.
 
 ### 5.5 Model profiles
 

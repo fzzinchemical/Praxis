@@ -23,7 +23,7 @@ impl LoopTrigger {
             Self::RepeatedInARow => "The same tool call ran 3 times in a row.",
             Self::RepeatedInWindow => "The same tool call ran 5 times within the last 20 calls.",
             Self::IdleReads => {
-                "10 read-only calls in a row with no assistant text and no new files read."
+                "10 read-only calls in a row with no assistant text and nothing new read."
             }
         }
     }
@@ -34,7 +34,7 @@ impl LoopTrigger {
 pub(super) struct LoopDetector {
     recent: VecDeque<(String, Value)>,
     idle_reads: usize,
-    files_read: HashSet<String>,
+    ranges_read: HashSet<String>,
 }
 
 impl LoopDetector {
@@ -44,14 +44,12 @@ impl LoopDetector {
         let arguments = parse_arguments(&call.arguments)
             .unwrap_or_else(|| Value::String(call.arguments.clone()));
 
+        // A range not seen before is progress: a large file can only be read in parts.
         // shortcut: paths compare as written, so `./a` and `a` are two files; normalize if models do this.
-        let new_file = call.name == "Read"
-            && arguments
-                .get("file_path")
-                .and_then(Value::as_str)
-                .is_some_and(|path| self.files_read.insert(path.to_owned()));
+        let range = ["file_path", "offset", "limit"].map(|key| arguments.get(key).cloned());
+        let new_range = call.name == "Read" && self.ranges_read.insert(format!("{range:?}"));
         let read_only = matches!(call.name.as_str(), "Read" | "Grep" | "Glob");
-        self.idle_reads = match silent && read_only && !new_file {
+        self.idle_reads = match silent && read_only && !new_range {
             true => self.idle_reads + 1,
             false => 0,
         };
@@ -204,14 +202,22 @@ mod tests {
     }
 
     #[test]
-    fn rereading_a_known_file_counts_as_no_new_file() {
-        // The first read is new, so counting starts after it.
-        let calls: Vec<ToolCall> = (0..11).map(|i| read("a.rs", i)).collect();
+    fn reading_new_ranges_of_one_file_is_progress() {
+        let calls: Vec<ToolCall> = (0..50).map(|i| read("a.rs", i)).collect();
+        assert_eq!(first_trigger(&calls, true), None);
+    }
+
+    #[test]
+    fn rereading_a_known_range_counts_as_idle() {
+        // Three new ranges, then 10 idle calls: new searches and rereads of those ranges.
+        let mut calls: Vec<ToolCall> = (0..3).map(|i| read("a.rs", i)).collect();
+        calls.extend((0..7).map(grep));
+        calls.extend((0..3).map(|i| read("a.rs", i)));
         assert_eq!(
             first_trigger(&calls, true),
-            Some((11, LoopTrigger::IdleReads))
+            Some((13, LoopTrigger::IdleReads))
         );
-        assert_eq!(first_trigger(&calls[..10], true), None);
+        assert_eq!(first_trigger(&calls[..12], true), None);
     }
 
     #[test]
