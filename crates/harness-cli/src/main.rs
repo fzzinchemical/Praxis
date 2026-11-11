@@ -80,6 +80,20 @@ fn approve_project_config(path: &Path, items: &str) -> bool {
         && parse_reply(&line, false) == PermissionReply::AllowOnce
 }
 
+/// A changed MCP tool stays hidden unless a person at a terminal approves it (SPEC §13).
+fn approve_mcp_change(change: &str, terminal: Option<&mut Terminal>) -> bool {
+    let Some(terminal) = terminal else {
+        return false;
+    };
+    ask(&format!(
+        "\n{}\nApprove this tool? [y/N]: ",
+        sanitize(change)
+    ));
+    // The terminal reader owns stdin, so wait on its channel from this sync callback.
+    tokio::task::block_in_place(|| terminal.blocking_recv())
+        .is_some_and(|line| parse_reply(&line, false) == PermissionReply::AllowOnce)
+}
+
 fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Policy), String> {
     let sources = Sources {
         user: xdg_path("XDG_CONFIG_HOME", ".config", "config.toml"),
@@ -511,8 +525,12 @@ async fn run(
     let agent = if config.mcp.is_empty() {
         agent
     } else {
-        let (mcp, notices) =
+        let (mut mcp, mut notices) =
             harness_core::mcp::Mcp::connect(&config.mcp, harness_core::mcp::CONNECT_TIMEOUT).await;
+        let store = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
+        notices.extend(mcp.pin(store.as_ref(), &mut |change| {
+            approve_mcp_change(change, terminal.as_mut())
+        }));
         for notice in notices {
             eprintln!("{}", sanitize(&notice));
         }

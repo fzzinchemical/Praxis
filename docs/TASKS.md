@@ -400,7 +400,7 @@ flowchart LR
   - **Needs:** T4.4, T4.6.
   - **Done when:** real filesystem, git and browser MCP servers work on a small-window model, with eval scores no worse than without them. Resources and prompts are added.
 
-- [ ] **T4.6 Pin MCP tool definitions** (§13)
+- [x] **T4.6 Pin MCP tool definitions** (§13)
   - **Needs:** T4.1.
   - **Done when:** a test server that changes a description has that tool hidden until approved again, with the change shown; the description scan warns but never blocks; plugin servers are covered.
 

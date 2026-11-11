@@ -38,13 +38,21 @@ impl TrustStore {
     }
 
     pub fn is_approved(&self, project: &Path, hash: &str) -> Result<bool, String> {
-        let key = project.display().to_string();
-        Ok(self.read()?.get(&key).is_some_and(|stored| stored == hash))
+        Ok(self.get(&project.display().to_string())? == Some(hash.to_owned()))
     }
 
     pub fn approve(&self, project: &Path, hash: &str) -> Result<(), String> {
+        self.set(&project.display().to_string(), hash)
+    }
+
+    /// Any stored value; project paths and MCP tool pins share the store.
+    pub fn get(&self, key: &str) -> Result<Option<String>, String> {
+        Ok(self.read()?.remove(key))
+    }
+
+    pub fn set(&self, key: &str, value: &str) -> Result<(), String> {
         let mut approvals = self.read()?;
-        approvals.insert(project.display().to_string(), hash.to_owned());
+        approvals.insert(key.to_owned(), value.to_owned());
         let text = serde_json::to_string_pretty(&approvals).map_err(|e| e.to_string())?;
         let fail = |e: std::io::Error| format!("{}: {e}", self.path.display());
         if let Some(dir) = self.path.parent() {

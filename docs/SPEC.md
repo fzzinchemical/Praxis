@@ -952,7 +952,7 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 - **Lifecycle:** connect in the background at session start, so a slow server doesn't delay the prompt. A failed server produces a notice and the session continues without it. If it crashes mid-session, its tool calls return errors, and reconnect once.
 - **Tool list freeze:** `tools/list` results are fixed at session start per §7, with later `list_changed` notifications logged rather than applied.
 - **Results:** pass through the tool-result budget; non-text content is replaced by a short description.
-- **Pinning:** on approval, store the SHA-256 of each tool's name, description and schema. On any change, hide that tool from the model and ask again, showing what changed. This also covers plugin servers.
+- **Pinning:** on approval, store the SHA-256 of each tool's name, description and schema. Pins live in the trust store under `mcp:<tool name>`, beside the definition text so a change can be shown; a tool seen for the first time is pinned without asking, since its server was already approved. On any change, hide that tool from the model and ask again, showing what changed. This also covers plugin servers.
 - **Description scan:** at approval, flag instruction-like wording, encoded content and unusual length as a warning only. It catches part of the problem and has false positives, so it never blocks and never counts as a defence.
 - **Timeouts:** default 60 s per call, and cancellation is forwarded.
 - **Schemas:** weak models choke on large schemas, so strip `$comment`, `examples` and long descriptions in the prompt, but validate against the original.
