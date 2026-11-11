@@ -341,13 +341,20 @@ impl Agent {
                 .tool_schemas
                 .iter()
                 .filter(|t| !matches!(t.name.as_str(), "Agent" | "Skill"))
-                // Indexed mode's stand-ins stay; `permits` filters the tools behind them.
-                .filter(|t| {
-                    matches!(t.name.as_str(), "ToolSearch" | "CallTool") || child.permits(&t.name)
-                })
+                .filter(|t| child.permits(&t.name))
                 .cloned()
                 .collect();
-            child.mcp_index.clone_from(&self.mcp_index);
+            // Agents only see the MCP tools they may use (SPEC §12).
+            child.mcp_index = self
+                .mcp_index
+                .lines()
+                .filter(|l| {
+                    l.strip_prefix("- ")
+                        .and_then(|l| l.split_once(':'))
+                        .is_none_or(|(name, _)| child.permits(name))
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
             child.mcp.clone_from(&self.mcp);
             child.hooks.clone_from(&self.hooks);
             child.reassemble_prefix();
@@ -395,12 +402,14 @@ impl Agent {
         })
     }
 
-    /// Whether a subagent's `tools` and `disallowedTools` let it run `name`.
+    /// Whether a subagent's `tools` and `disallowedTools` let it run `name`. Indexed mode's
+    /// stand-ins always pass; the MCP tools behind them are checked by their own names.
     fn permits(&self, name: &str) -> bool {
-        self.limits.as_ref().is_none_or(|(allowed, denied)| {
-            allowed.as_ref().is_none_or(|a| a.iter().any(|n| n == name))
-                && !denied.iter().any(|n| n == name)
-        })
+        matches!(name, "ToolSearch" | "CallTool")
+            || self.limits.as_ref().is_none_or(|(allowed, denied)| {
+                allowed.as_ref().is_none_or(|a| a.iter().any(|n| n == name))
+                    && !denied.iter().any(|n| n == name)
+            })
     }
 
     fn reassemble_prefix(&mut self) {
@@ -681,6 +690,7 @@ impl Agent {
             .mcp
             .iter()
             .flat_map(|mcp| mcp.schemas())
+            .filter(|s| self.permits(&s.name))
             .filter(|s| {
                 let text = format!("{} {}", s.name, s.description).to_lowercase();
                 words.iter().any(|w| text.contains(w))

@@ -549,11 +549,16 @@ async fn indexed_requests_keep_a_stable_prefix() {
     assert_eq!(old["tools"].to_string(), new["tools"].to_string());
 }
 
-/// A subagent in indexed mode: request 1 is its first, request 2 shows its `CallTool` result.
-async fn subagent_calls_echo(tools: Option<&[&str]>, denied: &[&str]) -> (Vec<String>, String) {
+/// A subagent in indexed mode searches for `echo`, then calls it. Returns its first request's
+/// tool names, its system prompt, then its `ToolSearch` and `CallTool` results.
+async fn subagent_calls_echo(
+    tools: Option<&[&str]>,
+    denied: &[&str],
+) -> (Vec<String>, String, String, String) {
     let model = MockServer::start().await;
     let calls = [
         json!({"index": 0, "id": "p1", "function": {"name": "Agent", "arguments": json!({"subagent_type": "kit:scout", "prompt": "echo"}).to_string()}}),
+        json!({"index": 0, "id": "s0", "function": {"name": "ToolSearch", "arguments": json!({"query": "echo"}).to_string()}}),
         json!({"index": 0, "id": "s1", "function": {"name": "CallTool", "arguments": ECHO_CALL}}),
     ];
     for call in calls {
@@ -619,28 +624,41 @@ async fn subagent_calls_echo(tools: Option<&[&str]>, denied: &[&str]) -> (Vec<St
     task.await.unwrap();
     let requests = model.received_requests().await.unwrap();
     let body = |i: usize| serde_json::from_slice::<Value>(&requests[i].body).unwrap();
-    let result = body(2)["messages"]
+    let last = body(3);
+    let results: Vec<String> = last["messages"]
         .as_array()
         .unwrap()
         .iter()
-        .rev()
-        .find(|m| m["role"] == "tool")
-        .unwrap()["content"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    (tool_names(&body(1)), result)
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["content"].as_str().unwrap().to_owned())
+        .collect();
+    let system = last["messages"][0]["content"].as_str().unwrap().to_owned();
+    (
+        tool_names(&body(1)),
+        system,
+        results[0].clone(),
+        results[1].clone(),
+    )
 }
 
 async fn subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools() {
-    let (names, result) = subagent_calls_echo(Some(&["mcp__test__echo"]), &[]).await;
+    let (names, system, search, result) =
+        subagent_calls_echo(Some(&["mcp__test__echo"]), &[]).await;
     assert!(names.contains(&"CallTool".to_owned()), "{names:?}");
+    assert!(system.contains("- mcp__test__echo"), "{system}");
+    assert!(search.contains("mcp__test__echo"), "{search}");
     assert_eq!(result, "echo: hi");
 
-    let (_, result) = subagent_calls_echo(None, &["mcp__test__echo"]).await;
-    assert!(result.contains("Unknown tool"), "{result}");
-    let (_, result) = subagent_calls_echo(Some(&["Read"]), &[]).await;
-    assert!(result.contains("Unknown tool"), "{result}");
+    // Agents only see the tools they may use: not in the index, not in search results.
+    for (tools, denied) in [
+        (None, &["mcp__test__echo"][..]),
+        (Some(&["Read"][..]), &[][..]),
+    ] {
+        let (_, system, search, result) = subagent_calls_echo(tools, denied).await;
+        assert!(!system.contains("mcp__test__echo"), "{system}");
+        assert!(!search.contains("mcp__test__echo"), "{search}");
+        assert!(result.contains("Unknown tool"), "{result}");
+    }
 }
 
 fn main() {
