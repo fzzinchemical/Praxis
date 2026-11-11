@@ -96,6 +96,7 @@ fn server(command: &str, args: &[&str]) -> McpServer {
     McpServer {
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
+        env: BTreeMap::new(),
     }
 }
 
@@ -349,6 +350,28 @@ async fn changed_descriptions_hide_the_tool_until_approved_again() {
     assert!(notices.is_empty() && names(&mcp).len() == 4, "{notices:?}");
 }
 
+async fn plugin_tools_take_the_plugin_name_and_are_pinned() {
+    let root = std::env::temp_dir().join(format!("harness-mcp-plugin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let me = std::env::current_exe().unwrap();
+    let mcp_json = json!({"echo": {"command": me, "args": ["serve", "${CLAUDE_PLUGIN_ROOT}"]}});
+    std::fs::write(root.join(".mcp.json"), mcp_json.to_string()).unwrap();
+    let plugin = harness_core::plugin::load(&root).unwrap();
+    let servers = plugin.mcp_servers(&root, &root.join("data")).unwrap();
+    let store = TrustStore::new(root.join("trust.json"));
+    let (mut mcp, _) = Mcp::connect(&servers, Duration::from_secs(10)).await;
+    assert!(
+        mcp.pin(Some(&store), &mut |_| panic!("first sight"))
+            .is_empty()
+    );
+    let name = format!("mcp__plugin_{}_echo__echo", plugin.name);
+    let schema = mcp.schemas().into_iter().find(|s| s.name == name).unwrap();
+    assert_eq!(schema.description, root.to_str().unwrap());
+    assert!(store.get(&format!("mcp:{name}")).unwrap().is_some());
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -372,4 +395,6 @@ fn main() {
     println!("list_changed_does_not_alter_the_tools ... ok");
     runtime.block_on(changed_descriptions_hide_the_tool_until_approved_again());
     println!("changed_descriptions_hide_the_tool_until_approved_again ... ok");
+    runtime.block_on(plugin_tools_take_the_plugin_name_and_are_pinned());
+    println!("plugin_tools_take_the_plugin_name_and_are_pinned ... ok");
 }

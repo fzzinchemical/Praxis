@@ -2,6 +2,7 @@
 
 use harness_core::plugin::{Source, load, run_command};
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 
 fn plugin_dir(name: &str) -> PathBuf {
@@ -177,4 +178,60 @@ fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
     );
     assert_eq!(run_command(&commands, "/kit:missing"), None);
     assert_eq!(run_command(&commands, "kit:fix"), None);
+}
+
+#[test]
+fn plugin_mcp_servers_expand_variables_and_take_the_plugin_name() {
+    let root = plugin_dir("mcp");
+    let data = plugin_dir("mcp-data");
+    manifest(
+        &root,
+        r#"{"name": "kit", "userConfig": {"token": {"sensitive": true}, "level": {}},
+            "mcpServers": {"inline": {"command": "srv2"}}}"#,
+    );
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"db": {"command": "${CLAUDE_PLUGIN_ROOT}/srv",
+            "args": ["${CLAUDE_PLUGIN_DATA}", "${CLAUDE_PROJECT_DIR}", "${CLAUDE_PLUGIN_OPTION_LEVEL}"],
+            "env": {"TOKEN": "${CLAUDE_PLUGIN_OPTION_TOKEN}"}}}}"#,
+    );
+    fs::create_dir_all(root.join("bin")).unwrap();
+    let plugin = load(&root).unwrap();
+    plugin.set_option(&data, "token", "s3cret").unwrap();
+    plugin.set_option(&data, "level", "high").unwrap();
+
+    let servers = plugin.mcp_servers(Path::new("/proj"), &data).unwrap();
+    let names: Vec<_> = servers.keys().cloned().collect();
+    assert_eq!(names, ["plugin_kit_db", "plugin_kit_inline"]);
+    let db = &servers["plugin_kit_db"];
+    let data_dir = data.join("kit");
+    assert_eq!(db.command, format!("{}/srv", root.display()));
+    assert_eq!(db.args, [data_dir.to_str().unwrap(), "/proj", "high"]);
+    assert_eq!(db.env["TOKEN"], "s3cret");
+    assert_eq!(db.env["CLAUDE_PLUGIN_ROOT"], root.to_str().unwrap());
+    assert_eq!(db.env["CLAUDE_PLUGIN_OPTION_TOKEN"], "s3cret");
+
+    // Sensitive values stay out of logs and live only in a 0600 file.
+    assert!(!format!("{servers:?}").contains("s3cret"), "{servers:?}");
+    let options = data_dir.join("options.json");
+    let mode = fs::metadata(&options).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+
+    // `bin/` comes after the user's PATH, so it can't shadow system commands.
+    let path = db.env["PATH"].clone();
+    let bin = root.join("bin");
+    assert!(path.ends_with(&format!(":{}", bin.display())), "{path}");
+    assert!(path.starts_with(&std::env::var("PATH").unwrap()), "{path}");
+}
+
+#[test]
+fn unknown_user_config_keys_are_rejected() {
+    let root = plugin_dir("mcp-unknown");
+    manifest(&root, r#"{"name": "kit", "userConfig": {"level": {}}}"#);
+    let plugin = load(&root).unwrap();
+    assert!(
+        plugin
+            .set_option(&plugin_dir("unk-data"), "other", "x")
+            .is_err()
+    );
 }

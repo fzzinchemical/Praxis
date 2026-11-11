@@ -1,8 +1,12 @@
 //! Plugin discovery and manifest (SPEC §12). Reads where each component lives; the
 //! components themselves are parsed by later tasks.
 
+use crate::config::McpServer;
 use serde_json::{Map, Value};
+use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write as _;
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 /// A hooks or MCP source: a file to read later, or an object inlined in the manifest.
@@ -229,6 +233,118 @@ impl Plugin {
             description,
             body: body.replace("${CLAUDE_PLUGIN_ROOT}", &self.root.to_string_lossy()),
         })
+    }
+}
+
+impl Plugin {
+    /// `<data_root>/<name>`, exposed as `CLAUDE_PLUGIN_DATA`.
+    fn data_dir(&self, data_root: &Path) -> PathBuf {
+        data_root.join(&self.name)
+    }
+
+    /// Stores a `userConfig` value in `<data dir>/options.json`, a `0600` file, so even
+    /// `sensitive` values never sit in a config file (SPEC §12).
+    pub fn set_option(&self, data_root: &Path, key: &str, value: &str) -> Result<(), String> {
+        if self.user_config.as_ref().and_then(|c| c.get(key)).is_none() {
+            return Err(format!("plugin {}: no `userConfig` key `{key}`", self.name));
+        }
+        let dir = self.data_dir(data_root);
+        let mut options = self.options(data_root)?;
+        options.insert(key.to_owned(), value.to_owned());
+        let fail = |e: std::io::Error| format!("{}: {e}", dir.display());
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)
+            .map_err(fail)?;
+        let path = dir.join("options.json");
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(fail)?;
+        // `mode` applies only on creation; tighten a file that already existed.
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(fail)?;
+        let text = serde_json::to_string(&options).map_err(|e| e.to_string())?;
+        file.write_all(text.as_bytes()).map_err(fail)
+    }
+
+    fn options(&self, data_root: &Path) -> Result<BTreeMap<String, String>, String> {
+        let path = self.data_dir(data_root).join("options.json");
+        match fs::read_to_string(&path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// The plugin's MCP servers, named `plugin_<plugin>_<server>` so their tools become
+    /// `mcp__plugin_<plugin>_<server>__<tool>`. `${CLAUDE_PLUGIN_ROOT}` and friends expand in
+    /// `command`, `args` and `env`, and are also set in the environment, with `bin/` appended
+    /// after the user's `PATH` so it can't shadow system commands (SPEC §12).
+    pub fn mcp_servers(
+        &self,
+        project_dir: &Path,
+        data_root: &Path,
+    ) -> Result<BTreeMap<String, McpServer>, String> {
+        let mut vars = BTreeMap::from([
+            (
+                "CLAUDE_PLUGIN_ROOT".to_owned(),
+                self.root.display().to_string(),
+            ),
+            (
+                "CLAUDE_PLUGIN_DATA".to_owned(),
+                self.data_dir(data_root).display().to_string(),
+            ),
+            (
+                "CLAUDE_PROJECT_DIR".to_owned(),
+                project_dir.display().to_string(),
+            ),
+        ]);
+        for (key, value) in self.options(data_root)? {
+            vars.insert(
+                format!("CLAUDE_PLUGIN_OPTION_{}", key.to_uppercase()),
+                value,
+            );
+        }
+        let expand = |s: &str| {
+            vars.iter()
+                .fold(s.to_owned(), |s, (k, v)| s.replace(&format!("${{{k}}}"), v))
+        };
+        let bin = self.root.join("bin");
+        let mut path = std::env::var("PATH").unwrap_or_default();
+        if bin.is_dir() {
+            path = format!("{path}:{}", bin.display());
+        }
+
+        let mut servers = BTreeMap::new();
+        for source in &self.mcp_servers {
+            let value = match source {
+                Source::Inline(value) => value.clone(),
+                Source::File(file) => fs::read_to_string(file)
+                    .map_err(|e| e.to_string())
+                    .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
+                    .map_err(|e| format!("{}: {e}", file.display()))?,
+            };
+            // With or without the `mcpServers` wrapper.
+            let map = value.get("mcpServers").cloned().unwrap_or(value);
+            let map: BTreeMap<String, McpServer> = serde_json::from_value(map)
+                .map_err(|e| format!("plugin {}: MCP servers: {e}", self.name))?;
+            for (name, mut server) in map {
+                server.command = expand(&server.command);
+                server.args = server.args.iter().map(|a| expand(a)).collect();
+                for value in server.env.values_mut() {
+                    *value = expand(value);
+                }
+                server.env.extend(vars.clone());
+                server.env.insert("PATH".to_owned(), path.clone());
+                servers.insert(format!("plugin_{}_{name}", self.name), server);
+            }
+        }
+        Ok(servers)
     }
 }
 

@@ -64,7 +64,7 @@ async fn connect_one(
     server: &McpServer,
 ) -> Result<(Client, Vec<rmcp::model::Tool>), String> {
     let mut command = tokio::process::Command::new(&server.command);
-    command.args(&server.args);
+    command.args(&server.args).envs(&server.env);
     // Keeps server noise off stdout, which carries ACP messages in `harness acp`.
     let (transport, _) = TokioChildProcess::builder(command)
         .stderr(Stdio::null())

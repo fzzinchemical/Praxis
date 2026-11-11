@@ -43,12 +43,26 @@ pub struct Config {
 }
 
 /// A stdio MCP server.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct McpServer {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Added to the server's environment. May hold secrets, so `Debug` shows names only.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for McpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Args can carry an expanded plugin option too, so only their count is shown.
+        f.debug_struct("McpServer")
+            .field("command", &self.command)
+            .field("args", &self.args.len())
+            .field("env", &self.env.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

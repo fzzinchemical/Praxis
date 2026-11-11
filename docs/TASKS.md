@@ -540,7 +540,7 @@ flowchart LR
   - **Needs:** T6.1, T3.2.
   - **Done when:** table tests cover every exit code and output field, matcher forms, exec and shell form, timeout; `updatedInput` is revalidated and re-checked for permission (a hook rewriting a path into `.git/hooks/` is denied); a hook `allow` can't override a deny rule.
 
-- [ ] **T6.4 Plugin MCP, `userConfig`, `bin/`** (§12)
+- [x] **T6.4 Plugin MCP, `userConfig`, `bin/`** (§12)
   - **Needs:** T6.1, T4.3.
   - **Done when:** `${CLAUDE_PLUGIN_ROOT}` and friends expand in the specified fields, tool names follow the plugin form, sensitive values stay out of logs and config, and `bin/` can't shadow system commands.
 
