@@ -384,7 +384,7 @@ flowchart LR
   - **Needs:** T3.4.
   - **Done when:** tools from a test `rmcp` server are callable through the agent loop, gated by trust, and a slow or failing server doesn't block startup.
 
-- [ ] **T4.2 Streamable HTTP and `.mcp.json`** (§8, §13) · *Should*
+- [x] **T4.2 Streamable HTTP and `.mcp.json`** (§8, §13) · *Should*
   - **Needs:** T4.1.
   - **Done when:** both config shapes load, and header values resolve from environment without appearing in logs.
 

@@ -15,7 +15,7 @@ ignore = "0.4"
 jsonschema = { version = "0.60", default-features = false }
 landlock = "0.4"
 reqwest = { version = "0.13", features = ["stream", "json"] }
-rmcp = { version = "3.9", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "3.9", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 schemars = "1.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

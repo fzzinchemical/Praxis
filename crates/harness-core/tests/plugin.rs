@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+use harness_core::config::McpServer;
 use harness_core::plugin::{Source, load, run_command};
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
@@ -203,7 +204,9 @@ fn plugin_mcp_servers_expand_variables_and_take_the_plugin_name() {
     let servers = plugin.mcp_servers(Path::new("/proj"), &data).unwrap();
     let names: Vec<_> = servers.keys().cloned().collect();
     assert_eq!(names, ["plugin_kit_db", "plugin_kit_inline"]);
-    let db = &servers["plugin_kit_db"];
+    let McpServer::Stdio(db) = &servers["plugin_kit_db"] else {
+        panic!("{servers:?}")
+    };
     let data_dir = data.join("kit");
     assert_eq!(db.command, format!("{}/srv", root.display()));
     assert_eq!(db.args, [data_dir.to_str().unwrap(), "/proj", "high"]);

@@ -334,13 +334,18 @@ impl Plugin {
             let map: BTreeMap<String, McpServer> = serde_json::from_value(map)
                 .map_err(|e| format!("plugin {}: MCP servers: {e}", self.name))?;
             for (name, mut server) in map {
-                server.command = expand(&server.command);
-                server.args = server.args.iter().map(|a| expand(a)).collect();
-                for value in server.env.values_mut() {
-                    *value = expand(value);
+                match &mut server {
+                    McpServer::Stdio(server) => {
+                        server.command = expand(&server.command);
+                        server.args = server.args.iter().map(|a| expand(a)).collect();
+                        for value in server.env.values_mut() {
+                            *value = expand(value);
+                        }
+                        server.env.extend(vars.clone());
+                        server.env.insert("PATH".to_owned(), path.clone());
+                    }
+                    McpServer::Http(server) => server.url = expand(&server.url),
                 }
-                server.env.extend(vars.clone());
-                server.env.insert("PATH".to_owned(), path.clone());
                 servers.insert(format!("plugin_{}_{name}", self.name), server);
             }
         }

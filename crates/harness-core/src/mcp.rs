@@ -1,14 +1,17 @@
 //! MCP client over stdio (SPEC §13). Tools are listed once at connect and frozen, so the
 //! `tools` array never changes mid-session (SPEC §7).
 
-use crate::config::McpServer;
-use crate::provider::ToolSchema;
+use crate::config::{HttpServer, McpServer};
+use crate::provider::{ToolSchema, is_loopback};
 use crate::tools::ToolOutput;
 use crate::trust::{TrustStore, hash};
 use futures::future::join_all;
+use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::service::{NotificationContext, Peer, RunningService, ServiceError};
+use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::TokioChildProcess;
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, RoleClient, ServiceExt as _};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -59,21 +62,64 @@ impl std::fmt::Debug for Mcp {
     }
 }
 
+/// Resolves `${VAR}` in header values from the environment. Errors name the header and
+/// variable, never a value.
+fn http_transport(
+    server: &HttpServer,
+) -> Result<StreamableHttpClientTransport<reqwest::Client>, String> {
+    let url = reqwest::Url::parse(&server.url).map_err(|e| format!("bad url: {e}"))?;
+    let mut headers = HashMap::new();
+    for (name, template) in &server.headers {
+        // Scans the template only, so a value holding `${` is never expanded again.
+        let (mut value, mut rest) = (String::new(), template.as_str());
+        while let Some((before, after)) = rest.split_once("${")
+            && let Some((var, tail)) = after.split_once('}')
+        {
+            let resolved = std::env::var(var)
+                .map_err(|_| format!("header `{name}`: variable `{var}` is not set"))?;
+            value.push_str(before);
+            value.push_str(&resolved);
+            rest = tail;
+        }
+        value.push_str(rest);
+        let header = |e: &dyn std::fmt::Display| format!("header `{name}`: {e}");
+        headers.insert(
+            HeaderName::try_from(name.as_str()).map_err(|e| header(&e))?,
+            HeaderValue::try_from(value).map_err(|e| header(&e))?,
+        );
+    }
+    let mut client = reqwest::Client::builder();
+    // Like the provider: a loopback server must not be reached through a proxy.
+    if is_loopback(&url) {
+        client = client.no_proxy();
+    }
+    let client = client.build().map_err(|e| e.to_string())?;
+    let config =
+        StreamableHttpClientTransportConfig::with_uri(server.url.as_str()).custom_headers(headers);
+    Ok(StreamableHttpClientTransport::with_client(client, config))
+}
+
 async fn connect_one(
     name: &str,
     server: &McpServer,
 ) -> Result<(Client, Vec<rmcp::model::Tool>), String> {
-    let mut command = tokio::process::Command::new(&server.command);
-    command.args(&server.args).envs(&server.env);
-    // Keeps server noise off stdout, which carries ACP messages in `harness acp`.
-    let (transport, _) = TokioChildProcess::builder(command)
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| format!("couldn't start `{}`: {e}", server.command))?;
     let handler = Handler {
         server: name.to_owned(),
     };
-    let client = handler.serve(transport).await.map_err(|e| e.to_string())?;
+    let client = match server {
+        McpServer::Stdio(server) => {
+            let mut command = tokio::process::Command::new(&server.command);
+            command.args(&server.args).envs(&server.env);
+            // Keeps server noise off stdout, which carries ACP messages in `harness acp`.
+            let (transport, _) = TokioChildProcess::builder(command)
+                .stderr(Stdio::null())
+                .spawn()
+                .map_err(|e| format!("couldn't start `{}`: {e}", server.command))?;
+            handler.serve(transport).await
+        }
+        McpServer::Http(server) => handler.serve(http_transport(server)?).await,
+    }
+    .map_err(|e| e.to_string())?;
     let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
     Ok((client, tools))
 }

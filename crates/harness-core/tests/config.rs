@@ -3,7 +3,9 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::config::{Backend, Loaded, ModelRef, Sources, load, load_with_approval};
+use harness_core::config::{
+    Backend, Loaded, McpServer, ModelRef, Sources, load, load_with_approval,
+};
 use harness_core::permissions::Mode;
 use harness_core::trust::TrustStore;
 use std::fs;
@@ -61,6 +63,7 @@ fn later_layers_win_over_earlier_ones() {
             ("PATH", "/bin"),
         ]),
         overrides: flags(&["default_model=flag", "lmstudio.base_url=http://127.0.0.1:9"]),
+        mcp_json: None,
         trust: None,
     })
     .unwrap();
@@ -83,6 +86,7 @@ fn permission_rule_lists_merge_and_other_values_replace() {
         project: Some(project),
         env: env(&[("HARNESS_PERMISSIONS__ALLOW", "[\"Bash(ls)\"]")]),
         overrides: flags(&["permissions.deny=[\"Write\"]"]),
+        mcp_json: None,
         trust: None,
     })
     .unwrap()
@@ -457,8 +461,75 @@ fn project_mcp_servers_need_approval_and_user_ones_dont() {
     };
     let refused = run(false);
     assert_eq!(refused.mcp.keys().collect::<Vec<_>>(), ["mine"]);
-    assert_eq!(refused.mcp["mine"].command, "mine-server");
+    assert!(matches!(&refused.mcp["mine"], McpServer::Stdio(s) if s.command == "mine-server"));
     let approved = run(true);
     assert_eq!(approved.mcp.keys().collect::<Vec<_>>(), ["mine", "theirs"]);
-    assert_eq!(approved.mcp["theirs"].args, ["--x"]);
+    assert!(matches!(&approved.mcp["theirs"], McpServer::Stdio(s) if s.args == ["--x"]));
+}
+
+fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
+    let path = project.with_file_name(".mcp.json");
+    fs::write(&path, json).unwrap();
+    load_with_approval(
+        Sources {
+            project: Some(project.to_owned()),
+            mcp_json: Some(path),
+            ..Sources::default()
+        },
+        &mut |_, _| answer,
+    )
+    .unwrap()
+}
+
+#[test]
+fn mcp_json_loads_with_or_without_the_wrapper_once_approved() {
+    let project = file("");
+    let wrapped = r#"{"mcpServers": {"web": {"type": "http", "url": "https://x/mcp",
+        "headers": {"Authorization": "Bearer ${TOKEN}"}}}}"#;
+    let bare = r#"{"local": {"type": "stdio", "command": "srv", "args": ["-v"]}}"#;
+
+    let refused = mcp_json(&project, wrapped, false);
+    assert!(refused.config.mcp.is_empty());
+    assert!(
+        refused.notices.iter().any(|n| n.contains("`mcp`")),
+        "{:?}",
+        refused.notices
+    );
+
+    let web = &mcp_json(&project, wrapped, true).config.mcp["web"];
+    // The variable is resolved when connecting, never stored.
+    assert!(matches!(web, McpServer::Http(h)
+        if h.url == "https://x/mcp" && h.headers["Authorization"] == "Bearer ${TOKEN}"));
+    let local = &mcp_json(&project, bare, true).config.mcp["local"];
+    assert!(matches!(local, McpServer::Stdio(s) if s.command == "srv" && s.args == ["-v"]));
+}
+
+#[test]
+fn toml_takes_http_servers_and_rejects_mixed_or_unknown_shapes() {
+    let user =
+        file("[mcp.web]\nurl = \"http://localhost:9/mcp\"\nheaders = { X-Key = \"${K}\" }\n");
+    let config = load(Sources {
+        user: Some(user),
+        ..Sources::default()
+    })
+    .unwrap()
+    .config;
+    assert!(matches!(&config.mcp["web"], McpServer::Http(h) if h.headers["X-Key"] == "${K}"));
+
+    let mixed = file("[mcp.x]\ncommand = \"a\"\nurl = \"http://b\"\n");
+    assert!(
+        load_err(Sources {
+            user: Some(mixed),
+            ..Sources::default()
+        })
+        .contains("`command`")
+    );
+    let sse = file("[mcp.x]\ntype = \"sse\"\nurl = \"http://b\"\n");
+    assert!(
+        load_err(Sources {
+            user: Some(sse),
+            ..Sources::default()
+        })
+        .contains("`sse`")
+    );
 }

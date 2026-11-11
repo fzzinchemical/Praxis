@@ -202,6 +202,7 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
     let sources = Sources {
         user: xdg_path("XDG_CONFIG_HOME", ".config", "config.toml"),
         project: Some(workspace.join(".harness/config.toml")),
+        mcp_json: Some(workspace.join(".mcp.json")),
         // Non-Unicode variables can't hold config values, so they're skipped.
         env: std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))

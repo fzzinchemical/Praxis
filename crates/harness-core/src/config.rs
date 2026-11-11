@@ -42,26 +42,90 @@ pub struct Config {
     pub mcp: BTreeMap<String, McpServer>,
 }
 
-/// A stdio MCP server.
-#[derive(Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct McpServer {
+/// An MCP server, from `[mcp.name]` or Claude Code's `.mcp.json` shape (SPEC §8, §13).
+#[derive(Debug, Clone)]
+pub enum McpServer {
+    Stdio(StdioServer),
+    Http(HttpServer),
+}
+
+/// A server run as a child process.
+#[derive(Clone)]
+pub struct StdioServer {
     pub command: String,
-    #[serde(default)]
     pub args: Vec<String>,
     /// Added to the server's environment. May hold secrets, so `Debug` shows names only.
-    #[serde(default)]
     pub env: BTreeMap<String, String>,
 }
 
-impl std::fmt::Debug for McpServer {
+impl std::fmt::Debug for StdioServer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Args can carry an expanded plugin option too, so only their count is shown.
-        f.debug_struct("McpServer")
+        f.debug_struct("StdioServer")
             .field("command", &self.command)
             .field("args", &self.args.len())
             .field("env", &self.env.keys().collect::<Vec<_>>())
             .finish()
+    }
+}
+
+/// A streamable HTTP server. Header values may name variables as `${VAR}`; they resolve only
+/// when connecting, so secrets never sit in config or logs.
+#[derive(Clone)]
+pub struct HttpServer {
+    pub url: String,
+    pub headers: BTreeMap<String, String>,
+}
+
+impl std::fmt::Debug for HttpServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpServer")
+            .field("url", &self.url)
+            .field("headers", &self.headers.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+/// Both shapes in one table; `type` is optional, as in Claude Code.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawMcpServer {
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    command: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+    url: Option<String>,
+    #[serde(default)]
+    headers: BTreeMap<String, String>,
+}
+
+impl<'de> Deserialize<'de> for McpServer {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let raw = RawMcpServer::deserialize(d)?;
+        let stdio_fields = !raw.args.is_empty() || !raw.env.is_empty();
+        match (raw.kind.as_deref(), raw.command, raw.url) {
+            (Some(kind), ..) if !matches!(kind, "stdio" | "http") => Err(D::Error::custom(
+                format!("MCP server type `{kind}` isn't supported; use `stdio` or `http`"),
+            )),
+            (None | Some("stdio"), Some(command), None) if raw.headers.is_empty() => {
+                Ok(Self::Stdio(StdioServer {
+                    command,
+                    args: raw.args,
+                    env: raw.env,
+                }))
+            }
+            (None | Some("http"), None, Some(url)) if !stdio_fields => Ok(Self::Http(HttpServer {
+                url,
+                headers: raw.headers,
+            })),
+            _ => Err(D::Error::custom(
+                "an MCP server takes either `command`, `args` and `env`, or `url` and `headers`",
+            )),
+        }
     }
 }
 
@@ -245,6 +309,9 @@ pub struct SandboxSettings {
 pub struct Sources {
     pub user: Option<PathBuf>,
     pub project: Option<PathBuf>,
+    /// The project's `.mcp.json`, read as the project's `mcp` table, with or without the
+    /// `mcpServers` wrapper. Needs `project`, whose approval it shares.
+    pub mcp_json: Option<PathBuf>,
     /// The process environment; only `HARNESS_*` names are read.
     pub env: Vec<(String, String)>,
     /// `--config-override` entries, as `KEY=VALUE` with dotted keys.
@@ -294,6 +361,9 @@ pub fn load_with_approval(
     }
     if let Some(path) = &sources.project {
         let mut project = read_file(path)?;
+        if let Some(json) = &sources.mcp_json {
+            merge(&mut project, read_mcp_json(json)?, "");
+        }
         for key in PROJECT_NEVER {
             if remove(&mut project, key).is_some() {
                 notices.push(format!(
@@ -361,6 +431,30 @@ fn read_file(path: &std::path::Path) -> Result<Table, ConfigError> {
     // Parsed into `Config` once for the error, which shows the offending line and key.
     toml::from_str::<Config>(&text).map_err(|e| error(&origin, e))?;
     toml::from_str(&text).map_err(|e| error(&origin, e))
+}
+
+/// `.mcp.json` as a `mcp` table, so it goes through the same approval as `[mcp]`.
+fn read_mcp_json(path: &Path) -> Result<Table, ConfigError> {
+    let origin = path.display().to_string();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Table::new()),
+        Err(e) => return Err(error(&origin, e)),
+    };
+    let mut value: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| error(&origin, e))?;
+    if let Some(wrapped) = value.get_mut("mcpServers") {
+        value = wrapped.take();
+    }
+    // Parsed once for the error, which then names this file rather than `config`.
+    serde_json::from_value::<BTreeMap<String, McpServer>>(value.clone())
+        .map_err(|e| error(&origin, e))?;
+    let servers = Value::try_from(value).map_err(|e| error(&origin, e))?;
+    // An empty file must not ask for approval.
+    let empty = servers.as_table().is_some_and(Table::is_empty);
+    Ok(Table::from_iter(
+        (!empty).then(|| ("mcp".to_owned(), servers)),
+    ))
 }
 
 // shortcut: dotted keys can't reach a key that itself holds a dot, such as a profile pattern

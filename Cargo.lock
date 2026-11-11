@@ -2279,18 +2279,23 @@ version = "3.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d24a7e92f4bcaa36b97fa93c4fa7ca8f3e669eced949345b3462dba333c7f909"
 dependencies = [
+ "base64 0.23.1",
+ "bytes",
  "chrono",
  "futures",
+ "http",
  "indexmap 2.14.2",
  "libc",
  "pastey",
  "pin-project-lite",
  "process-wrap",
+ "reqwest",
  "rmcp-macros",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2",
+ "sse-stream",
  "thiserror",
  "tokio",
  "tokio-stream",
@@ -2675,6 +2680,19 @@ checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "sse-stream"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c25ac7aff0abd1dbc474536e40416e1102c7dd9bfba0b9861c6d357f835dcfb4"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "http-body",
+ "http-body-util",
+ "pin-project-lite",
 ]
 
 [[package]]

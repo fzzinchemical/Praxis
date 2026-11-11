@@ -101,7 +101,7 @@ fn parse_error_body(body: &str) -> ProviderError {
     classify_error(error["code"].as_str(), message)
 }
 
-fn is_loopback(url: &Url) -> bool {
+pub(crate) fn is_loopback(url: &Url) -> bool {
     let host = url.host_str().unwrap_or_default();
     host == "localhost"
         || host

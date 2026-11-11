@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
-use harness_core::config::McpServer;
+use harness_core::config::{HttpServer, McpServer, StdioServer};
 use harness_core::mcp::Mcp;
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
@@ -93,11 +93,11 @@ fn description() -> String {
 }
 
 fn server(command: &str, args: &[&str]) -> McpServer {
-    McpServer {
+    McpServer::Stdio(StdioServer {
         command: command.to_owned(),
         args: args.iter().map(|a| (*a).to_owned()).collect(),
         env: BTreeMap::new(),
-    }
+    })
 }
 
 fn servers() -> BTreeMap<String, McpServer> {
@@ -372,6 +372,67 @@ async fn plugin_tools_take_the_plugin_name_and_are_pinned() {
     assert!(store.get(&format!("mcp:{name}")).unwrap().is_some());
 }
 
+/// A loopback server that records the first request's head and refuses it.
+async fn header_sink() -> (String, tokio::task::JoinHandle<String>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+    let head = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = Vec::new();
+        while !buf.ends_with(b"\r\n\r\n") {
+            let mut byte = [0; 1];
+            if socket.read(&mut byte).await.unwrap() == 0 {
+                break;
+            }
+            buf.push(byte[0]);
+        }
+        let _ = socket
+            .write_all(b"HTTP/1.1 500 Internal Server Error\r\ncontent-length: 0\r\n\r\n")
+            .await;
+        String::from_utf8_lossy(&buf).to_lowercase()
+    });
+    (url, head)
+}
+
+async fn http_headers_resolve_from_the_environment_without_being_logged() {
+    // HOME stands in for a secret: tests may not set variables (`set_var` is unsafe).
+    let secret = std::env::var("HOME").unwrap();
+    let (url, head) = header_sink().await;
+    let http = |headers: &[(&str, &str)]| {
+        McpServer::Http(HttpServer {
+            url: url.clone(),
+            headers: headers
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect(),
+        })
+    };
+    let servers = BTreeMap::from([
+        (
+            "remote".to_owned(),
+            http(&[("Authorization", "Bearer ${HOME}")]),
+        ),
+        (
+            "unset".to_owned(),
+            http(&[("X-Key", "${HARNESS_TEST_UNSET_VARIABLE}")]),
+        ),
+    ]);
+    let (mcp, notices) = Mcp::connect(&servers, Duration::from_secs(5)).await;
+    assert!(
+        head.await
+            .unwrap()
+            .contains(&format!("authorization: bearer {}", secret.to_lowercase()))
+    );
+    assert_eq!(notices.len(), 2, "{notices:?}");
+    assert!(
+        notices[1].contains("HARNESS_TEST_UNSET_VARIABLE"),
+        "{notices:?}"
+    );
+    let shown = format!("{notices:?} {servers:?} {mcp:?}");
+    assert!(!shown.contains(&secret), "{shown}");
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -397,4 +458,6 @@ fn main() {
     println!("changed_descriptions_hide_the_tool_until_approved_again ... ok");
     runtime.block_on(plugin_tools_take_the_plugin_name_and_are_pinned());
     println!("plugin_tools_take_the_plugin_name_and_are_pinned ... ok");
+    runtime.block_on(http_headers_resolve_from_the_environment_without_being_logged());
+    println!("http_headers_resolve_from_the_environment_without_being_logged ... ok");
 }
