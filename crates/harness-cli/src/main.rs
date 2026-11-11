@@ -385,6 +385,7 @@ async fn repl(
         match line.trim() {
             "" => {}
             "/exit" | "/quit" => return Ok(0),
+            "/undo" => undo(agent.tools()),
             prompt => {
                 agent = run_turn(agent, prompt.to_owned(), &mut terminal, interrupt)
                     .await?
@@ -392,6 +393,19 @@ async fn repl(
             }
         }
     }
+}
+
+fn undo(tools: &ToolContext) {
+    match tools.undo() {
+        Ok(files) if files.is_empty() => eprintln!("Nothing to undo."),
+        Ok(files) => {
+            for file in files {
+                eprintln!("Restored {}", sanitize(&file.display().to_string()));
+            }
+        }
+        Err(e) => eprintln!("Undo failed: {e}"),
+    }
+    eprintln!("{}", harness_core::tools::UNDO_NOTE);
 }
 
 async fn list_models(provider: &Provider) -> Result<u8> {
@@ -422,6 +436,9 @@ fn with_session(agent: Agent, resume: Option<&str>) -> Result<Agent> {
         None => (SessionLog::create(&dir)?, Vec::new()),
     };
     eprintln!("Session {}", log.id());
+    agent
+        .tools()
+        .checkpoint_into(dir.join(log.id()).join("checkpoints"));
     Ok(agent.with_session(log, prior))
 }
 

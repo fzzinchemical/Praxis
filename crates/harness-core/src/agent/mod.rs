@@ -261,6 +261,11 @@ impl Agent {
         &self.first_token_ms
     }
 
+    /// The tools this agent runs, for `/undo` and checkpoint setup.
+    pub fn tools(&self) -> &ToolContext {
+        &self.tools
+    }
+
     /// Runs one prompt to completion. `TurnEnded` is always the last event. If the receiver
     /// goes away nobody can steer the turn any more, so it ends as cancelled.
     pub async fn run_turn(
@@ -269,6 +274,7 @@ impl Agent {
         events: &mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) {
+        self.tools.begin_turn();
         let content = match self.note_changed_facts() {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,

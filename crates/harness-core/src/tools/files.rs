@@ -105,7 +105,10 @@ pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
 /// Replaces `path` through a temp file in the same folder and a rename, so an interrupted
 /// write leaves the original intact. The temp file gets the mode before any content, so a
 /// private file is never briefly readable.
-fn replace_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> io::Result<()> {
+pub(super) fn replace_with(
+    path: &Path,
+    fill: impl FnOnce(&mut File) -> io::Result<()>,
+) -> io::Result<()> {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let dir = path.parent().ok_or(io::ErrorKind::InvalidInput)?;
     let (temp, mut file) = loop {
@@ -138,6 +141,7 @@ fn replace_with(path: &Path, fill: impl FnOnce(&mut File) -> io::Result<()>) -> 
 }
 
 fn store(path: &Path, content: &str, ctx: &ToolContext) -> Result<(), ToolError> {
+    ctx.checkpoint(path)?;
     replace_with(path, |file| file.write_all(content.as_bytes()))
         .map_err(ToolError::io("write", path))?;
     ctx.remember(path, hash_of(content.as_bytes()));

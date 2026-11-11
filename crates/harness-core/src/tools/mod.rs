@@ -2,9 +2,12 @@
 //! surface for plugin hooks: never rename them.
 
 mod bash;
+mod checkpoint;
 pub(crate) mod confine;
 mod files;
 mod search;
+
+pub use checkpoint::UNDO_NOTE;
 
 use crate::provider::ToolSchema;
 use schemars::{JsonSchema, generate::SchemaSettings};
@@ -98,6 +101,7 @@ pub struct ToolContext {
     /// `Bash`'s private, writable `TMPDIR`. Created on first use.
     tmp_dir: PathBuf,
     tmp_created: Mutex<bool>,
+    checkpoints: Mutex<checkpoint::Checkpoints>,
 }
 
 impl ToolContext {
@@ -122,6 +126,7 @@ impl ToolContext {
             sandbox: None,
             tmp_dir: new_temp_path("tmp"),
             tmp_created: Mutex::default(),
+            checkpoints: Mutex::default(),
         })
     }
 
@@ -186,6 +191,13 @@ impl ToolContext {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(path.to_owned(), hash);
+    }
+
+    fn forget(&self, path: &Path) {
+        self.seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(path);
     }
 
     fn last_seen(&self, path: &Path) -> Option<u64> {

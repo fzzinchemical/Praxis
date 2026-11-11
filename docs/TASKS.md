@@ -342,7 +342,7 @@ flowchart LR
   - **Needs:** T1.7.
   - **Done when:** resume reproduces history; a truncated final line is tolerated; files are `0600`; and a log write failure stops the turn.
 
-- [ ] **T3.8 Checkpoints and `/undo`** (§8) · *Should*
+- [x] **T3.8 Checkpoints and `/undo`** (§8) · *Should*
   - **Needs:** T3.7.
   - **Done when:** tests restore edited and newly created files after a turn, and the UI text notes that Bash effects aren't undone.
 
