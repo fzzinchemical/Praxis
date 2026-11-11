@@ -316,7 +316,7 @@ flowchart LR
   - **Needs:** T1.9.
   - **Done when:** tests cover precedence, list merging, and errors naming file and key for unknown keys or wrong types.
 
-- [ ] **T3.2 Permission rules and modes** (§9)
+- [x] **T3.2 Permission rules and modes** (§9)
   - **Needs:** T3.1.
   - **Done when:** table-driven tests cover every branch of the decision flow and every mode, and the compound-command list never matches an allow rule, including `git status; curl x | sh`; a command mentioning a hard-denied path never matches one either; and an allow rule can't widen `read-only` mode.
 

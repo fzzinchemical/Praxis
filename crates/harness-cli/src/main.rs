@@ -9,6 +9,7 @@ use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome, system_prompt,
 };
 use harness_core::config::{self, Config, Sources};
+use harness_core::permissions::Policy;
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::tools::ToolContext;
 use serde_json::Value;
@@ -56,7 +57,7 @@ fn user_config_path() -> Option<PathBuf> {
     Some(base.join("harness/config.toml"))
 }
 
-fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<Config, config::ConfigError> {
+fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Policy), String> {
     let loaded = config::load(Sources {
         user: user_config_path(),
         project: Some(workspace.join(".harness/config.toml")),
@@ -65,17 +66,15 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<Config, confi
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
             .collect(),
         overrides,
-    })?;
+    })
+    .map_err(|e| e.to_string())?;
     for notice in &loaded.notices {
         eprintln!("{notice}");
     }
     let rules = &loaded.config.permissions;
-    if !rules.allow.is_empty() || !rules.deny.is_empty() {
-        eprintln!(
-            "Permission rules in config aren't enforced yet; every tool still asks as before."
-        );
-    }
-    Ok(loaded.config)
+    let policy = Policy::new(rules.mode, &rules.allow, &rules.deny)
+        .map_err(|e| format!("permissions: {e}"))?;
+    Ok((loaded.config, policy))
 }
 
 fn user_profiles(config: &Config) -> Vec<(String, ProfileLayer)> {
@@ -369,7 +368,12 @@ async fn list_models(provider: &Provider) -> Result<u8> {
     Ok(0)
 }
 
-async fn run(cli: Cli, config: Config, workspace: PathBuf, provider: Provider) -> Result<u8> {
+async fn run(
+    cli: Cli,
+    (config, policy): (Config, Policy),
+    workspace: PathBuf,
+    provider: Provider,
+) -> Result<u8> {
     if matches!(cli.command, Some(Command::Models)) {
         return list_models(&provider).await;
     }
@@ -415,6 +419,7 @@ async fn run(cli: Cli, config: Config, workspace: PathBuf, provider: Provider) -
             max_turn_requests: config.agent.max_turn_requests,
             profile,
             seed: None,
+            policy,
             masking: true,
         },
     );
@@ -443,8 +448,8 @@ async fn main() -> ExitCode {
             return ExitCode::from(EXIT_FAILURE);
         }
     };
-    let config = match load_config(&workspace, std::mem::take(&mut cli.overrides)) {
-        Ok(config) => config,
+    let (config, policy) = match load_config(&workspace, std::mem::take(&mut cli.overrides)) {
+        Ok(loaded) => loaded,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::from(EXIT_USAGE);
@@ -459,7 +464,7 @@ async fn main() -> ExitCode {
             return ExitCode::from(EXIT_USAGE);
         }
     };
-    match run(cli, config, workspace, provider).await {
+    match run(cli, (config, policy), workspace, provider).await {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
             eprintln!("{error:#}");

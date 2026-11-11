@@ -299,6 +299,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
             seed: Some(EVAL_SEED),
+            policy: harness_core::permissions::Policy::default(),
         },
     );
     let cancel = CancellationToken::new();

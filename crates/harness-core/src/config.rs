@@ -5,6 +5,7 @@
 use crate::agent::DEFAULT_MAX_TURN_REQUESTS;
 use crate::agent::profile::ProfileLayer;
 use crate::context::compaction::DEFAULT_MASK_KEEP_TURNS;
+use crate::permissions::Mode;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -86,10 +87,11 @@ impl Default for ContextSettings {
     }
 }
 
-/// Rules are parsed and merged here; enforcing them is T3.2.
+/// Rule syntax is checked by [`crate::permissions::Policy::new`].
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PermissionRules {
+    pub mode: Mode,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
 }
@@ -142,6 +144,14 @@ pub fn load(sources: Sources) -> Result<Loaded, ConfigError> {
                     path.display()
                 ));
             }
+        }
+        // A project may make the mode stricter, never wider.
+        if mode_of(&project) > Some(mode_of(&merged).unwrap_or_default()) {
+            remove(&mut project, "permissions.mode");
+            notices.push(format!(
+                "Ignored `permissions.mode` from {}: project config can only make it stricter.",
+                path.display()
+            ));
         }
         merge(&mut merged, project, "");
     }
@@ -228,4 +238,10 @@ fn remove(table: &mut Table, key: &str) -> bool {
         },
         None => table.remove(key).is_some(),
     }
+}
+
+/// The `permissions.mode` a validated layer sets, if any.
+fn mode_of(table: &Table) -> Option<Mode> {
+    let mode = table.get("permissions")?.get("mode")?.clone();
+    Mode::deserialize(mode).ok()
 }

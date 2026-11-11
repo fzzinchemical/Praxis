@@ -2,7 +2,7 @@
 //! surface for plugin hooks: never rename them.
 
 mod bash;
-mod confine;
+pub(crate) mod confine;
 mod files;
 mod search;
 

@@ -77,6 +77,7 @@ fn config(context_size: u32) -> AgentConfig {
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
         seed: None,
+        policy: harness_core::permissions::Policy::default(),
         masking: true,
     }
 }

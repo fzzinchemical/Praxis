@@ -10,7 +10,7 @@ pub mod recovery;
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
-use crate::permissions::{Decision, Permissions};
+use crate::permissions::{Decision, Permissions, Policy};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
@@ -112,6 +112,8 @@ pub struct AgentConfig {
     pub profile: ModelProfile,
     /// Sent with every request; evals fix it so runs repeat where the server allows (SPEC §14).
     pub seed: Option<u64>,
+    /// Permission mode and rules (SPEC §9).
+    pub policy: Policy,
 }
 
 pub const DEFAULT_MAX_TURN_REQUESTS: u32 = 50;
@@ -195,12 +197,13 @@ impl Agent {
         let facts = SessionFacts::capture(tools.workspace());
         let (system, prefix_warning) = assemble_prefix(&config, &budget, &tool_schemas, &facts);
         let history = vec![Message::System { content: system }];
+        let permissions = Permissions::new(config.policy.clone(), tools.workspace());
         Self {
             provider,
             tools,
             config,
             history,
-            permissions: Permissions::default(),
+            permissions,
             call_failures: HashMap::new(),
             parse_failures: 0,
             budget,
@@ -593,7 +596,7 @@ impl Agent {
         input: &Value,
         turn: &Turn<'_>,
     ) -> Result<(), String> {
-        let can_always = match self.permissions.decide(&call.name) {
+        let can_always = match self.permissions.decide(&call.name, input) {
             Decision::Allow => return Ok(()),
             Decision::Deny(reason) => return Err(reason),
             Decision::Ask { can_always } => can_always,
@@ -614,7 +617,7 @@ impl Agent {
         if reply == PermissionReply::Cancelled {
             turn.cancel.cancel();
         }
-        self.permissions.record(&call.name, reply)
+        self.permissions.record(&call.name, input, reply)
     }
 }
 

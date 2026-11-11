@@ -191,3 +191,20 @@ fn project_config_cannot_change_the_server_or_widen_permissions() {
     .config;
     assert_eq!(config.lmstudio.base_url, "http://10.0.0.2:1234");
 }
+
+#[test]
+fn project_config_can_make_the_mode_stricter_but_not_wider() {
+    use harness_core::permissions::Mode;
+    let mode_with = |user: &str, project: &str| {
+        let loaded = load(Sources {
+            user: Some(file(&format!("[permissions]\nmode = \"{user}\"\n"))),
+            project: Some(file(&format!("[permissions]\nmode = \"{project}\"\n"))),
+            ..Sources::default()
+        })
+        .unwrap();
+        (loaded.config.permissions.mode, loaded.notices.len())
+    };
+    assert_eq!(mode_with("ask", "read-only"), (Mode::ReadOnly, 0));
+    assert_eq!(mode_with("ask", "auto-edit"), (Mode::Ask, 1));
+    assert_eq!(mode_with("auto-edit", "auto-edit"), (Mode::AutoEdit, 0));
+}
