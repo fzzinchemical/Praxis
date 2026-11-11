@@ -3,11 +3,13 @@
 use super::recovery::{self, ThinkSplitter};
 use super::{Agent, AgentEvent, Turn};
 use crate::context::compaction::{
-    CompactionStage, CompactionState, SUMMARY_PROMPT, apply_summary, mask_oldest_results,
-    stub_oldest_results, summary_boundary,
+    CompactionStage, CompactionState, READ_ONLY_TOOLS, SUMMARY_PROMPT, apply_summary,
+    mask_oldest_results, stub_oldest_results, summary_boundary,
 };
-use crate::provider::{ChatChunk, ChatRequest, FinishReason, Message};
+use crate::provider::{ChatChunk, ChatRequest, FinishReason, Message, ToolCall};
 use futures::{StreamExt, pin_mut};
+use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio_util::sync::CancellationToken;
 
 /// Share of `C` that kept turns may fill, leaving the rest for prefix, summary and new work.
@@ -50,13 +52,58 @@ impl Agent {
         turn.compaction(CompactionState::Started(stage)).await;
         let excess = self.budget.chars_for(before.saturating_sub(target));
         let tools = std::sync::Arc::clone(&self.tools);
+        let unmasked = self.history.clone();
+        let spooled = std::cell::RefCell::new(Vec::new());
         mask_oldest_results(
             &mut self.history,
             self.config.mask_keep_turns,
             excess,
-            |text| tools.spool(text),
+            |text| {
+                let path = tools.spool(text)?;
+                spooled.borrow_mut().push(path.clone());
+                Ok(path)
+            },
         );
+        self.remember_masked(&unmasked, spooled.into_inner());
         self.finish(stage, before, turn).await;
+    }
+
+    /// Records how the model can get each newly masked result back, mirroring the placeholder.
+    fn remember_masked(&mut self, unmasked: &[Message], spooled: Vec<PathBuf>) {
+        let calls: HashMap<&str, &ToolCall> = unmasked
+            .iter()
+            .filter_map(|m| match m {
+                Message::Assistant { tool_calls, .. } => Some(tool_calls),
+                _ => None,
+            })
+            .flatten()
+            .map(|call| (call.id.as_str(), call))
+            .collect();
+        for (old, new) in unmasked.iter().zip(&self.history) {
+            let (
+                Message::Tool {
+                    tool_call_id,
+                    content: before,
+                },
+                Message::Tool { content: after, .. },
+            ) = (old, new)
+            else {
+                continue;
+            };
+            let Some(call) = calls.get(tool_call_id.as_str()) else {
+                continue;
+            };
+            if before == after || !READ_ONLY_TOOLS.contains(&call.name.as_str()) {
+                continue;
+            }
+            if let Ok(input) = serde_json::from_str(&call.arguments) {
+                self.refetchable.push((call.name.clone(), input));
+            }
+        }
+        for path in spooled {
+            let input = serde_json::json!({ "file_path": path.to_string_lossy() });
+            self.refetchable.push(("Read".to_owned(), input));
+        }
     }
 
     async fn finish(&self, stage: CompactionStage, before_tokens: u32, turn: &Turn<'_>) {

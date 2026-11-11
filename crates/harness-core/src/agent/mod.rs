@@ -152,6 +152,9 @@ pub struct Agent {
     compact_next: bool,
     /// Messages a summary removed. Generated call ids count these so they never repeat.
     summarised_messages: usize,
+    /// How to get masked output back, as a tool name and the arguments a call must include.
+    refetchable: Vec<(String, Value)>,
+    refetches: u32,
 }
 
 /// What one model request produced before it ended.
@@ -202,12 +205,20 @@ impl Agent {
             facts,
             compact_next: false,
             summarised_messages: 0,
+            refetchable: Vec::new(),
+            refetches: 0,
         }
     }
 
     /// Calls rejected as unreadable or invalid in this session, for the scoreboard (SPEC §5.3).
     pub fn parse_failures(&self) -> u32 {
         self.parse_failures
+    }
+
+    /// Calls that fetched masked output again, for the scoreboard (SPEC §14): a repeat of a masked
+    /// read-only call, or a `Read` of a masked result's spool file. Extra arguments still count.
+    pub fn refetches(&self) -> u32 {
+        self.refetches
     }
 
     /// Runs one prompt to completion. `TurnEnded` is always the last event. If the receiver
@@ -527,6 +538,14 @@ impl Agent {
             title: title(&call.name, input),
         })
         .await;
+        if let Ok(input) = &checked
+            && self
+                .refetchable
+                .iter()
+                .any(|(name, wanted)| *name == call.name && includes(input, wanted))
+        {
+            self.refetches += 1;
+        }
         let output = match checked {
             Ok(input) => match self.check_permission(call, &input, turn).await {
                 Ok(()) => {
@@ -618,6 +637,15 @@ impl Turn<'_> {
         .await;
         StopReason::ProviderError
     }
+}
+
+/// Whether `input` has every field of `wanted`, with equal values.
+fn includes(input: &Value, wanted: &Value) -> bool {
+    wanted.as_object().is_some_and(|fields| {
+        fields
+            .iter()
+            .all(|(key, value)| input.get(key) == Some(value))
+    })
 }
 
 /// Builds the system message, trimming AGENTS.md first if the prefix is over budget (SPEC §7).

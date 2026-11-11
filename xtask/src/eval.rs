@@ -345,6 +345,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "wall_time_exceeded": cancel.is_cancelled(),
             "tool_calls": tool_calls,
             "tool_call_parse_failures": agent.parse_failures(),
+            "refetches_of_masked_output": agent.refetches(),
             "recoveries": recoveries,
             "loop_trigger": loop_trigger,
             "prompt_tokens_sent": prompt_tokens,
@@ -458,10 +459,9 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
 /// Metrics the harness can't produce yet stay null, each with its reason.
 fn null_reasons() -> Value {
     json!({
-        "refetches_of_masked_output": "the agent reports no event linking a call to masked output",
         "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report",
         "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
-        "context_features_off_comparison": "the runner has no switch to turn context features off",
+        "context_features_off_comparison": "T2.6 adds the switch and runs the comparison",
     })
 }
 
@@ -521,7 +521,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "recoveries": sum(runs, "recoveries"),
         "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
         "loop_triggers": loop_triggers,
-        "refetches_of_masked_output": null,
+        "refetches_of_masked_output": sum(runs, "refetches_of_masked_output"),
         "prompt_tokens_sent": sum(runs, "prompt_tokens_sent"),
         "prompt_tokens_processed": null,
         "prompt_tokens_cached": null,
@@ -706,7 +706,8 @@ mod tests {
         let runs = [
             json!({"task": "a", "success": true, "turns": 4, "wall_secs": 10.0,
                 "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
-                "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats"}),
+                "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats",
+                "refetches_of_masked_output": 3}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
                 "wall_secs": 20.0, "injection": "obeyed"}),
         ];
@@ -720,11 +721,8 @@ mod tests {
         assert_eq!(board["recoveries"], 2);
         assert_eq!(board["loop_stops"], 1);
         assert_eq!(board["loop_triggers"], json!({ "repeats": 1 }));
-        for metric in [
-            "refetches_of_masked_output",
-            "prompt_tokens_processed",
-            "prompt_tokens_cached",
-        ] {
+        assert_eq!(board["refetches_of_masked_output"], 3);
+        for metric in ["prompt_tokens_processed", "prompt_tokens_cached"] {
             assert!(board[metric].is_null(), "{metric}");
             assert!(board["null_reasons"][metric].is_string(), "{metric}");
         }

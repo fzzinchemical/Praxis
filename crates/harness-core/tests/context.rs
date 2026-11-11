@@ -3,7 +3,9 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::agent::{Agent, AgentConfig, AgentEvent, StopReason, ToolOutcome};
+use harness_core::agent::{
+    Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome,
+};
 use harness_core::context::compaction::{CompactionState, DEFAULT_MASK_KEEP_TURNS};
 use harness_core::provider::Provider;
 use harness_core::tools::{self, ToolContext};
@@ -22,9 +24,18 @@ struct Script {
 }
 
 impl Respond for Script {
-    fn respond(&self, _: &Request) -> ResponseTemplate {
+    /// `{SPOOL}` in a body becomes the newest spool path the request mentions.
+    fn respond(&self, request: &Request) -> ResponseTemplate {
         let i = self.next.fetch_add(1, Ordering::SeqCst);
-        let body = self.bodies[i.min(self.bodies.len() - 1)].clone();
+        let mut body = self.bodies[i.min(self.bodies.len() - 1)].clone();
+        if body.contains("{SPOOL}") {
+            let sent = String::from_utf8_lossy(&request.body);
+            let path = sent
+                .split(|c: char| c.is_whitespace() || c == '"' || c == '\\')
+                .rfind(|word| word.contains("harness-spool"))
+                .unwrap();
+            body = body.replace("{SPOOL}", path);
+        }
         ResponseTemplate::new(200).set_body_raw(body, "text/event-stream")
     }
 }
@@ -111,6 +122,11 @@ impl Harness {
         });
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
+            // Only the re-fetch test calls a tool that asks; approve it like an eval does.
+            if let AgentEvent::PermissionRequest { respond, .. } = event {
+                let _ = respond.send(PermissionReply::AllowOnce);
+                continue;
+            }
             events.push(event);
         }
         self.agent = Some(task.await.unwrap());
@@ -475,6 +491,47 @@ async fn masks_once_in_a_batch_and_keeps_the_prefix_and_recent_turns() {
         })
         .count();
     assert_eq!(breaks, 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn counts_calls_that_fetch_masked_output_again() {
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 3;
+    let mut bodies = vec![tool_reply("b", "Bash", json!({"command": "cat f.txt"}))];
+    bodies.extend(read_script(8).into_iter().take(8));
+    bodies.push(tool_reply(
+        "s",
+        "Read",
+        json!({"file_path": "{SPOOL}", "limit": 50}),
+    ));
+    bodies.push(tool_reply(
+        "again",
+        "Read",
+        json!({"limit": 1000, "file_path": "f.txt"}),
+    ));
+    bodies.push(tool_reply(
+        "new",
+        "Read",
+        json!({"file_path": "f.txt", "limit": 5}),
+    ));
+    bodies.push(text_reply("done", 7000));
+    let mut h = Harness::new(bodies, cfg).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let events = h.turn("go").await;
+
+    assert_eq!(
+        starts_and_ends(&compactions(&events))[..2],
+        ["started:Masking", "finished:Masking"]
+    );
+    let refetched = |id: &str| {
+        events.iter().any(|e| {
+            matches!(e, AgentEvent::ToolFinished { id: done, outcome: ToolOutcome::Completed(out) }
+                if done == id && !out.is_error)
+        })
+    };
+    assert!(refetched("s") && refetched("again"), "both calls ran");
+    // The spooled Bash output and the repeated read count; a read with new arguments doesn't.
+    assert_eq!(h.agent.as_ref().unwrap().refetches(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

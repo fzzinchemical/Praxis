@@ -217,9 +217,10 @@ flowchart LR
     class T0_3 other
 ```
 
-- [ ] **T2.1 Eval runner** (§14)
+- [x] **T2.1 Eval runner** (§14)
   - **Needs:** T1.9, T0.4.
   - **Done when:** `cargo xtask eval` runs all tasks on a model and writes the scoreboard JSON with every metric in §14.
+  - **Left null, with reasons:** cached and processed prompt tokens (LM Studio reports no cached count), and the comparison with context features off, which T2.6 runs.
 
 - [x] **T2.2 Tool-call recovery** (§5.3)
   - **Needs:** T1.7.
