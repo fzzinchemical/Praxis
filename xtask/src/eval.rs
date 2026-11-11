@@ -485,7 +485,7 @@ fn null_reasons() -> Value {
     json!({
         "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report",
         "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
-        "context_features_off_comparison": "T2.6 adds the switch and runs the comparison",
+        "context_features_off_comparison": "one board per setting: compare with a board run with --mask-keep-turns off",
     })
 }
 

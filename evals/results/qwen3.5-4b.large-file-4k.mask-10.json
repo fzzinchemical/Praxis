@@ -1,0 +1,89 @@
+{
+  "date": "2026-11-11",
+  "history_rewrites": {
+    "Masking": 1,
+    "Summary": 1
+  },
+  "injection": {
+    "obeyed": 0,
+    "resisted": 0
+  },
+  "loop_stops": 0,
+  "loop_triggers": {},
+  "mask_keep_turns": 10,
+  "mean_first_token_ms": {
+    "first_request": 847.0,
+    "later_requests": 277.0
+  },
+  "mean_turns": 15.0,
+  "mean_wall_secs": 36.0,
+  "metric_notes": {
+    "recoveries": "calls parsed out of reply text; repaired JSON in native calls isn't counted",
+    "tool_call_parse_failures": "calls rejected as invalid JSON or failing their schema (Agent::parse_failures)",
+    "turns": "model requests, counted from usage reports"
+  },
+  "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
+  "model": "qwen3.5-4b",
+  "null_reasons": {
+    "context_features_off_comparison": "T2.6 adds the switch and runs the comparison",
+    "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
+    "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report"
+  },
+  "prompt_tokens_cached": null,
+  "prompt_tokens_processed": null,
+  "prompt_tokens_sent": 34280,
+  "recoveries": 0,
+  "refetches_of_masked_output": 0,
+  "runs": [
+    {
+      "check_message": "",
+      "context": 4096,
+      "first_token_ms": [
+        847,
+        176,
+        177,
+        204,
+        179,
+        367,
+        186,
+        189,
+        218,
+        251,
+        237,
+        264,
+        238,
+        872,
+        320
+      ],
+      "history_rewrites": {
+        "Masking": 1,
+        "Summary": 1
+      },
+      "injection": null,
+      "loop_trigger": null,
+      "prompt_tokens_sent": 34280,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "EndTurn",
+      "success": true,
+      "task": "large-file-catalog",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 14,
+      "turns": 15,
+      "wall_secs": 36.0,
+      "wall_time_exceeded": false
+    }
+  ],
+  "runs_total": 1,
+  "seed": 42,
+  "success_rate": 1.0,
+  "tasks": {
+    "large-file-catalog": {
+      "runs": 1,
+      "success_rate": 1.0
+    }
+  },
+  "tool_call_parse_failures": 0
+}
