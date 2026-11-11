@@ -172,7 +172,7 @@ impl Permissions {
             _ if read_only => Decision::Allow,
             "Write" | "Edit" if self.policy.mode == Mode::AutoEdit => Decision::Allow,
             "Write" | "Edit" => Decision::Ask { can_always: true },
-            // Unsandboxed until T3.3, so every call must prompt.
+            // A grant would cover every later command, so routine ones need allow rules instead.
             "Bash" => Decision::Ask { can_always: false },
             other => Decision::Deny(format!(
                 "Unknown tool `{other}`. Use one of the tools you were given."

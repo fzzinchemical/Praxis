@@ -18,8 +18,14 @@ const ENV_RESERVED: [&str; 1] = ["HARNESS_LOG_CONTENT"];
 /// Lists that append across layers instead of replacing.
 const MERGED_LISTS: [&str; 2] = ["permissions.allow", "permissions.deny"];
 // shortcut: until the trust gate (T3.4), project config drops everything that could widen
-// what runs; T3.4 lets approved widening items through. `lmstudio` stays dropped for good.
-const PROJECT_DROPPED: [&str; 3] = ["lmstudio", "agent.auto_load", "permissions.allow"];
+// what runs; T3.4 lets approved widening items through. `lmstudio` and `sandbox` stay dropped
+// for good (SPEC §8).
+const PROJECT_DROPPED: [&str; 4] = [
+    "lmstudio",
+    "sandbox",
+    "agent.auto_load",
+    "permissions.allow",
+];
 
 /// The effective config. Every key has a default, so any layer may set any subset.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -30,6 +36,7 @@ pub struct Config {
     pub agent: AgentSettings,
     pub context: ContextSettings,
     pub permissions: PermissionRules,
+    pub sandbox: SandboxSettings,
     // shortcut: patterns apply in name order, not file order; keep file order if overlapping
     // patterns ever need it.
     /// `[profiles."pattern"]`, the user layer of model profiles (SPEC §5.5).
@@ -94,6 +101,25 @@ pub struct PermissionRules {
     pub mode: Mode,
     pub allow: Vec<String>,
     pub deny: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxMode {
+    #[default]
+    On,
+    Off,
+}
+
+/// `[sandbox]` (SPEC §9). Never read from project config.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxSettings {
+    pub mode: SandboxMode,
+    /// Allows TCP from commands.
+    pub network: bool,
+    pub extra_read: Vec<PathBuf>,
+    pub extra_write: Vec<PathBuf>,
 }
 
 /// Where each layer comes from. Missing files are skipped.

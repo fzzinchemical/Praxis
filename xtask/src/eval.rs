@@ -11,6 +11,7 @@ use harness_core::agent::{
 use harness_core::context::compaction::CompactionState;
 use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use harness_core::provider::{LoadPolicy, Provider, ReadyModel};
+use harness_core::sandbox::Sandbox;
 use harness_core::tools::ToolContext;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
@@ -288,7 +289,11 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
     let mut agent = Agent::new(
         Arc::new(provider),
-        Arc::new(ToolContext::new(Path::new(WORK))?),
+        // Same sandbox as the CLI, applied inside the eval's own bwrap container.
+        Arc::new(ToolContext::new(Path::new(WORK))?.with_sandbox(Sandbox {
+            helper: std::env::current_exe()?,
+            ..Sandbox::default()
+        })),
         AgentConfig {
             model: instance,
             context_size: u32::try_from(number("context")?)?,

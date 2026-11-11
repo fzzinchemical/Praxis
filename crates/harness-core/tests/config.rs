@@ -208,3 +208,20 @@ fn project_config_can_make_the_mode_stricter_but_not_wider() {
     assert_eq!(mode_with("ask", "auto-edit"), (Mode::Ask, 1));
     assert_eq!(mode_with("auto-edit", "auto-edit"), (Mode::AutoEdit, 0));
 }
+
+#[test]
+fn sandbox_settings_come_from_the_user_and_never_from_the_project() {
+    use harness_core::config::SandboxMode;
+    let Loaded { config, notices } = load(Sources {
+        user: Some(file(
+            "[sandbox]\nnetwork = true\nextra_read = [\"/data\"]\n",
+        )),
+        project: Some(file("[sandbox]\nmode = \"off\"\n")),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert_eq!(config.sandbox.mode, SandboxMode::On);
+    assert!(config.sandbox.network);
+    assert_eq!(config.sandbox.extra_read, [PathBuf::from("/data")]);
+    assert!(notices.join("\n").contains("`sandbox`"), "{notices:?}");
+}

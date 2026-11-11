@@ -22,8 +22,19 @@ const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </Types>
 "#;
 
+fn main() -> Result<()> {
+    // Before the runtime starts, so the sandbox applies to a single-threaded process (SPEC §9).
+    let args: Vec<std::ffi::OsString> = env::args_os().skip(1).collect();
+    if let Some((command, rest)) = args.split_first()
+        && command == "sandbox-exec"
+    {
+        bail!("{}", harness_core::sandbox::exec(rest));
+    }
+    async_main()
+}
+
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn async_main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.split_first() {
         Some((command, _)) if command == "vsix" => vsix(),

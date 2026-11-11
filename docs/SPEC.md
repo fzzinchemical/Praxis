@@ -518,7 +518,7 @@ flowchart LR
     class final result
 ```
 
-Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `agent.auto_load`, `permissions.allow` and any `permissions.mode` wider than the user's, with a notice.
+Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below. Until the gate exists (T3.4), project config drops `lmstudio.*`, `sandbox.*`, `agent.auto_load`, `permissions.allow` and any `permissions.mode` wider than the user's, with a notice.
 
 Variables and flags use dotted keys: `HARNESS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `HARNESS_LOG_CONTENT` is not a config key.
 
@@ -691,9 +691,9 @@ sequenceDiagram
     end
 ```
 
-- **Writes:** workspace, a per-session temp directory, `extra_write`.
-- **Reads:** allowlist of system directories, workspace, toolchain directories, `extra_read`. `~/.ssh` and similar stay unreadable, unlike a write-only sandbox.
-- **Network:** TCP bind and connect blocked unless `network = true`, which needs Landlock ABI 4 or later.
+- **Writes:** workspace, a per-session temp directory (the command's `TMPDIR`), `/dev/null` and similar devices, `extra_write`.
+- **Reads:** allowlist of system directories (`/usr`, `/etc`, `/opt`, `/proc`, `/dev` and the `/bin` and `/lib` links), workspace, toolchain directories (`CARGO_HOME`, `RUSTUP_HOME`, `~/.cargo`, `~/.rustup` and the other toolchain variables), `extra_read`. `~/.ssh` and similar stay unreadable, unlike a write-only sandbox. Toolchain directories are never writable, because `~/.cargo/bin` runs later outside the sandbox; Cargo works with a read-only `CARGO_HOME` when nothing needs downloading.
+- **Network:** TCP bind and connect blocked unless `network = true`. The helper requires Landlock ABI 4 (Linux 6.7) or later either way.
 - **Environment:** allowlisted variables only (`PATH`, `HOME`, `LANG`, `TERM`, toolchain variables). `*_TOKEN`, `*_KEY` and `*_SECRET` are always removed.
 - **Fail closed.** If Landlock isn't fully enforced, refuse to run commands and explain how to set `sandbox.mode = "off"` in user config. Never fall back silently.
 
@@ -703,7 +703,7 @@ sequenceDiagram
 
 Because of that limit, hard denials (§10) are fully enforced for `Write` and `Edit` only. For `Bash`, they are enforced by the prompt: a command that mentions a hard-denied path never matches an allow rule, and the threat model must state the gap, including indirect writes that the text check can't see.
 
-`sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
+`harness` and `xtask` both handle `sandbox-exec` before the async runtime starts, so restriction happens in a single-threaded process; it exits 126 when it refuses. Evals run the same sandbox nested inside their bwrap container. `sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
 
 MCP servers and hooks are **not** sandboxed in the first version, because they are user-approved programs that often need access. Say so in the approval prompt and threat model.
 

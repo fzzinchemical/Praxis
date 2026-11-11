@@ -93,6 +93,11 @@ pub struct ToolContext {
     spool_dir: PathBuf,
     /// How many files are in `spool_dir`, or `None` until this session has created it.
     spooled: Mutex<Option<u64>>,
+    /// `None` runs `Bash` unsandboxed, which only `sandbox.mode = "off"` should choose.
+    sandbox: Option<crate::sandbox::Sandbox>,
+    /// `Bash`'s private, writable `TMPDIR`. Created on first use.
+    tmp_dir: PathBuf,
+    tmp_created: Mutex<bool>,
 }
 
 impl ToolContext {
@@ -112,9 +117,31 @@ impl ToolContext {
                 .map_err(ToolError::io("open the workspace", workspace))?,
             env: bash::child_env(vars),
             seen: Mutex::default(),
-            spool_dir: new_spool_path(),
+            spool_dir: new_temp_path("spool"),
             spooled: Mutex::default(),
+            sandbox: None,
+            tmp_dir: new_temp_path("tmp"),
+            tmp_created: Mutex::default(),
         })
+    }
+
+    /// Runs every `Bash` command through `sandbox`'s helper (SPEC §9).
+    pub fn with_sandbox(mut self, sandbox: crate::sandbox::Sandbox) -> Self {
+        self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// This session's private temp folder for commands, created on first use.
+    fn tmp(&self) -> io::Result<&Path> {
+        let mut created = self
+            .tmp_created
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if !*created {
+            DirBuilder::new().mode(0o700).create(&self.tmp_dir)?;
+            *created = true;
+        }
+        Ok(&self.tmp_dir)
     }
 
     /// Saves `text` privately and returns its path. The name is ours alone: tool call ids come
@@ -181,13 +208,20 @@ impl Drop for ToolContext {
         {
             tracing::warn!(%error, "couldn't remove the spool directory");
         }
+        let tmp_created = *self
+            .tmp_created
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+        if tmp_created && let Err(error) = fs::remove_dir_all(&self.tmp_dir) {
+            tracing::warn!(%error, "couldn't remove the command temp directory");
+        }
     }
 }
 
 // shortcut: spools live in the temp directory and a killed process leaves them behind;
 // move them beside the session log when sessions arrive.
 /// A real path, so it compares equal to canonicalized paths. Unique per context.
-fn new_spool_path() -> PathBuf {
+fn new_temp_path(kind: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let temp = std::env::temp_dir();
     let temp = temp.canonicalize().unwrap_or(temp);
@@ -195,7 +229,10 @@ fn new_spool_path() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.subsec_nanos());
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
-    temp.join(format!("harness-spool-{}-{nanos}-{id}", std::process::id()))
+    temp.join(format!(
+        "harness-{kind}-{}-{nanos}-{id}",
+        std::process::id()
+    ))
 }
 
 fn schema_of<T: JsonSchema>() -> Value {

@@ -1,11 +1,10 @@
-//! `Bash`.
+//! `Bash`, run through the sandbox helper unless the user turned the sandbox off (SPEC §9).
 //!
-//! shortcut: runs directly, not through `harness sandbox-exec` (SPEC §9), so permissions must
-//! prompt for every call; T3.3 adds the sandbox and restores invariant 3 of SPEC §10.
 //! shortcut: a command that calls `setsid` leaves the process group and survives the kill; use a
 //! cgroup or PID namespace if that becomes a real problem.
 
 use super::{ToolContext, ToolError, ToolOutput};
+use crate::sandbox::Policy;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -141,11 +140,30 @@ pub async fn run(
         .timeout
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .min(MAX_TIMEOUT_MS);
-    let mut child = Command::new("/bin/sh")
-        .args(["-c", &input.command])
+    let tmp = ctx.tmp().map_err(ToolError::io("create", &ctx.tmp_dir))?;
+    let shell = ["/bin/sh", "-c", &input.command];
+    let mut command = match &ctx.sandbox {
+        Some(sandbox) => {
+            let policy = Policy::new(sandbox, &ctx.workspace, tmp, &ctx.env);
+            let policy = serde_json::to_string(&policy)
+                .map_err(|e| ToolError::Refused(format!("Can't encode the sandbox policy: {e}")))?;
+            let mut command = Command::new(&sandbox.helper);
+            command
+                .args(["sandbox-exec", "--policy", &policy, "--"])
+                .args(shell);
+            command
+        }
+        None => {
+            let mut command = Command::new(shell[0]);
+            command.args(&shell[1..]);
+            command
+        }
+    };
+    let mut child = command
         .current_dir(&ctx.workspace)
         .env_clear()
         .envs(ctx.env.iter().map(|(name, value)| (name, value)))
+        .env("TMPDIR", tmp)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

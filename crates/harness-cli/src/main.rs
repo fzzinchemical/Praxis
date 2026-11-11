@@ -8,9 +8,10 @@ use harness_core::agent::profile::ProfileLayer;
 use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome, system_prompt,
 };
-use harness_core::config::{self, Config, Sources};
+use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::permissions::Policy;
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
+use harness_core::sandbox::Sandbox;
 use harness_core::tools::ToolContext;
 use serde_json::Value;
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -26,6 +27,8 @@ const DEFAULT_CONTEXT: u32 = 32768;
 const EXIT_FAILURE: u8 = 1;
 const EXIT_USAGE: u8 = 2;
 const EXIT_CANCELLED: u8 = 130;
+/// The shell's "can't execute" code, so a refused sandbox reads like a command that didn't run.
+const EXIT_SANDBOX: u8 = 126;
 
 #[derive(Parser)]
 #[command(name = "harness", about = "Local-first coding agent for LM Studio")]
@@ -75,6 +78,21 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
     let policy = Policy::new(rules.mode, &rules.allow, &rules.deny)
         .map_err(|e| format!("permissions: {e}"))?;
     Ok((loaded.config, policy))
+}
+
+fn tool_context(workspace: &Path, config: &Config) -> Result<ToolContext> {
+    let tools = ToolContext::new(workspace)?;
+    let settings = &config.sandbox;
+    if settings.mode == SandboxMode::Off {
+        eprintln!("The sandbox is off: commands run with your full access.");
+        return Ok(tools);
+    }
+    Ok(tools.with_sandbox(Sandbox {
+        helper: std::env::current_exe()?,
+        network: settings.network,
+        extra_read: settings.extra_read.clone(),
+        extra_write: settings.extra_write.clone(),
+    }))
 }
 
 fn user_profiles(config: &Config) -> Vec<(String, ProfileLayer)> {
@@ -409,7 +427,7 @@ async fn run(
     );
     let agent = Agent::new(
         Arc::new(provider),
-        Arc::new(ToolContext::new(&workspace)?),
+        Arc::new(tool_context(&workspace, &config)?),
         AgentConfig {
             model: ready.instance_id,
             context_size: ready.context_length,
@@ -432,8 +450,21 @@ async fn run(
     }
 }
 
+fn main() -> ExitCode {
+    // Hidden from `--help`: it only restricts, then runs what it's told. Handled before the
+    // runtime starts, so the sandbox applies to a single-threaded process (SPEC §9).
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if let Some((command, rest)) = args.split_first()
+        && command == "sandbox-exec"
+    {
+        eprintln!("{}", harness_core::sandbox::exec(rest));
+        return ExitCode::from(EXIT_SANDBOX);
+    }
+    cli_main()
+}
+
 #[tokio::main]
-async fn main() -> ExitCode {
+async fn cli_main() -> ExitCode {
     // All logs go to stderr: stdout carries the reply (SPEC §11, §15).
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn"));
     tracing_subscriber::fmt()

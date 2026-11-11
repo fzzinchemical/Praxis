@@ -320,7 +320,7 @@ flowchart LR
   - **Needs:** T3.1.
   - **Done when:** table-driven tests cover every branch of the decision flow and every mode, and the compound-command list never matches an allow rule, including `git status; curl x | sh`; a command mentioning a hard-denied path never matches one either; and an allow rule can't widen `read-only` mode.
 
-- [ ] **T3.3 Landlock sandbox** (§9)
+- [x] **T3.3 Landlock sandbox** (§9)
   - **Needs:** T1.6, T3.1.
   - **Do:** `harness sandbox-exec`; `Bash` always uses it.
   - **Done when:** tests prove a sandboxed command can't write outside the workspace, read `~/.ssh` (use a fake home), or open a TCP connection; and that it refuses to run when Landlock is unavailable (simulate through injected ABI check).
