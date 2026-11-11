@@ -91,3 +91,5 @@ Known before implementation. Details are in SPEC.
 - Clippy's `allow-unwrap-in-tests` skips helper functions in `tests/*.rs` unless the file starts with `#![cfg(test)]`.
 - clap's `args_conflicts_with_subcommands` stops subcommands parsing after any flag, including global ones.
 - `reqwest` with rustls fails to build a client when no CA roots exist, even for plain HTTP to loopback, so sandboxes must mount `/etc/ssl` and `/etc/ca-certificates`.
+- Grep defaults to `files_with_matches`, which gives no line numbers. Small models only find `output_mode: content` when the schema mentions it.
+- Two `cargo xtask eval` runs on one LM Studio can race on model load and unload ("Model does not exist"), so run them one at a time.

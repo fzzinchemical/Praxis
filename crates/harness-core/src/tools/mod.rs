@@ -240,7 +240,7 @@ pub fn schemas() -> Vec<ToolSchema> {
         ),
         tool(
             "Grep",
-            "Search file contents with a regex. Skips hidden and ignored files.",
+            "Search file contents with a regex. Skips hidden and ignored files. Lists matching files by default; set `output_mode` to `content` for matching lines with line numbers.",
             schema_of::<search::GrepInput>(),
         ),
         tool(

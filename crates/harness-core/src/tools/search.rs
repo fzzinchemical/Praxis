@@ -23,6 +23,7 @@ pub struct GrepInput {
     path: Option<String>,
     /// Only search files matching this glob, such as `*.rs`.
     glob: Option<String>,
+    /// `files_with_matches` (default) lists files, `content` shows matching lines with line numbers, `count` counts matches per file.
     output_mode: Option<OutputMode>,
     /// Ignore case.
     #[serde(rename = "-i")]
