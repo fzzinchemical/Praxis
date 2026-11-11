@@ -546,7 +546,7 @@ flowchart LR
   - **Needs:** T6.1, T4.3.
   - **Done when:** `${CLAUDE_PLUGIN_ROOT}` and friends expand in the specified fields, tool names follow the plugin form, sensitive values stay out of logs and config, and `bin/` can't shadow system commands.
 
-- [ ] **T6.5 Agent definitions** (§12) · *Should*
+- [x] **T6.5 Agent definitions** (§12) · *Should*
   - **Needs:** T6.2.
   - **Done when:** a delegated agent runs sequentially with its own history and tool restrictions, and returns a summary to the parent.
 

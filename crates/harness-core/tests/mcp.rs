@@ -549,6 +549,100 @@ async fn indexed_requests_keep_a_stable_prefix() {
     assert_eq!(old["tools"].to_string(), new["tools"].to_string());
 }
 
+/// A subagent in indexed mode: request 1 is its first, request 2 shows its `CallTool` result.
+async fn subagent_calls_echo(tools: Option<&[&str]>, denied: &[&str]) -> (Vec<String>, String) {
+    let model = MockServer::start().await;
+    let calls = [
+        json!({"index": 0, "id": "p1", "function": {"name": "Agent", "arguments": json!({"subagent_type": "kit:scout", "prompt": "echo"}).to_string()}}),
+        json!({"index": 0, "id": "s1", "function": {"name": "CallTool", "arguments": ECHO_CALL}}),
+    ];
+    for call in calls {
+        Mock::given(matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                sse(&[
+                    json!({"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": null}]}),
+                    json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+                ]),
+                "text/event-stream",
+            ))
+            .up_to_n_times(1)
+            .mount(&model)
+            .await;
+    }
+    Mock::given(matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            sse(&[json!({"choices": [{"delta": {"content": "ok"}, "finish_reason": "stop"}]})]),
+            "text/event-stream",
+        ))
+        .mount(&model)
+        .await;
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let policy =
+        harness_core::permissions::Policy::new(Default::default(), &["mcp__test".to_owned()], &[])
+            .unwrap();
+    let own = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+    let scout = harness_core::plugin::AgentDef {
+        skill: harness_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Scouts".into(),
+            body: "You scout.".into(),
+        },
+        tools: tools.map(own),
+        disallowed_tools: own(denied),
+        max_turns: None,
+    };
+    let mut agent = Agent::new(
+        Arc::new(Provider::new(&model.uri(), None).unwrap()),
+        Arc::new(ToolContext::new(&std::env::temp_dir()).unwrap()),
+        AgentConfig {
+            model: "m".into(),
+            context_size: SMALL_CONTEXT,
+            system_prompt: "sys".into(),
+            agents_md: None,
+            mask_keep_turns: 10,
+            max_turn_requests: 5,
+            profile: harness_core::agent::profile::ModelProfile::default(),
+            seed: None,
+            policy,
+            masking: true,
+        },
+    )
+    .with_agents(vec![scout])
+    .with_mcp(Arc::new(mcp));
+    let (tx, mut rx) = mpsc::channel(16);
+    let task = tokio::spawn(async move {
+        agent
+            .run_turn("go".into(), &tx, CancellationToken::new())
+            .await;
+    });
+    while rx.recv().await.is_some() {}
+    task.await.unwrap();
+    let requests = model.received_requests().await.unwrap();
+    let body = |i: usize| serde_json::from_slice::<Value>(&requests[i].body).unwrap();
+    let result = body(2)["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    (tool_names(&body(1)), result)
+}
+
+async fn subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools() {
+    let (names, result) = subagent_calls_echo(Some(&["mcp__test__echo"]), &[]).await;
+    assert!(names.contains(&"CallTool".to_owned()), "{names:?}");
+    assert_eq!(result, "echo: hi");
+
+    let (_, result) = subagent_calls_echo(None, &["mcp__test__echo"]).await;
+    assert!(result.contains("Unknown tool"), "{result}");
+    let (_, result) = subagent_calls_echo(Some(&["Read"]), &[]).await;
+    assert!(result.contains("Unknown tool"), "{result}");
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -582,4 +676,6 @@ fn main() {
     println!("indexed_permissions_hooks_and_validation_see_the_inner_tool ... ok");
     runtime.block_on(indexed_requests_keep_a_stable_prefix());
     println!("indexed_requests_keep_a_stable_prefix ... ok");
+    runtime.block_on(subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools());
+    println!("subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools ... ok");
 }

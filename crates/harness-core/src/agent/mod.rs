@@ -13,7 +13,7 @@ use crate::context::prefix::SessionFacts;
 use crate::hooks::{Hook, Outcome, PermissionDecision};
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
-use crate::plugin::Skill;
+use crate::plugin::{AgentDef, Skill};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
@@ -178,6 +178,10 @@ pub struct Agent {
     hooks: Vec<(Hook, PathBuf)>,
     /// Indexed mode's list of MCP tools for the prefix; empty in direct mode (SPEC §7).
     mcp_index: String,
+    /// Plugin agents the `Agent` tool can delegate to.
+    agents: Vec<AgentDef>,
+    /// A subagent's `tools` and `disallowedTools`, also applied to `CallTool`'s inner names.
+    limits: Option<(Option<Vec<String>>, Vec<String>)>,
 }
 
 /// What one model request produced before it ended.
@@ -240,6 +244,8 @@ impl Agent {
             skills: Vec::new(),
             hooks: Vec::new(),
             mcp_index: String::new(),
+            agents: Vec::new(),
+            limits: None,
         }
     }
 
@@ -292,6 +298,109 @@ impl Agent {
         self.skills = skills;
         self.reassemble_prefix();
         self
+    }
+
+    /// Adds the `Agent` tool, listing `agents` in its description. Call before the first turn.
+    pub fn with_agents(mut self, agents: Vec<AgentDef>) -> Self {
+        if agents.is_empty() {
+            return self;
+        }
+        self.tool_schemas.push(agent_schema(&agents));
+        self.agents = agents;
+        self.reassemble_prefix();
+        self
+    }
+
+    /// Runs the named agent to completion in a fresh history, restricted to its tools, and
+    /// returns its last reply. Sequential only: a subagent can't delegate further.
+    // Boxed with an explicit `Send` type, since the child's turn reaches this function again.
+    fn delegate<'a>(
+        &'a self,
+        input: &'a Value,
+        turn: &'a Turn<'_>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>> {
+        Box::pin(async move {
+            let field = |key| input.get(key).and_then(Value::as_str).unwrap_or_default();
+            let Some(def) = self
+                .agents
+                .iter()
+                .find(|a| a.skill.name == field("subagent_type"))
+            else {
+                return ToolOutput::error(format!(
+                    "Unknown agent `{}`. Use a name from the Agent tool's list.",
+                    field("subagent_type")
+                ));
+            };
+            let mut config = self.config.clone();
+            config.system_prompt = format!("{}\n\n{}", config.system_prompt, def.skill.body);
+            config.max_turn_requests = def.max_turns.unwrap_or(config.max_turn_requests);
+            config.profile.warning = None;
+            let mut child = Agent::new(Arc::clone(&self.provider), Arc::clone(&self.tools), config);
+            child.limits = Some((def.tools.clone(), def.disallowed_tools.clone()));
+            child.tool_schemas = self
+                .tool_schemas
+                .iter()
+                .filter(|t| !matches!(t.name.as_str(), "Agent" | "Skill"))
+                // Indexed mode's stand-ins stay; `permits` filters the tools behind them.
+                .filter(|t| {
+                    matches!(t.name.as_str(), "ToolSearch" | "CallTool") || child.permits(&t.name)
+                })
+                .cloned()
+                .collect();
+            child.mcp_index.clone_from(&self.mcp_index);
+            child.mcp.clone_from(&self.mcp);
+            child.hooks.clone_from(&self.hooks);
+            child.reassemble_prefix();
+
+            let (tx, mut rx) = mpsc::channel(16);
+            let prompt = field("prompt").to_owned();
+            let cancel = turn.cancel.clone();
+            let run = async move {
+                child.run_turn(prompt, &tx, cancel).await;
+                child.history.into_iter().rev().find_map(|m| match m {
+                    Message::Assistant {
+                        content: Some(c), ..
+                    } => Some(c),
+                    _ => None,
+                })
+            };
+            // The parent's front end sees the subagent's tool calls and permission prompts, but
+            // not its text or token counts, which would read as the parent's.
+            let forward = async {
+                let mut ended = StopReason::EndTurn;
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        AgentEvent::TurnEnded(reason) => ended = reason,
+                        AgentEvent::ToolStarted { .. }
+                        | AgentEvent::ToolFinished { .. }
+                        | AgentEvent::PermissionRequest { .. }
+                        | AgentEvent::Notice { .. } => turn.emit(event).await,
+                        _ => {}
+                    }
+                }
+                ended
+            };
+            let (reply, ended) = tokio::join!(run, forward);
+            match (reply, ended) {
+                (Some(reply), StopReason::EndTurn) => ToolOutput {
+                    content: reply,
+                    is_error: false,
+                    structured: Value::Null,
+                },
+                (reply, ended) => ToolOutput::error(format!(
+                    "The agent stopped early ({ended:?}). Its last reply: {}",
+                    reply.as_deref().unwrap_or("(none)")
+                )),
+            }
+        })
+    }
+
+    /// Whether a subagent's `tools` and `disallowedTools` let it run `name`.
+    fn permits(&self, name: &str) -> bool {
+        self.limits.as_ref().is_none_or(|(allowed, denied)| {
+            allowed.as_ref().is_none_or(|a| a.iter().any(|n| n == name))
+                && !denied.iter().any(|n| n == name)
+        })
     }
 
     fn reassemble_prefix(&mut self) {
@@ -617,10 +726,21 @@ impl Agent {
                     .to_owned(),
             );
         }
-        let skill = matches!(name, "Skill" | "ToolSearch")
+        // Enforces a subagent's tool list: a filtered-out tool is unknown here. An inner
+        // `CallTool` name counts as given when `CallTool` is.
+        let given = self.tool_schemas.iter().any(|t| t.name == name)
+            || (!self.mcp_index.is_empty()
+                && self.tool_schemas.iter().any(|t| t.name == "CallTool")
+                && self.mcp.as_ref().is_some_and(|m| m.schema(name).is_some()));
+        if !given || !self.permits(name) {
+            return Err(format!(
+                "Unknown tool `{name}`. Use one of the tools you were given."
+            ));
+        }
+        let own = matches!(name, "Skill" | "ToolSearch" | "Agent")
             .then(|| self.tool_schemas.iter().find(|t| t.name == name))
             .flatten();
-        match skill.or_else(|| self.mcp.as_ref()?.schema(name)) {
+        match own.or_else(|| self.mcp.as_ref()?.schema(name)) {
             Some(schema) => tools::validate_schema(schema, input),
             None => tools::validate(name, input),
         }
@@ -775,6 +895,7 @@ impl Agent {
                 Ok(input) => match &self.mcp {
                     _ if call.name == "Skill" => self.load_skill(&input),
                     _ if call.name == "ToolSearch" => self.search_tools(&input),
+                    _ if call.name == "Agent" => self.delegate(&input, turn).await,
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }
@@ -1021,6 +1142,30 @@ fn indexed_schemas() -> [ToolSchema; 2] {
             }),
         },
     ]
+}
+
+fn agent_schema(agents: &[AgentDef]) -> ToolSchema {
+    let list: Vec<String> = agents
+        .iter()
+        .map(|a| format!("- {}: {}", a.skill.name, a.skill.description))
+        .collect();
+    ToolSchema {
+        name: "Agent".to_owned(),
+        description: format!(
+            "Hand a self-contained task to an agent, which works alone and returns a summary. \
+             Agents:\n{}",
+            list.join("\n")
+        ),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "subagent_type": {"type": "string", "description": "The agent's name from the list."},
+                "prompt": {"type": "string", "description": "The full task; the agent sees nothing else."}
+            },
+            "required": ["subagent_type", "prompt"],
+            "additionalProperties": false
+        }),
+    }
 }
 
 fn skill_schema() -> ToolSchema {

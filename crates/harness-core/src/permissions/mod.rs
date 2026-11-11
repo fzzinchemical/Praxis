@@ -195,7 +195,8 @@ impl Permissions {
         if let Some(Err(reason)) = &subjects.target {
             return Decision::Deny(reason.clone());
         }
-        let read_only = READ_ONLY_TOOLS.contains(&tool);
+        // A subagent's own calls each pass this check under the same policy.
+        let read_only = READ_ONLY_TOOLS.contains(&tool) || tool == "Agent";
         if self.policy.mode == Mode::ReadOnly && !read_only {
             return Decision::Deny(format!(
                 "`{tool}` can't run in read-only mode. Only reading and searching are allowed."

@@ -140,6 +140,31 @@ fn unsupported_components_and_unknown_keys_warn_by_name() {
 }
 
 #[test]
+fn agents_read_tool_restrictions_and_turn_limits() {
+    let root = plugin_dir("agents");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("agents/team/scout.md"),
+        "---\nname: scout\ndescription: Finds things\ntools: Read, Grep\ndisallowedTools: [Bash]\nmaxTurns: 3\n---\nYou scout.\n",
+    );
+    write(&root.join("agents/free.md"), "Do anything.\n");
+    let plugin = load(&root).unwrap();
+
+    let agents = plugin.agents();
+    let scout = agents.iter().find(|a| a.skill.name == "kit:scout").unwrap();
+    assert_eq!(scout.skill.description, "Finds things");
+    assert_eq!(scout.skill.body, "You scout.\n");
+    assert_eq!(
+        scout.tools.as_deref(),
+        Some(&["Read".to_owned(), "Grep".to_owned()][..])
+    );
+    assert_eq!(scout.disallowed_tools, ["Bash"]);
+    assert_eq!(scout.max_turns, Some(3));
+    let free = agents.iter().find(|a| a.skill.name == "kit:free").unwrap();
+    assert_eq!((free.tools.clone(), free.max_turns), (None, None));
+}
+
+#[test]
 fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
     let root = plugin_dir("components");
     manifest(&root, r#"{"name":"kit"}"#);

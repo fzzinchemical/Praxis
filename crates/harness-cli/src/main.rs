@@ -15,7 +15,7 @@ use harness_core::config::McpServer;
 use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::hooks::Hook;
 use harness_core::permissions::Policy;
-use harness_core::plugin::{Skill, Store, run_command};
+use harness_core::plugin::{AgentDef, Skill, Store, run_command};
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::session::SessionLog;
@@ -169,6 +169,7 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
 struct Plugins {
     skills: Vec<Skill>,
     commands: Vec<Skill>,
+    agents: Vec<AgentDef>,
     hooks: Vec<(Hook, PathBuf)>,
     mcp: BTreeMap<String, McpServer>,
 }
@@ -205,6 +206,7 @@ fn load_plugins(workspace: &Path) -> Plugins {
         }
         out.skills.extend(plugin.skills());
         out.commands.extend(plugin.commands());
+        out.agents.extend(plugin.agents());
         out.hooks
             .extend(hooks.into_iter().map(|h| (h, plugin.root.clone())));
         out.mcp.extend(mcp);
@@ -702,6 +704,7 @@ async fn run(
         let tools = Arc::new(tool_context(&workspace, &config)?);
         let agent = Agent::new(provider.clone(), tools, agent_config.clone())
             .with_skills(plugins.skills.clone())
+            .with_agents(plugins.agents.clone())
             .with_hooks(plugins.hooks.clone());
         Ok(match &mcp {
             Some(mcp) => agent.with_mcp(mcp.clone()),

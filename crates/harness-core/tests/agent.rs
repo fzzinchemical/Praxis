@@ -216,6 +216,55 @@ async fn completes_a_two_tool_turn_with_exact_event_order() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_summary() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it"}),
+        )]),
+        // The subagent tries a tool it isn't allowed, then answers.
+        tool_reply(&[("s1", "Write", json!({"file_path": "x", "content": "y"}))]),
+        text_reply("found it in a.rs"),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    let scout = harness_core::plugin::AgentDef {
+        skill: harness_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+        },
+        tools: Some(vec!["Read".into(), "Write".into()]),
+        disallowed_tools: vec!["Write".into()],
+        max_turns: Some(5),
+    };
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(!h.workspace.join("x").exists());
+    // The subagent starts from its own prompt, without the parent's conversation.
+    let child = h.request_messages(1).await;
+    assert_eq!(child.len(), 2);
+    assert!(child[0]["content"].as_str().unwrap().contains("You scout."));
+    assert_eq!(child[1]["content"], "find it");
+    let requests = h.server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(tools, ["Read"]);
+    let parent = h.request_messages(3).await;
+    assert_eq!(parent.len(), 4);
+    assert_eq!(parent[3]["content"], "found it in a.rs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_mid_tool_ends_cancelled_and_the_next_prompt_has_consistent_history() {
     let mut h = Harness::new(
         vec![

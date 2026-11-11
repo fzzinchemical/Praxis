@@ -203,12 +203,43 @@ impl Plugin {
             .collect()
     }
 
+    /// `agents/**/*.md` (or the manifest's `agents` paths), run as sequential subagents.
+    pub fn agents(&self) -> Vec<AgentDef> {
+        self.agents
+            .iter()
+            .filter_map(|f| {
+                let (skill, field) = self.read_markdown(f)?;
+                let list = |key: &str| {
+                    field(key).map(|v| {
+                        v.trim_matches(|c| c == '[' || c == ']')
+                            .split(',')
+                            .map(|t| t.trim().trim_matches(|c| c == '"' || c == '\'').to_owned())
+                            .filter(|t| !t.is_empty())
+                            .collect::<Vec<_>>()
+                    })
+                };
+                Some(AgentDef {
+                    tools: list("tools"),
+                    disallowed_tools: list("disallowedTools").unwrap_or_default(),
+                    max_turns: field("maxTurns").and_then(|v| v.parse().ok()),
+                    skill,
+                })
+            })
+            .collect()
+    }
+
     fn read_skill(&self, path: &Path) -> Option<Skill> {
+        self.read_markdown(path).map(|(skill, _)| skill)
+    }
+
+    /// The file as a skill, plus a reader for any other frontmatter field.
+    fn read_markdown(&self, path: &Path) -> Option<(Skill, impl Fn(&str) -> Option<String>)> {
         let text = fs::read_to_string(path)
             .inspect_err(|error| tracing::warn!(%error, path = %path.display(), "skipped"))
             .ok()?;
         let (front, body) = split_frontmatter(&text);
-        let field = |key: &str| {
+        let front = front.to_owned();
+        let field = move |key: &str| {
             front.lines().find_map(|line| {
                 let value = line.strip_prefix(key)?.strip_prefix(':')?.trim();
                 Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
@@ -228,12 +259,25 @@ impl Plugin {
                 .trim()
                 .to_owned()
         });
-        Some(Skill {
+        let skill = Skill {
             name: format!("{}:{name}", self.name),
             description,
             body: body.replace("${CLAUDE_PLUGIN_ROOT}", &self.root.to_string_lossy()),
-        })
+        };
+        Some((skill, field))
     }
+}
+
+/// A plugin agent; its body is the subagent's system prompt (SPEC §12).
+/// shortcut: `model` is ignored and the session model runs it; T8.6 resolves it through
+/// `Config::resolve_enabled_model`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentDef {
+    pub skill: Skill,
+    /// `None` allows every tool the parent has.
+    pub tools: Option<Vec<String>>,
+    pub disallowed_tools: Vec<String>,
+    pub max_turns: Option<u32>,
 }
 
 impl Plugin {
