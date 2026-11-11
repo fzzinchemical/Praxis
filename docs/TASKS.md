@@ -330,7 +330,7 @@ flowchart LR
   - **Needs:** T3.1.
   - **Done when:** the hostile fixture repo can't activate anything without approval; changing approved content needs re-approval; and project `sandbox.*` and `lmstudio.*` are ignored even after approval.
 
-- [ ] **T3.5 Hard denials and security suite** (§10)
+- [x] **T3.5 Hard denials and security suite** (§10)
   - **Needs:** T3.2, T3.3, T3.4.
   - **Done when:** `tests/security.rs` has a test for every invariant in §10 applicable so far, under every mode. Mark the rest as pending, naming the task that will cover them.
 
