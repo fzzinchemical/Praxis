@@ -880,6 +880,8 @@ Security and accessibility requirements:
 
 If the child exits, show the error and last stderr lines, with a restart button.
 
+So far (T5.2): the panel is an editor-tab webview opened by `harness.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`harness-vscode/src/protocol.rs`), not the `agent-client-protocol` crate. Text chunks, tool titles and stop reasons reach the panel as plain text; permission requests are answered `cancelled` until T5.3. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
+
 ## 12. Plugins
 
 Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference.md), [components](https://code.claude.com/docs/en/plugins/components.md), [hooks](https://code.claude.com/docs/en/hooks.md). The formats belong to Claude Code and can change. Implement the subset below and warn clearly about anything skipped; never fail silently.

@@ -13,6 +13,8 @@ cargo clippy "${native[@]}" --all-targets -- -D warnings
 cargo test -q "${native[@]}"
 
 for crate in "${wasm_crates[@]}"; do
+    # Their pure logic (message mapping) is tested natively; the bindings only link on wasm.
+    cargo test -q -p "$crate"
     cargo clippy -p "$crate" --target "$wasm_target" --all-targets -- -D warnings
 done
 

@@ -9,6 +9,17 @@
   "main": "./dist/harness_vscode.js",
   "capabilities": { "untrustedWorkspaces": { "supported": false } },
   "contributes": {
-    "commands": [{ "command": "harness.spike", "title": "Harness: Run Spike" }]
+    "commands": [{ "command": "harness.open", "title": "Harness: Open Chat" }],
+    "configuration": {
+      "title": "Harness",
+      "properties": {
+        "harness.binaryPath": {
+          "type": "string",
+          "default": "harness",
+          "scope": "machine",
+          "description": "Path to the harness binary. Machine-scoped so a workspace can't change it."
+        }
+      }
+    }
   }
 }

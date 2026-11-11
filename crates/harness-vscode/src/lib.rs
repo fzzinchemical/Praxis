@@ -1,14 +1,20 @@
 //! VS Code extension host side, compiled to wasm32 (SPEC §11).
 //!
-//! T0.6 spike: a command opens a webview, and once the webview's wasm reports
-//! ready, a child process is spawned and its output is forwarded to the webview.
+//! `harness.open` opens a chat panel. Once its wasm reports ready, `harness acp` is spawned in the
+//! first workspace folder; prompts from the panel go to it and its replies come back as text.
 
-use js_sys::{Array, Object, Reflect};
+mod protocol;
+
+use js_sys::{Array, Object, Promise, Reflect};
+use protocol::{Client, FromPanel, Lines, Reaction};
+use std::cell::RefCell;
+use std::rc::Rc;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 const SHELL: &str = include_str!("../../../editors/vscode/webview.html");
 const VIEW_COLUMN_ACTIVE: i32 = -1;
+const RESTART: &str = "Restart";
 
 #[wasm_bindgen]
 extern "C" {
@@ -34,6 +40,23 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = window, js_name = showErrorMessage)]
     fn show_error_message(message: &str);
+    #[wasm_bindgen(js_namespace = window, js_name = showErrorMessage)]
+    fn show_error_with_action(message: &str, action: &str) -> Promise;
+
+    #[wasm_bindgen(js_namespace = window, js_name = createOutputChannel)]
+    fn create_output_channel(name: &str) -> OutputChannel;
+    #[derive(Clone)]
+    type OutputChannel;
+    #[wasm_bindgen(method)]
+    fn append(this: &OutputChannel, text: &str);
+
+    #[wasm_bindgen(js_namespace = workspace, js_name = getConfiguration)]
+    fn get_configuration(section: &str) -> Configuration;
+    type Configuration;
+    #[wasm_bindgen(method)]
+    fn get(this: &Configuration, key: &str) -> JsValue;
+    #[wasm_bindgen(js_namespace = workspace, getter, js_name = workspaceFolders)]
+    fn workspace_folders() -> JsValue;
 
     type Uri;
     #[wasm_bindgen(static_method_of = Uri, js_name = joinPath)]
@@ -44,6 +67,8 @@ extern "C" {
     type WebviewPanel;
     #[wasm_bindgen(method, getter)]
     fn webview(this: &WebviewPanel) -> Webview;
+    #[wasm_bindgen(method, js_name = onDidDispose)]
+    fn on_did_dispose(this: &WebviewPanel, callback: &Closure<dyn FnMut()>);
 
     #[derive(Clone)]
     type Webview;
@@ -63,13 +88,21 @@ extern "C" {
 extern "C" {
     type ChildProcess;
     #[wasm_bindgen(catch)]
-    fn spawn(command: &str, args: &Array) -> Result<ChildProcess, JsValue>;
+    fn spawn(command: &str, args: &Array, options: &Object) -> Result<ChildProcess, JsValue>;
+    #[wasm_bindgen(method, getter)]
+    fn stdin(this: &ChildProcess) -> Writable;
     #[wasm_bindgen(method, getter)]
     fn stdout(this: &ChildProcess) -> Emitter;
     #[wasm_bindgen(method, getter)]
     fn stderr(this: &ChildProcess) -> Emitter;
     #[wasm_bindgen(method, js_name = on)]
     fn on_child(this: &ChildProcess, event: &str, callback: &Closure<dyn FnMut(JsValue)>);
+    #[wasm_bindgen(method)]
+    fn kill(this: &ChildProcess) -> bool;
+
+    type Writable;
+    #[wasm_bindgen(method)]
+    fn write(this: &Writable, text: &str) -> bool;
 
     type Emitter;
     #[wasm_bindgen(method, js_name = setEncoding)]
@@ -78,39 +111,75 @@ extern "C" {
     fn on(this: &Emitter, event: &str, callback: &Closure<dyn FnMut(JsValue)>);
 }
 
+/// One panel and the `harness acp` process behind it.
+struct Panel {
+    webview: Webview,
+    output: OutputChannel,
+    child: Option<ChildProcess>,
+    client: Option<Client>,
+    lines: Lines,
+    closed: bool,
+}
+
+type Shared = Rc<RefCell<Panel>>;
+
 /// Entry point VS Code calls. An `Err` is thrown, which fails activation visibly.
 #[wasm_bindgen]
 pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     let root = context.extension_uri();
+    let output = create_output_channel("Harness");
     let command = Closure::<dyn FnMut()>::new(move || {
-        if let Err(error) = open_panel(&root) {
-            show_error_message(&format!("Harness spike failed: {error:?}"));
+        if let Err(error) = open_panel(&root, &output) {
+            show_error_message(&format!("Harness: could not open the panel: {error:?}"));
         }
     });
-    let disposable = register_command("harness.spike", &command)?;
+    let disposable = register_command("harness.open", &command)?;
     context.subscriptions().push(&disposable);
-    // shortcut: closures in this file leak until the host exits, tie them to disposables in T5.2.
+    // shortcut: closures leak until the host exits; fine for one command, revisit if they multiply.
     command.forget();
     Ok(())
 }
 
-fn open_panel(root: &Uri) -> Result<(), JsValue> {
+fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
     let options = Object::new();
     Reflect::set(&options, &"enableScripts".into(), &true.into())?;
     let roots = Array::of1(root.unchecked_ref());
     Reflect::set(&options, &"localResourceRoots".into(), &roots)?;
-    let panel = create_webview_panel("harness.spike", "Harness", VIEW_COLUMN_ACTIVE, &options)?;
+    let panel = create_webview_panel("harness.chat", "Harness", VIEW_COLUMN_ACTIVE, &options)?;
     let webview = panel.webview();
+    let shared: Shared = Rc::new(RefCell::new(Panel {
+        webview: webview.clone(),
+        output: output.clone(),
+        child: None,
+        client: None,
+        lines: Lines::default(),
+        closed: false,
+    }));
 
-    let target = webview.clone();
+    let state = shared.clone();
     let on_message = Closure::<dyn FnMut(JsValue)>::new(move |message: JsValue| {
-        // The webview is untrusted: only the exact ready message starts a process.
-        if message.as_string().as_deref() == Some("ready") {
-            run_child(&target);
+        match message.as_string().as_deref().and_then(FromPanel::parse) {
+            Some(FromPanel::Ready) => start(&state),
+            Some(FromPanel::Prompt(text)) => send_prompt(&state, &text),
+            None => state
+                .borrow()
+                .output
+                .append("ignored an unknown panel message\n"),
         }
     });
     webview.on_did_receive_message(&on_message);
     on_message.forget();
+
+    let state = shared;
+    let on_dispose = Closure::<dyn FnMut()>::new(move || {
+        let mut panel = state.borrow_mut();
+        panel.closed = true;
+        if let Some(child) = panel.child.take() {
+            child.kill();
+        }
+    });
+    panel.on_did_dispose(&on_dispose);
+    on_dispose.forget();
 
     let script = webview.as_webview_uri(&Uri::join_path(root, "ui/harness_vscode_ui.js"));
     webview.set_html(
@@ -121,35 +190,133 @@ fn open_panel(root: &Uri) -> Result<(), JsValue> {
     Ok(())
 }
 
-fn run_child(webview: &Webview) {
-    let args = Array::of1(&"-sr".into());
-    let child = match spawn("uname", &args) {
-        Ok(child) => child,
-        Err(error) => return webview.post_message(&format!("spawn failed: {error:?}\n")),
-    };
-    for stream in [child.stdout(), child.stderr()] {
-        stream.set_encoding("utf8");
-        let listener = forwarder(webview, |chunk| chunk);
-        stream.on("data", &listener);
-        listener.forget();
-    }
-    // Node emits `error` for a missing binary; unhandled, it would crash the extension host.
-    let on_error = forwarder(webview, |error| format!("child error: {error}\n"));
-    child.on_child("error", &on_error);
-    on_error.forget();
-    let on_close = forwarder(webview, |code| format!("[exit {code}]\n"));
-    child.on_child("close", &on_close);
-    on_close.forget();
+/// The first workspace folder: `harness acp` runs there and reads its project config.
+fn workspace_dir() -> Option<String> {
+    let folder = Reflect::get(&workspace_folders(), &0.into()).ok()?;
+    let uri = Reflect::get(&folder, &"uri".into()).ok()?;
+    Reflect::get(&uri, &"fsPath".into()).ok()?.as_string()
 }
 
-/// Builds a listener that posts `render(value)` to the webview.
-fn forwarder(webview: &Webview, render: fn(String) -> String) -> Closure<dyn FnMut(JsValue)> {
-    let webview = webview.clone();
+fn start(state: &Shared) {
+    let Some(cwd) = workspace_dir() else {
+        state
+            .borrow()
+            .webview
+            .post_message("Open a folder to use Harness.\n");
+        return;
+    };
+    // `harness.binaryPath` is machine-scoped in package.json, so a repository can't redirect it.
+    let binary = get_configuration("harness")
+        .get("binaryPath")
+        .as_string()
+        .unwrap_or_else(|| "harness".to_owned());
+    let options = Object::new();
+    if let Err(error) = Reflect::set(&options, &"cwd".into(), &cwd.as_str().into()) {
+        return state
+            .borrow()
+            .webview
+            .post_message(&format!("spawn failed: {error:?}\n"));
+    }
+    let child = match spawn(&binary, &Array::of1(&"acp".into()), &options) {
+        Ok(child) => child,
+        Err(error) => {
+            return state
+                .borrow()
+                .webview
+                .post_message(&format!("spawn failed: {error:?}\n"));
+        }
+    };
+    let (client, init) = Client::start(&cwd);
+    child.stdin().write(&format!("{init}\n"));
+    child.stdout().set_encoding("utf8");
+    child.stderr().set_encoding("utf8");
+
+    let on_stdout = listener(state, |state, chunk| {
+        let lines = state.borrow_mut().lines.push(&chunk);
+        for line in lines {
+            let reaction = match state.borrow_mut().client.as_mut() {
+                Some(client) => client.on_line(&line),
+                None => Reaction::default(),
+            };
+            react(state, reaction);
+        }
+    });
+    child.stdout().on("data", &on_stdout);
+    let on_stderr = listener(state, |state, chunk| state.borrow().output.append(&chunk));
+    child.stderr().on("data", &on_stderr);
+    // Node emits `error` for a missing binary; unhandled, it would crash the extension host.
+    let on_error = listener(state, |state, error| {
+        state
+            .borrow()
+            .output
+            .append(&format!("harness acp: {error}\n"));
+    });
+    child.on_child("error", &on_error);
+    let on_close = listener(state, |state, code| exited(state, &code));
+    child.on_child("close", &on_close);
+    for closure in [on_stdout, on_stderr, on_error, on_close] {
+        closure.forget();
+    }
+
+    let mut panel = state.borrow_mut();
+    panel.child = Some(child);
+    panel.client = Some(client);
+    panel.lines = Lines::default();
+}
+
+fn send_prompt(state: &Shared, text: &str) {
+    let mut panel = state.borrow_mut();
+    let line = panel.client.as_mut().and_then(|client| client.prompt(text));
+    match (line, &panel.child) {
+        (Some(line), Some(child)) => {
+            child.stdin().write(&format!("{line}\n"));
+        }
+        _ => panel.webview.post_message("Harness is not ready yet.\n"),
+    }
+}
+
+fn react(state: &Shared, reaction: Reaction) {
+    let panel = state.borrow();
+    if let Some(text) = reaction.show {
+        panel.webview.post_message(&text);
+    }
+    if let (Some(line), Some(child)) = (reaction.send, &panel.child) {
+        child.stdin().write(&format!("{line}\n"));
+    }
+}
+
+fn exited(state: &Shared, code: &str) {
+    {
+        let mut panel = state.borrow_mut();
+        panel.child = None;
+        panel.client = None;
+        if panel.closed {
+            return;
+        }
+        panel
+            .webview
+            .post_message(&format!("[harness acp exited: {code}]\n"));
+    }
+    let message = format!("Harness exited ({code}). Its log is in the Harness output channel.");
+    let state = state.clone();
+    let on_choice = Closure::<dyn FnMut(JsValue)>::new(move |choice: JsValue| {
+        if choice.as_string().as_deref() == Some(RESTART) && !state.borrow().closed {
+            start(&state);
+        }
+    });
+    let _ = show_error_with_action(&message, RESTART).then(&on_choice);
+    // One small closure per exit.
+    on_choice.forget();
+}
+
+/// Wraps `handle` as a Node event listener, turning its argument into text.
+fn listener(state: &Shared, handle: fn(&Shared, String)) -> Closure<dyn FnMut(JsValue)> {
+    let state = state.clone();
     Closure::new(move |value: JsValue| {
         let text = value
             .as_string()
             .or_else(|| value.as_f64().map(|number| number.to_string()))
             .unwrap_or_else(|| format!("{value:?}"));
-        webview.post_message(&render(text));
+        handle(&state, text);
     })
 }

@@ -1126,6 +1126,7 @@ name = "harness-vscode"
 version = "0.0.0"
 dependencies = [
  "js-sys",
+ "serde_json",
  "wasm-bindgen",
 ]
 
@@ -1133,6 +1134,7 @@ dependencies = [
 name = "harness-vscode-ui"
 version = "0.0.0"
 dependencies = [
+ "serde_json",
  "wasm-bindgen",
  "web-sys",
 ]
