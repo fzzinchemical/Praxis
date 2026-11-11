@@ -149,6 +149,22 @@ impl Config {
             )
         })
     }
+
+    /// [`Self::resolve_model`], but a reference to a backend the user hasn't enabled is an
+    /// error, never a switch to another backend (SPEC §10, invariant 12).
+    pub fn resolve_enabled_model(&self, reference: &str) -> Result<ModelRef, ConfigError> {
+        let resolved = self.resolve_model(reference)?;
+        if resolved.backend == Backend::Anthropic && !self.anthropic.enabled {
+            return Err(error(
+                "anthropic.enabled",
+                format!(
+                    "`{reference}` is an Anthropic model, but the backend is off; set \
+                     `anthropic.enabled = true` in user config or a flag to use it"
+                ),
+            ));
+        }
+        Ok(resolved)
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]

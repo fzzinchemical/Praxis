@@ -346,3 +346,40 @@ async fn secrets_never_reach_a_child_environment() {
     assert!(!output.is_error, "{}", output.content);
     assert!(!output.content.contains("leak"), "{}", output.content);
 }
+
+/// Invariant 12: a hostile repository's `anthropic.*` can't enable the backend or change its
+/// URL or key variable, and its alias to a disabled backend fails instead of switching.
+#[test]
+fn a_repository_cannot_enable_or_redirect_a_cloud_backend() {
+    let fixture = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/hostile-repo/.harness/config.toml"
+    );
+    let user = temp_dir("cloud").join("user.toml");
+    let load = |user_toml: &str| {
+        fs::write(&user, user_toml).unwrap();
+        load_with_approval(
+            Sources {
+                user: Some(user.clone()),
+                project: Some(PathBuf::from(fixture)),
+                ..Sources::default()
+            },
+            &mut |_, _| true,
+        )
+        .unwrap()
+        .config
+    };
+
+    let config = load("");
+    assert!(!config.anthropic.enabled);
+    assert_eq!(config.anthropic.api_key_env, "ANTHROPIC_API_KEY");
+    let refused = config
+        .resolve_enabled_model("local")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("anthropic.enabled"), "{refused}");
+
+    let config = load("[anthropic]\nenabled = true\napi_key_env = \"MY_KEY\"\n");
+    assert_eq!(config.anthropic.api_key_env, "MY_KEY");
+    assert!(config.resolve_enabled_model("local").is_ok());
+}

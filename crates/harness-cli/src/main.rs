@@ -483,7 +483,7 @@ async fn run(
     let interrupt = Interrupt::install();
     let requested = match cli.model.or_else(|| config.default_model.clone()) {
         Some(reference) => {
-            let resolved = config.resolve_model(&reference)?;
+            let resolved = config.resolve_enabled_model(&reference)?;
             if resolved.backend == harness_core::config::Backend::Anthropic {
                 // shortcut: no Anthropic client yet; T8.3 adds it.
                 eprintln!("`{reference}` is an Anthropic model, which this build can't run yet.");

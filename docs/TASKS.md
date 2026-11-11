@@ -663,7 +663,7 @@ flowchart LR
   - **Needs:** T8.3, T2.5.
   - **Done when:** a fake-server run fixes the seeded bug on an Anthropic model; text-call parsing and constrained retry stay off while validation stays on; thinking blocks are sent back unchanged; the stable-prefix test passes with `cache_control`; and the first-use notice is emitted once per session. Record whether masking (T2.6) breaks thinking, and choose append-only or dropping thinking in SPEC §7.
 
-- [ ] **T8.5 Cloud opt-in safety** (§8, §10)
+- [x] **T8.5 Cloud opt-in safety** (§8, §10)
   - **Needs:** T8.2, T3.5.
   - **Done when:** `tests/security.rs` covers invariant 12. A hostile repo's `anthropic.*`, alias or agent `model` can't enable the backend or change its URL or key variable, and an agent naming a disabled backend fails with a notice instead of switching.
 
