@@ -12,19 +12,23 @@ use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, ServerNotification, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt as _};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use wiremock::{Mock, MockServer, ResponseTemplate, matchers};
 
 struct Echo;
+
+/// Set by the `notify` tool: later listings would add a tool, which must never reach the model.
+static CHANGED: AtomicBool = AtomicBool::new(false);
 
 impl ServerHandler for Echo {
     fn get_info(&self) -> ServerConfig {
@@ -40,18 +44,36 @@ impl ServerHandler for Echo {
         let Value::Object(schema) = schema else {
             unreachable!()
         };
-        Ok(ListToolsResult::with_all_items(vec![Tool::new(
-            "echo",
-            "Echo text back.",
-            schema,
-        )]))
+        let mut names = vec!["echo", "crash", "notify", "big"];
+        if CHANGED.load(Ordering::SeqCst) {
+            names.push("extra");
+        }
+        Ok(ListToolsResult::with_all_items(
+            names
+                .into_iter()
+                .map(|name| Tool::new(name, "Test tool.", schema.clone()))
+                .collect(),
+        ))
     }
 
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResponse, ErrorData> {
+        match &*request.name {
+            "crash" => std::process::exit(1),
+            "big" => {
+                let text = "x".repeat(200_000);
+                return Ok(CallToolResult::success(vec![ContentBlock::text(text)]).into());
+            }
+            "notify" => {
+                CHANGED.store(true, Ordering::SeqCst);
+                let changed = ServerNotification::ToolListChangedNotification(Default::default());
+                context.peer.send_notification(changed).await.unwrap();
+            }
+            _ => {}
+        }
         let text = request
             .arguments
             .and_then(|a| a.get("text").and_then(Value::as_str).map(str::to_owned));
@@ -88,7 +110,10 @@ async fn slow_or_failing_servers_dont_block_startup() {
         start.elapsed()
     );
     let names: Vec<String> = mcp.schemas().into_iter().map(|s| s.name).collect();
-    assert_eq!(names, ["mcp__test__echo"]);
+    assert!(
+        names.iter().all(|n| n.starts_with("mcp__test__")),
+        "{names:?}"
+    );
     let all = notices.join("\n");
     assert!(all.contains("`broken`") && all.contains("`slow`"), "{all}");
 }
@@ -99,9 +124,17 @@ fn sse(chunks: &[Value]) -> String {
     body
 }
 
-async fn mcp_tools_are_callable_through_the_agent_loop() {
+struct Run {
+    asked: bool,
+    output: harness_core::tools::ToolOutput,
+    /// The tool result as the model saw it in the next request.
+    sent: String,
+    requests: Vec<Value>,
+}
+
+async fn run_agent(tool: &str, arguments: &str, allow: &[&str], deny: &[&str]) -> Run {
     let model = MockServer::start().await;
-    let call = json!({"index": 0, "id": "c1", "function": {"name": "mcp__test__echo", "arguments": "{\"text\":\"hi\"}"}});
+    let call = json!({"index": 0, "id": "c1", "function": {"name": tool, "arguments": arguments}});
     Mock::given(matchers::method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             sse(&[
@@ -120,9 +153,11 @@ async fn mcp_tools_are_callable_through_the_agent_loop() {
         ))
         .mount(&model)
         .await;
-    let mut servers = servers();
-    servers.retain(|name, _| name == "test");
-    let (mcp, _) = Mcp::connect(&servers, Duration::from_secs(10)).await;
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let own = |rules: &[&str]| rules.iter().map(|r| (*r).to_owned()).collect::<Vec<_>>();
+    let policy =
+        harness_core::permissions::Policy::new(Default::default(), &own(allow), &own(deny))
+            .unwrap();
     let mut agent = Agent::new(
         Arc::new(Provider::new(&model.uri(), None).unwrap()),
         Arc::new(ToolContext::new(&std::env::temp_dir()).unwrap()),
@@ -135,7 +170,7 @@ async fn mcp_tools_are_callable_through_the_agent_loop() {
             max_turn_requests: 5,
             profile: harness_core::agent::profile::ModelProfile::default(),
             seed: None,
-            policy: harness_core::permissions::Policy::default(),
+            policy,
             masking: true,
         },
     )
@@ -149,7 +184,6 @@ async fn mcp_tools_are_callable_through_the_agent_loop() {
     let (mut asked, mut output) = (false, None);
     while let Some(event) = rx.recv().await {
         match event {
-            // MCP tools ask before running, like any tool that isn't read-only.
             AgentEvent::PermissionRequest { respond, .. } => {
                 asked = true;
                 respond.send(PermissionReply::AllowOnce).unwrap();
@@ -164,13 +198,97 @@ async fn mcp_tools_are_callable_through_the_agent_loop() {
         }
     }
     task.await.unwrap();
-    assert!(asked);
-    let output = output.unwrap();
-    assert!(!output.is_error, "{}", output.content);
-    assert_eq!(output.content, "echo: hi");
-    let requests = model.received_requests().await.unwrap();
-    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
-    assert!(first["tools"].to_string().contains("mcp__test__echo"));
+    let requests: Vec<Value> = model
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    let sent = requests[1]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "tool")
+        .unwrap()["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    Run {
+        asked,
+        output: output.unwrap(),
+        sent,
+        requests,
+    }
+}
+
+fn test_server() -> BTreeMap<String, McpServer> {
+    let mut servers = servers();
+    servers.retain(|name, _| name == "test");
+    servers
+}
+
+async fn mcp_tools_are_callable_through_the_agent_loop() {
+    let run = run_agent("mcp__test__echo", r#"{"text":"hi"}"#, &[], &[]).await;
+    // MCP tools ask before running, like any tool that isn't read-only.
+    assert!(run.asked);
+    assert!(!run.output.is_error, "{}", run.output.content);
+    assert_eq!(run.output.content, "echo: hi");
+    assert!(
+        run.requests[0]["tools"]
+            .to_string()
+            .contains("mcp__test__echo")
+    );
+}
+
+async fn mcp_rules_apply_in_the_agent_loop() {
+    let run = run_agent("mcp__test__echo", r#"{"text":"hi"}"#, &["mcp__test"], &[]).await;
+    assert!(!run.asked);
+    assert_eq!(run.output.content, "echo: hi");
+    let run = run_agent(
+        "mcp__test__echo",
+        r#"{"text":"hi"}"#,
+        &[],
+        &["mcp__test__echo"],
+    )
+    .await;
+    assert!(!run.asked);
+    assert!(run.output.is_error && run.output.content.contains("deny rule"));
+}
+
+async fn oversized_results_truncate() {
+    let run = run_agent("mcp__test__big", r#"{"text":"hi"}"#, &["mcp__test"], &[]).await;
+    assert_eq!(run.output.content.len(), 200_000);
+    assert!(run.sent.len() < 50_000, "{}", run.sent.len());
+    assert!(run.sent.contains("Output truncated"), "{}", run.sent);
+}
+
+async fn a_crashed_server_errors_and_reconnects_once() {
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let call = |name: &'static str| mcp.call(name, json!({"text": "hi"}), CancellationToken::new());
+    let crashed = call("mcp__test__crash").await;
+    assert!(crashed.is_error, "{}", crashed.content);
+    assert_eq!(call("mcp__test__echo").await.content, "echo: hi");
+    assert!(call("mcp__test__crash").await.is_error);
+    let after = call("mcp__test__echo").await;
+    assert!(after.is_error, "{}", after.content);
+}
+
+async fn list_changed_does_not_alter_the_tools() {
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let names = |mcp: &Mcp| -> Vec<String> { mcp.schemas().into_iter().map(|s| s.name).collect() };
+    let before = names(&mcp);
+    let notified = mcp
+        .call(
+            "mcp__test__notify",
+            json!({"text": "hi"}),
+            CancellationToken::new(),
+        )
+        .await;
+    assert!(!notified.is_error, "{}", notified.content);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(names(&mcp), before);
 }
 
 fn main() {
@@ -186,4 +304,12 @@ fn main() {
     println!("slow_or_failing_servers_dont_block_startup ... ok");
     runtime.block_on(mcp_tools_are_callable_through_the_agent_loop());
     println!("mcp_tools_are_callable_through_the_agent_loop ... ok");
+    runtime.block_on(mcp_rules_apply_in_the_agent_loop());
+    println!("mcp_rules_apply_in_the_agent_loop ... ok");
+    runtime.block_on(oversized_results_truncate());
+    println!("oversized_results_truncate ... ok");
+    runtime.block_on(a_crashed_server_errors_and_reconnects_once());
+    println!("a_crashed_server_errors_and_reconnects_once ... ok");
+    runtime.block_on(list_changed_does_not_alter_the_tools());
+    println!("list_changed_does_not_alter_the_tools ... ok");
 }

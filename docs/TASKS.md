@@ -388,7 +388,7 @@ flowchart LR
   - **Needs:** T4.1.
   - **Done when:** both config shapes load, and header values resolve from environment without appearing in logs.
 
-- [ ] **T4.3 Permissions, budgets, failures** (§7, §13)
+- [x] **T4.3 Permissions, budgets, failures** (§7, §13)
   - **Needs:** T4.1.
   - **Done when:** `mcp__server__tool` rules apply; oversized results truncate; a mid-session crash returns tool errors and reconnects once; `list_changed` doesn't alter the `tools` array.
 

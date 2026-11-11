@@ -6,12 +6,13 @@ use crate::provider::ToolSchema;
 use crate::tools::ToolOutput;
 use futures::future::join_all;
 use rmcp::model::{CallToolRequestParams, ContentBlock};
-use rmcp::service::RunningService;
+use rmcp::service::{NotificationContext, Peer, RunningService, ServiceError};
 use rmcp::transport::TokioChildProcess;
-use rmcp::{RoleClient, ServiceExt as _};
+use rmcp::{ClientHandler, RoleClient, ServiceExt as _};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::process::Stdio;
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -26,24 +27,41 @@ struct Tool {
     name: String,
 }
 
+/// Logs `list_changed` rather than applying it: the tools stay frozen (SPEC §13).
+struct Handler {
+    server: String,
+}
+
+impl ClientHandler for Handler {
+    async fn on_tool_list_changed(&self, _: NotificationContext<RoleClient>) {
+        tracing::info!(server = %self.server, "MCP tool list changed; keeping the session's list");
+    }
+}
+
+type Client = RunningService<RoleClient, Handler>;
+
 /// The connected servers and their frozen tools.
 #[derive(Default)]
 pub struct Mcp {
-    clients: HashMap<String, RunningService<RoleClient, ()>>,
+    clients: Mutex<HashMap<String, Client>>,
+    servers: BTreeMap<String, McpServer>,
+    /// Servers already restarted after a crash; a second crash leaves them down.
+    reconnected: Mutex<HashSet<String>>,
     tools: Vec<Tool>,
 }
 
 impl std::fmt::Debug for Mcp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mcp")
-            .field("servers", &self.clients.keys().collect::<Vec<_>>())
+            .field("servers", &self.servers.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
     }
 }
 
 async fn connect_one(
+    name: &str,
     server: &McpServer,
-) -> Result<(RunningService<RoleClient, ()>, Vec<rmcp::model::Tool>), String> {
+) -> Result<(Client, Vec<rmcp::model::Tool>), String> {
     let mut command = tokio::process::Command::new(&server.command);
     command.args(&server.args);
     // Keeps server noise off stdout, which carries ACP messages in `harness acp`.
@@ -51,7 +69,10 @@ async fn connect_one(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|e| format!("couldn't start `{}`: {e}", server.command))?;
-    let client = ().serve(transport).await.map_err(|e| e.to_string())?;
+    let handler = Handler {
+        server: name.to_owned(),
+    };
+    let client = handler.serve(transport).await.map_err(|e| e.to_string())?;
     let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
     Ok((client, tools))
 }
@@ -66,14 +87,14 @@ impl Mcp {
         timeout: Duration,
     ) -> (Self, Vec<String>) {
         let attempts = servers.iter().map(|(name, server)| async move {
-            let result = tokio::time::timeout(timeout, connect_one(server))
+            let result = tokio::time::timeout(timeout, connect_one(name, server))
                 .await
                 .unwrap_or_else(|_| Err(format!("no answer within {}s", timeout.as_secs())));
-            (name, result)
+            (name, server, result)
         });
         let mut mcp = Self::default();
         let mut notices = Vec::new();
-        for (server, result) in join_all(attempts).await {
+        for (server, config, result) in join_all(attempts).await {
             match result {
                 Ok((client, tools)) => {
                     mcp.tools.extend(tools.into_iter().map(|tool| Tool {
@@ -85,7 +106,11 @@ impl Mcp {
                         server: server.clone(),
                         name: tool.name.into_owned(),
                     }));
-                    mcp.clients.insert(server.clone(), client);
+                    mcp.clients
+                        .get_mut()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .insert(server.clone(), client);
+                    mcp.servers.insert(server.clone(), config.clone());
                 }
                 Err(error) => notices.push(format!(
                     "MCP server `{server}` is unavailable this session: {error}"
@@ -107,18 +132,46 @@ impl Mcp {
         self.tools.iter().find(|tool| tool.schema.name == name)
     }
 
+    fn peer(&self, server: &str) -> Option<Peer<RoleClient>> {
+        let clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+        clients.get(server).map(|client| client.peer().clone())
+    }
+
+    /// Restarts a crashed server once per session and says how that went. Its tools stay
+    /// the ones listed at session start.
+    async fn reconnect(&self, server: &str) -> &'static str {
+        let first = self
+            .reconnected
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(server.to_owned());
+        let restarted = match self.servers.get(server).filter(|_| first) {
+            Some(config) => tokio::time::timeout(CONNECT_TIMEOUT, connect_one(server, config))
+                .await
+                .ok()
+                .and_then(Result::ok),
+            None => None,
+        };
+        let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+        match restarted {
+            Some((client, _)) => {
+                clients.insert(server.to_owned(), client);
+                " It was restarted, so the call can be tried again."
+            }
+            None => {
+                clients.remove(server);
+                " It stays down for the rest of the session."
+            }
+        }
+    }
+
     /// Calls a tool by its `mcp__server__tool` name. Every failure comes back as an error
     /// result for the model.
-    pub(crate) async fn call(
-        &self,
-        name: &str,
-        input: Value,
-        cancel: CancellationToken,
-    ) -> ToolOutput {
+    pub async fn call(&self, name: &str, input: Value, cancel: CancellationToken) -> ToolOutput {
         let Some(tool) = self.find(name) else {
             return ToolOutput::error(format!("Unknown tool `{name}`."));
         };
-        let Some(client) = self.clients.get(&tool.server) else {
+        let Some(client) = self.peer(&tool.server) else {
             return ToolOutput::error(format!("MCP server `{}` isn't connected.", tool.server));
         };
         let mut params = CallToolRequestParams::new(tool.name.clone());
@@ -132,7 +185,14 @@ impl Mcp {
         let result = match result {
             Ok(Ok(result)) => result,
             Ok(Err(error)) => {
-                return ToolOutput::error(format!("MCP server `{}` failed: {error}", tool.server));
+                let mut message = format!("MCP server `{}` failed: {error}.", tool.server);
+                if matches!(
+                    error,
+                    ServiceError::TransportClosed | ServiceError::TransportSend(_)
+                ) {
+                    message.push_str(self.reconnect(&tool.server).await);
+                }
+                return ToolOutput::error(message);
             }
             Err(_) => {
                 return ToolOutput::error(format!(

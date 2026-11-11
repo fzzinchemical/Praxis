@@ -71,7 +71,12 @@ impl Rule {
     }
 
     fn matches(&self, tool: &str, subjects: &[String]) -> bool {
-        self.tool == tool
+        // `mcp__server` covers every tool of that server, as in Claude Code.
+        let server_wide = self.tool.starts_with("mcp__")
+            && tool
+                .strip_prefix(&self.tool)
+                .is_some_and(|rest| rest.starts_with("__"));
+        (self.tool == tool || server_wide)
             && self
                 .pattern
                 .as_ref()
@@ -316,6 +321,19 @@ mod tests {
 
     fn denied(decision: &Decision) -> bool {
         matches!(decision, Decision::Deny(_))
+    }
+
+    #[test]
+    fn mcp_rules_match_one_tool_or_a_whole_server() {
+        let echo = ("mcp__test__echo", json!({ "text": "hi" }));
+        let other = ("mcp__testing__echo", json!({}));
+        let p = permissions(Mode::Ask, &["mcp__test"], &["mcp__test__crash"]);
+        assert_eq!(p.decide(echo.0, &echo.1), Decision::Allow);
+        assert!(denied(&p.decide("mcp__test__crash", &json!({}))));
+        assert_eq!(p.decide(other.0, &other.1), ASK);
+        let p = permissions(Mode::Ask, &["mcp__test__echo"], &[]);
+        assert_eq!(p.decide(echo.0, &echo.1), Decision::Allow);
+        assert_eq!(p.decide("mcp__test__crash", &json!({})), ASK);
     }
 
     #[test]

