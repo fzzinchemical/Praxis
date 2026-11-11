@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result, bail, ensure};
 use harness_core::agent::{
-    Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, system_prompt,
+    Agent, AgentConfig, AgentEvent, PermissionReply, Severity, StopReason, system_prompt,
 };
 use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
 use harness_core::provider::{LoadPolicy, Provider, ReadyModel};
@@ -25,6 +25,8 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_RUNS: u32 = 3;
+/// Fixed so a task's runs differ only where the server ignores seeds (SPEC §14).
+const EVAL_SEED: u64 = 42;
 const DEFAULT_CONTEXT: u32 = 32768;
 const DEFAULT_BASE_URL: &str = "http://localhost:1234";
 // Paths inside the sandbox.
@@ -280,6 +282,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
+            seed: Some(EVAL_SEED),
         },
     );
     let cancel = CancellationToken::new();
@@ -300,6 +303,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let (mut turns, mut prompt_tokens, mut tool_calls, mut recoveries) = (0u32, 0u64, 0u32, 0u32);
     let mut stop = StopReason::ProviderError;
     let mut loop_trigger = None;
+    let mut last_error = None;
     while let Some(event) = rx.recv().await {
         match event {
             // The sandbox stands in for approval: the agent can only harm its own copy.
@@ -323,6 +327,11 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             AgentEvent::Notice { title, detail, .. } if title == "Stopped: tool loop detected" => {
                 loop_trigger = detail;
             }
+            AgentEvent::Notice {
+                severity: Severity::Error,
+                title,
+                ..
+            } => last_error = Some(title),
             AgentEvent::TurnEnded(reason) => stop = reason,
             _ => {}
         }
@@ -339,6 +348,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "recoveries": recoveries,
             "loop_trigger": loop_trigger,
             "prompt_tokens_sent": prompt_tokens,
+            // The provider's message names the cause, such as a context overflow.
+            "provider_error": matches!(stop, StopReason::ProviderError).then_some(last_error).flatten(),
         })
     );
     Ok(())
@@ -451,7 +462,6 @@ fn null_reasons() -> Value {
         "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report",
         "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
         "context_features_off_comparison": "the runner has no switch to turn context features off",
-        "seed": "the provider sends no seed yet, so runs aren't reproducible",
     })
 }
 
@@ -495,6 +505,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
     json!({
         "model": model,
         "date": date,
+        "seed": EVAL_SEED,
         "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
         "metric_notes": {
             "turns": "model requests, counted from usage reports",

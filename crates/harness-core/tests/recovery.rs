@@ -119,6 +119,7 @@ async fn run_with(bodies: Vec<Vec<u8>>, profile: ModelProfile, dir: &Path) -> Ru
             mask_keep_turns: 10,
             max_turn_requests: 20,
             profile,
+            seed: None,
         },
     );
     let (tx, mut rx) = mpsc::channel(16);
@@ -157,6 +158,7 @@ async fn decode(bytes: Vec<u8>) -> (String, Vec<ToolCall>) {
         tools: Vec::new(),
         max_tokens: None,
         temperature: None,
+        seed: None,
         stop: Vec::new(),
         response_format: None,
     };

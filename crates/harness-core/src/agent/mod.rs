@@ -108,6 +108,8 @@ pub struct AgentConfig {
     pub mask_keep_turns: u32,
     pub max_turn_requests: u32,
     pub profile: ModelProfile,
+    /// Sent with every request; evals fix it so runs repeat where the server allows (SPEC §14).
+    pub seed: Option<u64>,
 }
 
 pub const DEFAULT_MAX_TURN_REQUESTS: u32 = 50;
@@ -445,6 +447,7 @@ impl Agent {
                     .map_or(reserve, |limit| limit.min(reserve))
             }),
             temperature: profile.temperature,
+            seed: self.config.seed,
             stop: profile.stop.clone(),
             response_format: constrained,
         }
@@ -638,6 +641,7 @@ fn assemble_prefix(
         },
         max_tokens: None,
         temperature: None,
+        seed: None,
         stop: Vec::new(),
         response_format: None,
     }

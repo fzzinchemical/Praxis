@@ -65,6 +65,7 @@ fn config(context_size: u32) -> AgentConfig {
         mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
+        seed: None,
     }
 }
 

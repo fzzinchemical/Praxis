@@ -17,6 +17,8 @@ pub struct ChatRequest {
     pub tools: Vec<ToolSchema>,
     pub max_tokens: Option<u32>,
     pub temperature: Option<f64>,
+    /// Makes sampling repeatable where the server supports it (evals, SPEC §14).
+    pub seed: Option<u64>,
     pub stop: Vec<String>,
     /// Constrains the reply's `content` to this tool's arguments. LM Studio then returns no
     /// `tool_calls`, and `tools` must stay empty or some models fail (SPEC §5.3).
@@ -134,6 +136,9 @@ fn request_body(req: &ChatRequest) -> Value {
     }
     if let Some(temperature) = req.temperature {
         body["temperature"] = temperature.into();
+    }
+    if let Some(seed) = req.seed {
+        body["seed"] = seed.into();
     }
     if !req.stop.is_empty() {
         body["stop"] = req.stop.clone().into();

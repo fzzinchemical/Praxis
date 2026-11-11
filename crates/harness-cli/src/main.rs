@@ -404,6 +404,7 @@ async fn run(cli: Cli, settings: Settings, provider: Provider) -> Result<u8> {
             mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
             profile,
+            seed: None,
         },
     );
     match prompt {

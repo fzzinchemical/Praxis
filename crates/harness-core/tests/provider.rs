@@ -39,6 +39,7 @@ fn request() -> ChatRequest {
         tools: vec![],
         max_tokens: None,
         temperature: None,
+        seed: None,
         stop: Vec::new(),
         response_format: None,
     }
@@ -223,6 +224,7 @@ async fn sends_an_openai_shaped_request_with_auth() {
         "stream": true,
         "stream_options": {"include_usage": true},
         "max_tokens": 16,
+        "seed": 42,
         "messages": [
             {"role": "system", "content": "s"},
             {"role": "user", "content": "u"},
@@ -274,6 +276,7 @@ async fn sends_an_openai_shaped_request_with_auth() {
         }],
         max_tokens: Some(16),
         temperature: None,
+        seed: Some(42),
         stop: Vec::new(),
         response_format: None,
     };
