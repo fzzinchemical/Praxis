@@ -4,7 +4,7 @@ use super::stream::{SseDecoder, SseEvent};
 use super::{Endpoint, ProviderError, parse_error_body};
 use futures::{Stream, stream};
 use reqwest::Response;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
 use tokio_util::sync::CancellationToken;
@@ -25,7 +25,8 @@ pub struct ChatRequest {
     pub response_format: Option<ToolSchema>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "lowercase")]
 pub enum Message {
     System {
         content: String,
@@ -52,7 +53,7 @@ pub struct ToolSchema {
 
 /// A fully assembled call. `arguments` stays the raw model text: it may be invalid
 /// JSON, and judging that belongs to tool-call recovery (SPEC §5.3).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
     pub name: String,

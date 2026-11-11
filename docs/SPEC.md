@@ -604,7 +604,7 @@ The widening items so far are `permissions.allow`, `agent.auto_load = true` and 
 ### Sessions
 
 - `~/.local/share/harness/sessions/<id>.jsonl`: one JSON record per line, append-only, mode `0600`. Tolerate a truncated last line on load, since a crash can cause one.
-- Resume rebuilds history from the log.
+- Resume (`--resume <id>`) rebuilds history from the log; the system prefix is rebuilt fresh, not logged. A failed log write stops the turn (`LogFailed`) before another request or tool runs.
 - Before any `Write` or `Edit`, save the original in `<id>/checkpoints/`. `/undo` restores the last turn's files. Bash side effects can't be undone, and the UI must say so.
 - Sessions contain source code and tool output. They never leave the machine.
 

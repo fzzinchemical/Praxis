@@ -14,6 +14,7 @@ use crate::permissions::{Decision, Permissions, Policy};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
+use crate::session::SessionLog;
 use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
@@ -43,6 +44,8 @@ pub enum StopReason {
     Cancelled,
     LoopDetected,
     ProviderError,
+    /// The session log couldn't be written, so the turn stopped rather than go unrecorded.
+    LogFailed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -133,6 +136,7 @@ pub fn system_prompt(workspace: &Path) -> String {
 const MAX_CALL_FAILURES: u32 = 3;
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
 const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
+const LOG_NOT_RUN_RESULT: &str = "Not run: the session log could not be written.";
 const INTERRUPTED_REPLY: &str = "(interrupted)";
 
 /// One conversation. History stays valid for the next prompt however a turn ends: every tool
@@ -160,6 +164,9 @@ pub struct Agent {
     refetchable: Vec<(String, Value)>,
     refetches: u32,
     first_token_ms: Vec<u64>,
+    session: Option<SessionLog>,
+    /// The first failed log write, which stops the turn.
+    log_error: Option<std::io::Error>,
 }
 
 /// What one model request produced before it ended.
@@ -215,7 +222,26 @@ impl Agent {
             refetchable: Vec::new(),
             refetches: 0,
             first_token_ms: Vec::new(),
+            session: None,
+            log_error: None,
         }
+    }
+
+    /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
+    pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
+        self.history.extend(prior);
+        self.session = Some(log);
+        self
+    }
+
+    fn record(&mut self, message: Message) {
+        if let Some(log) = &mut self.session
+            && self.log_error.is_none()
+            && let Err(error) = log.append(&message)
+        {
+            self.log_error = Some(error);
+        }
+        self.history.push(message);
     }
 
     /// Calls rejected as unreadable or invalid in this session, for the scoreboard (SPEC §5.3).
@@ -247,7 +273,7 @@ impl Agent {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,
         };
-        self.history.push(Message::User { content });
+        self.record(Message::User { content });
         let turn = Turn {
             events,
             cancel: cancel.child_token(),
@@ -263,7 +289,16 @@ impl Agent {
         if let Some(title) = self.prefix_warning.take() {
             turn.warn(title).await;
         }
-        let reason = self.run_requests(&turn).await;
+        let mut reason = self.run_requests(&turn).await;
+        if let Some(error) = self.log_error.take() {
+            turn.emit(AgentEvent::Notice {
+                severity: Severity::Error,
+                title: "Stopped: the session log could not be written.".to_owned(),
+                detail: Some(error.to_string()),
+            })
+            .await;
+            reason = StopReason::LogFailed;
+        }
         turn.emit(AgentEvent::TurnEnded(reason)).await;
     }
 
@@ -282,6 +317,9 @@ impl Agent {
         let mut retry: Option<ToolSchema> = None;
         let mut overflow_retried = false;
         loop {
+            if self.log_error.is_some() {
+                return StopReason::LogFailed;
+            }
             self.compact_if_needed(turn).await;
             requests += 1;
             let constrained = retry.take();
@@ -321,7 +359,7 @@ impl Agent {
                     "" => INTERRUPTED_REPLY.to_owned(),
                     _ => reply.text,
                 };
-                self.history.push(Message::Assistant {
+                self.record(Message::Assistant {
                     content: Some(content),
                     tool_calls: Vec::new(),
                 });
@@ -352,7 +390,7 @@ impl Agent {
             overflow_retried = false;
             let done = recovered.calls.is_empty();
             let silent = recovered.text.is_empty();
-            self.history.push(Message::Assistant {
+            self.record(Message::Assistant {
                 content: (done || !recovered.text.is_empty()).then_some(recovered.text),
                 tool_calls: recovered.calls.clone(),
             });
@@ -366,6 +404,8 @@ impl Agent {
             for call in recovered.calls {
                 let content = if turn.cancel.is_cancelled() {
                     NOT_RUN_RESULT.to_owned()
+                } else if self.log_error.is_some() {
+                    LOG_NOT_RUN_RESULT.to_owned()
                 } else if stuck.is_some() {
                     LOOP_NOT_RUN_RESULT.to_owned()
                 } else {
@@ -379,7 +419,7 @@ impl Agent {
                         .find(|t| t.name == call.name)
                         .cloned();
                 }
-                self.history.push(Message::Tool {
+                self.record(Message::Tool {
                     tool_call_id: call.id,
                     content,
                 });

@@ -521,3 +521,54 @@ async fn repeating_a_tool_with_different_arguments_finishes_normally() {
 
     assert_eq!(events.last().unwrap(), "ended:EndTurn");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_session_sends_the_same_history() {
+    use harness_core::session::SessionLog;
+    let workspace = new_workspace();
+    let path = workspace.join("a.txt");
+    fs::write(&path, "hello\n").unwrap();
+    let dir = new_workspace().join("sessions");
+    let script = vec![
+        tool_reply(&[("c1", "Read", json!({"file_path": path}))]),
+        text_reply("done"),
+    ];
+    let mut first = Harness::in_workspace(workspace.clone(), script, 50).await;
+    let log = SessionLog::create(&dir).unwrap();
+    let id = log.id().to_owned();
+    first.agent = Some(first.agent.take().unwrap().with_session(log, Vec::new()));
+    first
+        .turn("go", CancellationToken::new(), never_asked)
+        .await;
+
+    let mut second = Harness::in_workspace(workspace, vec![text_reply("again")], 50).await;
+    let (log, prior) = SessionLog::resume(&dir, &id).unwrap();
+    second.agent = Some(second.agent.take().unwrap().with_session(log, prior));
+    second
+        .turn("more", CancellationToken::new(), never_asked)
+        .await;
+
+    let mut expected = first.request_messages(1).await;
+    expected.push(json!({"role": "assistant", "content": "done"}));
+    expected.push(json!({"role": "user", "content": "more"}));
+    assert_eq!(second.request_messages(0).await, expected);
+    let (_, all) = SessionLog::resume(&dir, &id).unwrap();
+    assert_eq!(all.len(), 6, "both turns are logged");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_log_write_stops_the_turn_before_any_request() {
+    use harness_core::session::SessionLog;
+    let mut h = Harness::new(vec![text_reply("never")], 50).await;
+    let full = fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/full")
+        .unwrap();
+    let log = SessionLog::from_file("full".into(), full);
+    h.agent = Some(h.agent.take().unwrap().with_session(log, Vec::new()));
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(events, ["notice", "ended:LogFailed"]);
+    assert!(h.server.received_requests().await.unwrap().is_empty());
+}

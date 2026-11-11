@@ -12,6 +12,7 @@ use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::permissions::Policy;
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
+use harness_core::session::SessionLog;
 use harness_core::tools::ToolContext;
 use harness_core::trust::TrustStore;
 use serde_json::Value;
@@ -42,6 +43,9 @@ struct Cli {
     /// Set a config key for this run, as KEY=VALUE with a dotted key: `agent.auto_load=true`.
     #[arg(long = "config-override", value_name = "KEY=VALUE", global = true)]
     overrides: Vec<String>,
+    /// Continue the session with this id instead of starting a new one.
+    #[arg(long, value_name = "ID")]
+    resume: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -305,7 +309,9 @@ fn exit_code(stop: StopReason) -> u8 {
             eprintln!("Stopped at the request limit for one turn (`agent.max_turn_requests`).");
             EXIT_FAILURE
         }
-        StopReason::LoopDetected | StopReason::ProviderError => EXIT_FAILURE,
+        StopReason::LoopDetected | StopReason::ProviderError | StopReason::LogFailed => {
+            EXIT_FAILURE
+        }
     }
 }
 
@@ -404,6 +410,21 @@ async fn list_models(provider: &Provider) -> Result<u8> {
     Ok(0)
 }
 
+/// Sessions are logged when a data directory can be found (SPEC §8).
+fn with_session(agent: Agent, resume: Option<&str>) -> Result<Agent> {
+    let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
+        eprintln!("No HOME or XDG_DATA_HOME, so this session isn't saved.");
+        return Ok(agent);
+    };
+    let (log, prior) = match resume {
+        Some(id) => SessionLog::resume(&dir, id)
+            .map_err(|e| anyhow::anyhow!("can't resume session `{}`: {e}", sanitize(id)))?,
+        None => (SessionLog::create(&dir)?, Vec::new()),
+    };
+    eprintln!("Session {}", log.id());
+    Ok(agent.with_session(log, prior))
+}
+
 async fn run(
     cli: Cli,
     (config, policy): (Config, Policy),
@@ -459,6 +480,7 @@ async fn run(
             masking: true,
         },
     );
+    let agent = with_session(agent, cli.resume.as_deref())?;
     match prompt {
         Some(prompt) => {
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;

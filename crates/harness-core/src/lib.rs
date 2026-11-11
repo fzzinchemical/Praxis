@@ -6,5 +6,6 @@ pub mod context;
 pub mod permissions;
 pub mod provider;
 pub mod sandbox;
+pub mod session;
 pub mod tools;
 pub mod trust;

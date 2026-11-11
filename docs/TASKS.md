@@ -338,7 +338,7 @@ flowchart LR
   - **Needs:** T2.4.
   - **Done when:** it's loaded within budget, trimmed with a warning when oversized, and can't change permissions.
 
-- [ ] **T3.7 Sessions and resume** (§8)
+- [x] **T3.7 Sessions and resume** (§8)
   - **Needs:** T1.7.
   - **Done when:** resume reproduces history; a truncated final line is tolerated; files are `0600`; and a log write failure stops the turn.
 
