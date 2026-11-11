@@ -528,7 +528,7 @@ flowchart LR
     class T2_5,T3_2,T3_4,T4_3 other
 ```
 
-- [ ] **T6.1 Discovery and manifest** (§12)
+- [x] **T6.1 Discovery and manifest** (§12)
   - **Needs:** T3.4.
   - **Done when:** path rules are enforced (`..` and missing paths rejected), replace/add/merge behaviour is tested, a plugin with no manifest loads, and unsupported components warn by name.
 
