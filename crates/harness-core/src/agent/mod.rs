@@ -267,20 +267,7 @@ impl Agent {
             .sum();
         if self.budget.estimate(chars) > self.budget.share(10) {
             self.tool_schemas.extend(indexed_schemas());
-            let lines: Vec<String> = schemas
-                .iter()
-                .map(|s| {
-                    format!(
-                        "- {}: {}",
-                        s.name,
-                        s.description.lines().next().unwrap_or("")
-                    )
-                })
-                .collect();
-            self.mcp_index = format!(
-                "MCP tools (get a schema with ToolSearch, run one with CallTool):\n{}",
-                lines.join("\n")
-            );
+            self.mcp_index = mcp_index(&schemas);
         } else {
             self.tool_schemas.extend(schemas);
         }
@@ -345,16 +332,12 @@ impl Agent {
                 .cloned()
                 .collect();
             // Agents only see the MCP tools they may use (SPEC §12).
-            child.mcp_index = self
-                .mcp_index
-                .lines()
-                .filter(|l| {
-                    l.strip_prefix("- ")
-                        .and_then(|l| l.split_once(':'))
-                        .is_none_or(|(name, _)| child.permits(name))
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
+            if !self.mcp_index.is_empty() {
+                let schemas = self.mcp.iter().flat_map(|m| m.schemas());
+                let permitted: Vec<ToolSchema> =
+                    schemas.filter(|s| child.permits(&s.name)).collect();
+                child.mcp_index = mcp_index(&permitted);
+            }
             child.mcp.clone_from(&self.mcp);
             child.hooks.clone_from(&self.hooks);
             child.reassemble_prefix();
@@ -1125,6 +1108,24 @@ fn title(name: &str, input: Option<&Value>) -> String {
 }
 
 /// Indexed mode's stand-ins for MCP schemas (SPEC §7).
+/// The indexed-mode MCP list in the prompt prefix: each tool's name and first description line.
+fn mcp_index(schemas: &[ToolSchema]) -> String {
+    let lines: Vec<String> = schemas
+        .iter()
+        .map(|s| {
+            format!(
+                "- {}: {}",
+                s.name,
+                s.description.lines().next().unwrap_or("")
+            )
+        })
+        .collect();
+    format!(
+        "MCP tools (get a schema with ToolSearch, run one with CallTool):\n{}",
+        lines.join("\n")
+    )
+}
+
 fn indexed_schemas() -> [ToolSchema; 2] {
     [
         ToolSchema {
