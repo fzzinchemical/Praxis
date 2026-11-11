@@ -10,6 +10,7 @@ pub mod recovery;
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
+use crate::hooks::{Hook, Outcome, PermissionDecision};
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::plugin::Skill;
@@ -21,9 +22,9 @@ use crate::tools::{self, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -173,6 +174,8 @@ pub struct Agent {
     mcp: Option<Arc<Mcp>>,
     /// Plugin skills, indexed in the prefix and loaded by the `Skill` tool.
     skills: Vec<Skill>,
+    /// `PreToolUse` hooks from enabled plugins, with each plugin's root.
+    hooks: Vec<(Hook, PathBuf)>,
 }
 
 /// What one model request produced before it ended.
@@ -233,7 +236,15 @@ impl Agent {
             log_error: None,
             mcp: None,
             skills: Vec::new(),
+            hooks: Vec::new(),
         }
+    }
+
+    /// Runs `hooks` (from approved plugins only) before each tool call; others are ignored.
+    pub fn with_hooks(mut self, hooks: Vec<(Hook, PathBuf)>) -> Self {
+        self.hooks = hooks;
+        self.hooks.retain(|(h, _)| h.event == "PreToolUse");
+        self
     }
 
     /// Adds `mcp`'s tools after the built-in ones. Call before the first turn: the tool list
@@ -526,22 +537,23 @@ impl Agent {
     }
 
     /// Only a call that passes this may reach the permission path (SPEC §5.3).
+    fn validate(&self, name: &str, input: &Value) -> Result<(), String> {
+        let skill = (name == "Skill")
+            .then(|| self.tool_schemas.iter().find(|t| t.name == "Skill"))
+            .flatten();
+        match skill.or_else(|| self.mcp.as_ref()?.schema(name)) {
+            Some(schema) => tools::validate_schema(schema, input),
+            None => tools::validate(name, input),
+        }
+    }
+
     fn check_call(&mut self, call: &ToolCall) -> Result<Value, String> {
         let checked = recovery::parse_arguments(&call.arguments)
             .ok_or_else(|| {
                 "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
                     .to_owned()
             })
-            .and_then(|input| {
-                let skill = (call.name == "Skill")
-                    .then(|| self.tool_schemas.iter().find(|t| t.name == "Skill"))
-                    .flatten();
-                match skill.or_else(|| self.mcp.as_ref()?.schema(&call.name)) {
-                    Some(schema) => tools::validate_schema(schema, &input),
-                    None => tools::validate(&call.name, &input),
-                }
-                .map(|()| input)
-            });
+            .and_then(|input| self.validate(&call.name, &input).map(|()| input));
         if checked.is_ok() {
             self.call_failures.remove(&call.name);
         } else {
@@ -678,8 +690,8 @@ impl Agent {
             self.refetches += 1;
         }
         let output = match checked {
-            Ok(input) => match self.check_permission(call, &input, turn).await {
-                Ok(()) => match &self.mcp {
+            Ok(input) => match self.check_permission(call, input, turn).await {
+                Ok(input) => match &self.mcp {
                     _ if call.name == "Skill" => self.load_skill(&input),
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
@@ -709,15 +721,58 @@ impl Agent {
             .fit_result(content, |text| self.tools.spool(text))
     }
 
-    /// `Err` holds the denial to show the model. Anything but an explicit approval denies.
+    /// Runs matching `PreToolUse` hooks in order; the first block wins and each later hook
+    /// sees the input an earlier one rewrote.
+    async fn pre_tool_hooks(&self, call: &ToolCall, input: &Value, turn: &Turn<'_>) -> Outcome {
+        let mut merged = Outcome::default();
+        let workspace = self.tools.workspace();
+        // shortcut: no `transcript_path` or `permission_mode` yet; add them if plugins need them.
+        let mut stdin = json!({
+            "session_id": self.session.as_ref().map_or("", |s| s.id()),
+            "cwd": workspace,
+            "hook_event_name": "PreToolUse",
+            "tool_name": call.name,
+            "tool_input": input,
+            "tool_use_id": call.id,
+        });
+        for (hook, root) in self
+            .hooks
+            .iter()
+            .filter(|(h, _)| h.matcher.matches(&call.name))
+        {
+            let outcome = crate::hooks::run(hook, &stdin, root, workspace).await;
+            if let Some(error) = &outcome.error {
+                turn.warn(format!("Plugin hook: {error}")).await;
+            }
+            if outcome.block.is_some() {
+                return outcome;
+            }
+            if let Some(updated) = outcome.updated_input {
+                stdin["tool_input"] = updated.clone();
+                merged.updated_input = Some(updated);
+            }
+            // `ask` outranks `allow`; `deny` already blocked above.
+            if merged.permission != Some(PermissionDecision::Ask) {
+                merged.permission = outcome.permission.or(merged.permission);
+            }
+        }
+        merged
+    }
+
+    /// `Ok` holds the input to run, which a hook may have rewritten; `Err` holds the denial
+    /// to show the model. Anything but an explicit approval denies.
     async fn check_permission(
         &mut self,
         call: &ToolCall,
-        input: &Value,
+        input: Value,
         turn: &Turn<'_>,
-    ) -> Result<(), String> {
-        let can_always = match self.permissions.decide(&call.name, input) {
-            Decision::Allow => return Ok(()),
+    ) -> Result<Value, String> {
+        let hook = self.pre_tool_hooks(call, &input, turn).await;
+        let (input, decision) = self
+            .permissions
+            .decide_with_hook(&call.name, input, &hook, |i| self.validate(&call.name, i));
+        let can_always = match decision {
+            Decision::Allow => return Ok(input),
             Decision::Deny(reason) => return Err(reason),
             Decision::Ask { can_always } => can_always,
         };
@@ -737,7 +792,9 @@ impl Agent {
         if reply == PermissionReply::Cancelled {
             turn.cancel.cancel();
         }
-        self.permissions.record(&call.name, input, reply)
+        self.permissions
+            .record(&call.name, &input, reply)
+            .map(|()| input)
     }
 }
 

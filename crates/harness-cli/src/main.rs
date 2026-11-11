@@ -11,14 +11,18 @@ use harness_core::agent::profile::ProfileLayer;
 use harness_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome, system_prompt,
 };
+use harness_core::config::McpServer;
 use harness_core::config::{self, Config, SandboxMode, Sources};
+use harness_core::hooks::Hook;
 use harness_core::permissions::Policy;
+use harness_core::plugin::{Skill, Store, run_command};
 use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::session::SessionLog;
 use harness_core::tools::ToolContext;
 use harness_core::trust::TrustStore;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -158,6 +162,54 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
         }
     }
     Ok(0)
+}
+
+/// What enabled plugins add to a session (SPEC §12). Enabling is the approval to run them.
+#[derive(Default)]
+struct Plugins {
+    skills: Vec<Skill>,
+    commands: Vec<Skill>,
+    hooks: Vec<(Hook, PathBuf)>,
+    mcp: BTreeMap<String, McpServer>,
+}
+
+/// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
+fn load_plugins(workspace: &Path) -> Plugins {
+    let mut out = Plugins::default();
+    let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
+        return out;
+    };
+    let store = Store { root };
+    let list = match store.list() {
+        Ok(list) => list,
+        Err(e) => {
+            eprintln!("Plugins skipped: {}", sanitize(&e));
+            return out;
+        }
+    };
+    for name in list.into_iter().filter(|(_, e)| e.enabled).map(|(n, _)| n) {
+        let loaded = store.get(&name).and_then(|(_, plugin)| {
+            let (hooks, warnings) = plugin.hooks()?;
+            let mcp = plugin.mcp_servers(workspace, &store.data_root())?;
+            Ok((plugin, hooks, warnings, mcp))
+        });
+        let (plugin, hooks, warnings, mcp) = match loaded {
+            Ok(loaded) => loaded,
+            Err(e) => {
+                eprintln!("Plugin `{name}` skipped: {}", sanitize(&e));
+                continue;
+            }
+        };
+        for warning in warnings.iter().chain(&plugin.warnings) {
+            eprintln!("Plugin `{name}`: {}", sanitize(warning));
+        }
+        out.skills.extend(plugin.skills());
+        out.commands.extend(plugin.commands());
+        out.hooks
+            .extend(hooks.into_iter().map(|h| (h, plugin.root.clone())));
+        out.mcp.extend(mcp);
+    }
+    out
 }
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.
@@ -491,6 +543,7 @@ async fn ready_model(
 
 async fn repl(
     mut agent: Agent,
+    commands: &[Skill],
     mut terminal: Option<Terminal>,
     interrupt: &Interrupt,
 ) -> Result<u8> {
@@ -506,9 +559,8 @@ async fn repl(
             "/exit" | "/quit" => return Ok(0),
             "/undo" => undo(agent.tools()),
             prompt => {
-                agent = run_turn(agent, prompt.to_owned(), &mut terminal, interrupt)
-                    .await?
-                    .0;
+                let prompt = run_command(commands, prompt).unwrap_or_else(|| prompt.to_owned());
+                agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
             }
         }
     }
@@ -628,11 +680,14 @@ async fn run(
         policy,
         masking: true,
     };
-    let mcp = if config.mcp.is_empty() {
+    let plugins = load_plugins(&workspace);
+    let mut servers = config.mcp.clone();
+    servers.extend(plugins.mcp);
+    let mcp = if servers.is_empty() {
         None
     } else {
         let (mut mcp, mut notices) =
-            harness_core::mcp::Mcp::connect(&config.mcp, harness_core::mcp::CONNECT_TIMEOUT).await;
+            harness_core::mcp::Mcp::connect(&servers, harness_core::mcp::CONNECT_TIMEOUT).await;
         let store = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
         notices.extend(mcp.pin(store.as_ref(), &mut |change| {
             approve_mcp_change(change, terminal.as_mut())
@@ -645,7 +700,9 @@ async fn run(
     let provider = Arc::new(provider);
     let new_agent = move || {
         let tools = Arc::new(tool_context(&workspace, &config)?);
-        let agent = Agent::new(provider.clone(), tools, agent_config.clone());
+        let agent = Agent::new(provider.clone(), tools, agent_config.clone())
+            .with_skills(plugins.skills.clone())
+            .with_hooks(plugins.hooks.clone());
         Ok(match &mcp {
             Some(mcp) => agent.with_mcp(mcp.clone()),
             None => agent,
@@ -665,10 +722,11 @@ async fn run(
     let agent = with_session(new_agent()?, cli.resume.as_deref())?;
     match prompt {
         Some(prompt) => {
+            let prompt = run_command(&plugins.commands, &prompt).unwrap_or(prompt);
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;
             Ok(exit_code(stop))
         }
-        None => repl(agent, terminal, &interrupt).await,
+        None => repl(agent, &plugins.commands, terminal, &interrupt).await,
     }
 }
 

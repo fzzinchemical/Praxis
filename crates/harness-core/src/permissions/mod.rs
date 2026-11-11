@@ -150,12 +150,6 @@ impl Permissions {
 
     /// Joins a `PreToolUse` hook's result to the order (SPEC §9) and returns the input to run.
     /// `updatedInput` is revalidated with `validate` and then checked like the model's own input.
-    // shortcut: the agent loop doesn't run hooks yet because no front end loads plugins; call
-    // this from `check_permission` when plugin loading lands (T6.6).
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "no caller until plugins are loaded")
-    )]
     pub(crate) fn decide_with_hook(
         &self,
         tool: &str,

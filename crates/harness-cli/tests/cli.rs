@@ -538,3 +538,52 @@ async fn acp_mode_writes_only_protocol_messages_to_stdout() {
     let chunk = |m: &Value| m["params"]["update"]["sessionUpdate"] == "agent_message_chunk";
     assert!(seen.iter().any(chunk), "{seen:?}");
 }
+
+/// An enabled plugin under the test's data dir, written directly so no git is involved.
+fn enabled_plugin(dir: &Path) {
+    let plugins = dir.join("xdg-data/harness/plugins");
+    let root = plugins.join("demo");
+    for sub in ["skills/greet", "commands", "hooks"] {
+        fs::create_dir_all(root.join(sub)).unwrap();
+    }
+    fs::write(
+        root.join("skills/greet/SKILL.md"),
+        "---\ndescription: greets-marker\n---\nSay hello.\n",
+    )
+    .unwrap();
+    fs::write(root.join("commands/fix.md"), "Fix $ARGUMENTS now.\n").unwrap();
+    let hooks = json!({"hooks": {"PreToolUse": [{"matcher": "Read", "hooks": [
+        {"type": "command", "command": "echo blocked-by-hook >&2; exit 2"}]}]}});
+    fs::write(root.join("hooks/hooks.json"), hooks.to_string()).unwrap();
+    let installed = json!({"demo": {"source": "x", "commit": "0", "enabled": true}});
+    fs::write(plugins.join("installed.json"), installed.to_string()).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn enabled_plugins_add_skills_commands_and_blocking_hooks() {
+    let dir = workspace();
+    enabled_plugin(&dir);
+    fs::write(dir.join("secret.txt"), "file-content-marker").unwrap();
+    let server = server(
+        Some(32768),
+        Replies(vec![
+            tool_reply("Read", &json!({"file_path": dir.join("secret.txt")})),
+            text_reply("done"),
+        ]),
+    )
+    .await;
+
+    let output = run(&server, &dir, &["--model", "m", "/demo:fix the bug"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let requests = requests_to(&server, CHAT).await;
+    let first = requests[0]["messages"].to_string();
+    assert!(
+        first.contains("demo:greet") && first.contains("greets-marker"),
+        "{first}"
+    );
+    assert_eq!(requests[0]["messages"][1]["content"], "Fix the bug now.\n");
+    let second = requests[1]["messages"].to_string();
+    assert!(second.contains("blocked-by-hook"), "{second}");
+    assert!(!second.contains("file-content-marker"), "{second}");
+}
