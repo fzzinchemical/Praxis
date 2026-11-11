@@ -10,6 +10,7 @@ pub mod recovery;
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
+use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
@@ -167,6 +168,7 @@ pub struct Agent {
     session: Option<SessionLog>,
     /// The first failed log write, which stops the turn.
     log_error: Option<std::io::Error>,
+    mcp: Option<Arc<Mcp>>,
 }
 
 /// What one model request produced before it ended.
@@ -224,7 +226,20 @@ impl Agent {
             first_token_ms: Vec::new(),
             session: None,
             log_error: None,
+            mcp: None,
         }
+    }
+
+    /// Adds `mcp`'s tools after the built-in ones. Call before the first turn: the tool list
+    /// is part of the prefix.
+    pub fn with_mcp(mut self, mcp: Arc<Mcp>) -> Self {
+        self.tool_schemas.extend(mcp.schemas());
+        let (system, warning) =
+            assemble_prefix(&self.config, &self.budget, &self.tool_schemas, &self.facts);
+        self.history[0] = Message::System { content: system };
+        self.prefix_warning = warning;
+        self.mcp = Some(mcp);
+        self
     }
 
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
@@ -473,7 +488,13 @@ impl Agent {
                 "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
                     .to_owned()
             })
-            .and_then(|input| tools::validate(&call.name, &input).map(|()| input));
+            .and_then(|input| {
+                match self.mcp.as_ref().and_then(|mcp| mcp.schema(&call.name)) {
+                    Some(schema) => tools::validate_schema(schema, &input),
+                    None => tools::validate(&call.name, &input),
+                }
+                .map(|()| input)
+            });
         if checked.is_ok() {
             self.call_failures.remove(&call.name);
         } else {
@@ -611,10 +632,15 @@ impl Agent {
         }
         let output = match checked {
             Ok(input) => match self.check_permission(call, &input, turn).await {
-                Ok(()) => {
-                    let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
-                    tools::execute(&call.name, input, tools, cancel).await
-                }
+                Ok(()) => match &self.mcp {
+                    Some(mcp) if mcp.schema(&call.name).is_some() => {
+                        mcp.call(&call.name, input, turn.cancel.clone()).await
+                    }
+                    _ => {
+                        let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
+                        tools::execute(&call.name, input, tools, cancel).await
+                    }
+                },
                 Err(reason) => ToolOutput::error(reason),
             },
             Err(problem) => ToolOutput::error(problem),

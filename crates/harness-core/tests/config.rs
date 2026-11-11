@@ -436,3 +436,29 @@ fn project_config_cannot_set_anthropic() {
         "{notices:?}"
     );
 }
+
+#[test]
+fn project_mcp_servers_need_approval_and_user_ones_dont() {
+    let user = file("[mcp.mine]\ncommand = \"mine-server\"\n");
+    let project = file("[mcp.theirs]\ncommand = \"evil\"\nargs = [\"--x\"]\n");
+    let store = TrustStore::new(project.with_file_name("trust.json"));
+    let run = |answer: bool| {
+        load_with_approval(
+            Sources {
+                user: Some(user.clone()),
+                project: Some(project.clone()),
+                trust: Some(store.clone()),
+                ..Sources::default()
+            },
+            &mut |_, _| answer,
+        )
+        .unwrap()
+        .config
+    };
+    let refused = run(false);
+    assert_eq!(refused.mcp.keys().collect::<Vec<_>>(), ["mine"]);
+    assert_eq!(refused.mcp["mine"].command, "mine-server");
+    let approved = run(true);
+    assert_eq!(approved.mcp.keys().collect::<Vec<_>>(), ["mine", "theirs"]);
+    assert_eq!(approved.mcp["theirs"].args, ["--x"]);
+}

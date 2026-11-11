@@ -96,3 +96,4 @@ Known before implementation. Details are in SPEC.
 - Any binary that runs `Bash` must handle `sandbox-exec` before starting tokio, as `harness` and `xtask` do, and pass itself as the sandbox helper.
 - Two `cargo xtask eval` runs on one LM Studio can race on model load and unload ("Model does not exist"), so run them one at a time.
 - LM Studio keys contain a publisher slash (`google/gemma-4-12b-qat`), so only `lmstudio/` and `anthropic/` prefixes pick a backend; anything else is a bare LM Studio name (`Config::resolve_model`).
+- `harness = false` test targets build without `cfg(test)`, so `#![cfg(test)]` removes `main` and clippy's test allowances don't apply (`tests/mcp.rs`).

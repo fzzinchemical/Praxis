@@ -380,7 +380,7 @@ flowchart LR
     class T4_6 task
 ```
 
-- [ ] **T4.1 stdio client** (§13)
+- [x] **T4.1 stdio client** (§13)
   - **Needs:** T3.4.
   - **Done when:** tools from a test `rmcp` server are callable through the agent loop, gated by trust, and a slow or failing server doesn't block startup.
 

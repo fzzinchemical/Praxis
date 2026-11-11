@@ -174,6 +174,7 @@ impl Permissions {
             "Write" | "Edit" => Decision::Ask { can_always: true },
             // A grant would cover every later command, so routine ones need allow rules instead.
             "Bash" => Decision::Ask { can_always: false },
+            mcp if mcp.starts_with("mcp__") => Decision::Ask { can_always: true },
             other => Decision::Deny(format!(
                 "Unknown tool `{other}`. Use one of the tools you were given."
             )),
@@ -221,6 +222,14 @@ impl Permissions {
         }
         // shortcut: search tools match on their root path only, so `Read(**/.env*)` doesn't stop a
         // Grep over the folder; filter walked files by deny rules if that matters.
+        // An MCP tool's `path` means whatever its server says, not a workspace path.
+        if tool.starts_with("mcp__") {
+            return Subjects {
+                deny: Vec::new(),
+                allow: Some(Vec::new()),
+                target: None,
+            };
+        }
         let key = if matches!(tool, "Read" | "Write" | "Edit") {
             "file_path"
         } else {

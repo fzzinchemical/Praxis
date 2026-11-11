@@ -38,6 +38,17 @@ pub struct Config {
     // patterns ever need it.
     /// `[profiles."pattern"]`, the user layer of model profiles (SPEC §5.5).
     pub profiles: BTreeMap<String, ProfileLayer>,
+    /// `[mcp.name]` servers (SPEC §13). Project ones run code, so they need approval.
+    pub mcp: BTreeMap<String, McpServer>,
+}
+
+/// A stdio MCP server.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct McpServer {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -364,6 +375,9 @@ fn split_widening(project: &mut Table, user_mode: Mode) -> (Table, Vec<String>) 
     let auto_load = project.get("agent").and_then(|a| a.get("auto_load"));
     if auto_load.and_then(Value::as_bool) == Some(true) {
         keys.push("agent.auto_load");
+    }
+    if project.contains_key("mcp") {
+        keys.push("mcp");
     }
     let mut widening = Table::new();
     for key in &keys {

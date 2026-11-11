@@ -311,6 +311,12 @@ pub fn validate(name: &str, input: &Value) -> Result<(), String> {
             known.join(", ")
         ));
     };
+    validate_schema(schema, input)
+}
+
+/// Like [`validate`], against a schema from elsewhere, such as an MCP server.
+pub(crate) fn validate_schema(schema: &ToolSchema, input: &Value) -> Result<(), String> {
+    let name = &schema.name;
     let validator = jsonschema::validator_for(&schema.parameters)
         .map_err(|e| format!("The schema for `{name}` is broken: {e}"))?;
     let problems: Vec<String> = validator

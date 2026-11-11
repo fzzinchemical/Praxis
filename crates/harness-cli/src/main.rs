@@ -508,6 +508,16 @@ async fn run(
             masking: true,
         },
     );
+    let agent = if config.mcp.is_empty() {
+        agent
+    } else {
+        let (mcp, notices) =
+            harness_core::mcp::Mcp::connect(&config.mcp, harness_core::mcp::CONNECT_TIMEOUT).await;
+        for notice in notices {
+            eprintln!("{}", sanitize(&notice));
+        }
+        agent.with_mcp(Arc::new(mcp))
+    };
     let agent = with_session(agent, cli.resume.as_deref())?;
     match prompt {
         Some(prompt) => {
