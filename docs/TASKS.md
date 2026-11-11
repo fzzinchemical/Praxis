@@ -59,10 +59,11 @@ flowchart LR
   - **Do:** `git init` with `main`; workspace per §3 with empty crates; shared lints and release profile (§2); `#![forbid(unsafe_code)]`; `.gitignore`; `scripts/verify` (§14).
   - **Done when:** `./scripts/verify` passes on the empty workspace, and fails on a deliberately added lint violation, which is then removed.
 
-- [ ] **T0.2 Baseline existing tools** `HUMAN` decides the outcome
+- [x] **T0.2 Baseline existing tools** `HUMAN` decides the outcome
   - **Needs:** T0.0, T0.4.
   - **Do:** run OpenCode and Goose on the T0.4 tasks with the chosen model; record outcomes and failure kinds in `docs/baseline.md`.
   - **Done when:** `docs/baseline.md` has results per tool and model, and **the human has decided to build, narrow scope, or contribute upstream**, recorded as an ADR. The rest of this file assumes "build".
+  - **Result (2026-11-12):** OpenCode only (Goose not run), one run per task. Owner chose build ([ADR 0006](adr/0006-build-after-baseline.md)).
 
 - [x] **T0.3 Provider spike and fixture recording**
   - **Needs:** T0.0, T0.1.
@@ -254,9 +255,10 @@ flowchart LR
   - **Done when:** symbols are extracted for each starting language, `.gitignore` is respected, the budget holds, and eval tokens drop on the rename task without losing success.
   - **Result so far (2026-11-11):** the tool and its tests are on branch `feat/t2-8-repo-map`, unmerged. On both rename tasks, one run each with seed 42, success stayed 4/4 but prompt tokens rose from 124k to 173k (+40%) against main (`evals/results/*.rename-{main,repomap}.json`). The fixture repos have three or four files, so the extra tool schema costs more than a map saves; a larger repo is needed before deciding whether to keep, change or cut the task.
 
-- [ ] **T2.9 M2 checkpoint** `HUMAN` reviews
+- [x] **T2.9 M2 checkpoint** `HUMAN` reviews
   - **Needs:** T2.1-T2.6.
   - **Done when:** scoreboard is committed and compared with the T1.9 and T0.2 baselines. **If it doesn't clearly beat them, stop and discuss before M3.**
+  - **Result (2026-11-12):** M2 doesn't clearly beat OpenCode on pass rate (4b 6/13 vs 8/13, gemma 10/13 each) but is about 4.5× faster on 4b. Discussed, and the owner accepted M2 as it stands ([ADR 0006](adr/0006-build-after-baseline.md)).
 
 - [ ] **T2.10 Repeat reads and stale files** (§7) · *Should*
   - **Needs:** T2.4.
