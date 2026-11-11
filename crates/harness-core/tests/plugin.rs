@@ -207,6 +207,49 @@ fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
 }
 
 #[test]
+fn block_scalar_descriptions_are_folded_into_one_line() {
+    // As in DietrichGebert/ponytail's SKILL.md files (docs/compat.md).
+    let root = plugin_dir("folded");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("skills/help/SKILL.md"),
+        "---\nname: help\ndescription: >\n  Quick reference.\n  Use for help.\nother: x\n---\nBody\n",
+    );
+    write(
+        &root.join("skills/keep/SKILL.md"),
+        "---\ndescription: |-\n  Line one\n\n  line two\n---\nBody\n",
+    );
+    write(
+        &root.join("agents/scout.md"),
+        "---\ndescription: >-\n  Finds\n  things\ntools: Read\n---\nBody\n",
+    );
+    let plugin = load(&root).unwrap();
+    let skills = plugin.skills();
+    assert_eq!(skills[0].description, "Quick reference. Use for help.");
+    assert_eq!(skills[1].description, "Line one line two");
+    let agents = plugin.agents();
+    assert_eq!(agents[0].skill.description, "Finds things");
+    assert_eq!(agents[0].tools.as_deref(), Some(&["Read".to_owned()][..]));
+}
+
+#[test]
+fn hook_files_warn_about_keys_other_than_hooks() {
+    // ponytail's `claude-band.json` adds `modules` (JS mods, unsupported by ADR 0001).
+    let root = plugin_dir("hookkeys");
+    manifest(&root, r#"{"name":"kit","hooks":["./band.json"]}"#);
+    write(
+        &root.join("band.json"),
+        r#"{"hooks":{},"modules":["./x.tsx"]}"#,
+    );
+    let (hooks, warnings) = load(&root).unwrap().hooks().unwrap();
+    assert!(hooks.is_empty());
+    assert!(
+        warnings.iter().any(|w| w.contains("`modules`")),
+        "{warnings:?}"
+    );
+}
+
+#[test]
 fn plugin_mcp_servers_expand_variables_and_take_the_plugin_name() {
     let root = plugin_dir("mcp");
     let data = plugin_dir("mcp-data");

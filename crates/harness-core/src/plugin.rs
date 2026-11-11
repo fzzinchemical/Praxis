@@ -240,10 +240,20 @@ impl Plugin {
         let (front, body) = split_frontmatter(&text);
         let front = front.to_owned();
         let field = move |key: &str| {
-            front.lines().find_map(|line| {
-                let value = line.strip_prefix(key)?.strip_prefix(':')?.trim();
-                Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
-            })
+            let mut lines = front.lines();
+            let value = lines
+                .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
+                .trim();
+            // A `>` or `|` block scalar continues on indented lines; the index wants one line.
+            if value.starts_with(['>', '|']) {
+                let folded: Vec<&str> = lines
+                    .take_while(|l| l.trim().is_empty() || l.starts_with([' ', '\t']))
+                    .map(str::trim)
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                return Some(folded.join(" "));
+            }
+            Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
         };
         // A SKILL.md is named by its directory, a command by its file.
         let stem = if path.file_name().is_some_and(|n| n == "SKILL.md") {
@@ -397,8 +407,8 @@ impl Plugin {
     }
 }
 
-// shortcut: reads only flat `key: value` lines, not full YAML; add a YAML parser if plugins
-// need multi-line values.
+// shortcut: reads flat `key: value` lines and `>`/`|` block scalars (folded to one line), not
+// full YAML; add a YAML parser if plugins need lists or nested maps.
 fn split_frontmatter(text: &str) -> (&str, &str) {
     text.strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---\n"))
@@ -490,16 +500,24 @@ impl Plugin {
     pub fn hooks(&self) -> Result<(Vec<crate::hooks::Hook>, Vec<String>), String> {
         let (mut hooks, mut warnings) = (Vec::new(), Vec::new());
         for source in &self.hooks {
-            let events = match source {
-                Source::Inline(value) => value.clone(),
-                Source::File(file) => fs::read_to_string(file)
-                    .map_err(|e| e.to_string())
-                    .and_then(|t| serde_json::from_str::<Value>(&t).map_err(|e| e.to_string()))
-                    .map_err(|e| format!("{}: {e}", file.display()))?
-                    .get("hooks")
-                    .cloned()
-                    .unwrap_or(Value::Null),
-            };
+            let events =
+                match source {
+                    Source::Inline(value) => value.clone(),
+                    Source::File(file) => {
+                        let mut root = fs::read_to_string(file)
+                            .map_err(|e| e.to_string())
+                            .and_then(|t| {
+                                serde_json::from_str::<Map<String, Value>>(&t)
+                                    .map_err(|e| e.to_string())
+                            })
+                            .map_err(|e| format!("{}: {e}", file.display()))?;
+                        let events = root.remove("hooks").unwrap_or(Value::Null);
+                        warnings.extend(root.keys().map(|key| {
+                            format!("{}: unsupported key `{key}` ignored", file.display())
+                        }));
+                        events
+                    }
+                };
             let (found, skipped) = crate::hooks::parse(&events);
             hooks.extend(found);
             warnings.extend(skipped);
