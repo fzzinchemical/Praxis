@@ -381,13 +381,15 @@ async fn grep_supports_each_output_mode() {
     f.file("a.rs", "alpha\nbeta alpha\n");
     f.file("b.txt", "gamma\n");
     let call = |mode: &str| json!({ "pattern": "alpha", "output_mode": mode });
-    let files = f.call("Grep", json!({ "pattern": "alpha" })).await;
-    assert_eq!(files.content, "a.rs");
-    assert_eq!(f.call("Grep", call("count")).await.content, "a.rs:2");
+    let lines = "a.rs:1:alpha\na.rs:2:beta alpha";
+    let default = f.call("Grep", json!({ "pattern": "alpha" })).await;
+    assert_eq!(default.content, lines);
     assert_eq!(
-        f.call("Grep", call("content")).await.content,
-        "a.rs:1:alpha\na.rs:2:beta alpha"
+        f.call("Grep", call("files_with_matches")).await.content,
+        "a.rs"
     );
+    assert_eq!(f.call("Grep", call("count")).await.content, "a.rs:2");
+    assert_eq!(f.call("Grep", call("content")).await.content, lines);
     ok(
         &f.call("Grep", json!({ "pattern": "nothing" })).await,
         "No matches",
@@ -401,7 +403,10 @@ async fn grep_honours_case_multiline_glob_path_and_ignore_rules() {
     f.file("sub/b.txt", "hello\n");
     f.file("skipped.log", "hello\n");
     f.file(".gitignore", "*.log\n");
-    let grep = async |input: Value| f.call("Grep", input).await.content;
+    let grep = async |mut input: Value| {
+        input["output_mode"] = json!("files_with_matches");
+        f.call("Grep", input).await.content
+    };
     assert_eq!(grep(json!({ "pattern": "hello" })).await, "sub/b.txt");
     let both = grep(json!({ "pattern": "hello", "-i": true })).await;
     assert!(

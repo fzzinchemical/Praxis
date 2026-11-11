@@ -23,7 +23,7 @@ pub struct GrepInput {
     path: Option<String>,
     /// Only search files matching this glob, such as `*.rs`.
     glob: Option<String>,
-    /// `files_with_matches` (default) lists files, `content` shows matching lines with line numbers, `count` counts matches per file.
+    /// `content` (default) shows matching lines with line numbers, `files_with_matches` lists files, `count` counts matches per file.
     output_mode: Option<OutputMode>,
     /// Ignore case.
     #[serde(rename = "-i")]
@@ -35,8 +35,9 @@ pub struct GrepInput {
 #[derive(Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 enum OutputMode {
-    Content,
+    // Unlike Claude Code: small models rarely ask for lines, then grep again to find where to read.
     #[default]
+    Content,
     FilesWithMatches,
     Count,
 }
