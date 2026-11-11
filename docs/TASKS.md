@@ -536,7 +536,7 @@ flowchart LR
   - **Needs:** T6.1, T2.5.
   - **Done when:** index appears in the frozen prefix, `Skill` loads a body by appended message, the prefix test still passes, and `/<plugin>:<name>` runs a command with argument substitution.
 
-- [ ] **T6.3 Hooks** (§12)
+- [x] **T6.3 Hooks** (§12)
   - **Needs:** T6.1, T3.2.
   - **Done when:** table tests cover every exit code and output field, matcher forms, exec and shell form, timeout; `updatedInput` is revalidated and re-checked for permission (a hook rewriting a path into `.git/hooks/` is denied); a hook `allow` can't override a deny rule.
 

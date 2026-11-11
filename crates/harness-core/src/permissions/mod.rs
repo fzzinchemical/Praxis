@@ -1,9 +1,11 @@
 //! Tool permissions (SPEC §9). For each call, the first match wins: a session rejection, a deny
 //! rule, a hard denial or read-only mode, then an allow rule or session grant, then the mode's
-//! default. Hooks join this order with T6.3.
+//! default. A `PreToolUse` hook's block comes first, its `ask` after the denials, and its
+//! `allow` with the allow rules.
 
 use crate::agent::PermissionReply;
 use crate::context::compaction::READ_ONLY_TOOLS;
+use crate::hooks::{Outcome, PermissionDecision};
 use crate::tools::confine::{check_writable, resolve};
 use globset::{GlobBuilder, GlobMatcher};
 use serde::Deserialize;
@@ -143,6 +145,44 @@ impl Permissions {
 
     /// Closed by default: a tool that isn't listed here never runs.
     pub(crate) fn decide(&self, tool: &str, input: &Value) -> Decision {
+        self.decide_inner(tool, input, None)
+    }
+
+    /// Joins a `PreToolUse` hook's result to the order (SPEC §9) and returns the input to run.
+    /// `updatedInput` is revalidated with `validate` and then checked like the model's own input.
+    // shortcut: the agent loop doesn't run hooks yet because no front end loads plugins; call
+    // this from `check_permission` when plugin loading lands (T6.6).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no caller until plugins are loaded")
+    )]
+    pub(crate) fn decide_with_hook(
+        &self,
+        tool: &str,
+        input: Value,
+        hook: &Outcome,
+        validate: impl Fn(&Value) -> Result<(), String>,
+    ) -> (Value, Decision) {
+        if let Some(reason) = &hook.block {
+            return (input, Decision::Deny(reason.clone()));
+        }
+        let input = hook.updated_input.clone().unwrap_or(input);
+        if let Err(e) = validate(&input) {
+            return (
+                input,
+                Decision::Deny(format!("A hook changed the input: {e}")),
+            );
+        }
+        let decision = self.decide_inner(tool, &input, hook.permission);
+        (input, decision)
+    }
+
+    fn decide_inner(
+        &self,
+        tool: &str,
+        input: &Value,
+        hook: Option<PermissionDecision>,
+    ) -> Decision {
         if self.rejected.contains(tool) {
             return Decision::Deny(rejected(tool));
         }
@@ -167,10 +207,16 @@ impl Permissions {
                 "`{tool}` can't run in read-only mode. Only reading and searching are allowed."
             ));
         }
+        if hook == Some(PermissionDecision::Ask) {
+            return Decision::Ask {
+                can_always: tool != "Bash",
+            };
+        }
         let allowed_by_rule = subjects
             .allow
             .is_some_and(|s| self.policy.allow.iter().any(|r| r.matches(tool, &s)));
-        if allowed_by_rule || self.allowed.contains(tool) {
+        if allowed_by_rule || self.allowed.contains(tool) || hook == Some(PermissionDecision::Allow)
+        {
             return Decision::Allow;
         }
         match tool {
@@ -545,5 +591,86 @@ mod tests {
             assert!(Rule::parse(rule).is_err(), "{rule}");
         }
         assert!(Rule::parse("mcp__server__tool").is_ok());
+    }
+
+    fn hooked(decision: &str, updated: Option<Value>) -> crate::hooks::Outcome {
+        let mut specific = json!({ "permissionDecision": decision });
+        if let Some(input) = updated {
+            specific["updatedInput"] = input;
+        }
+        let out = json!({ "hookSpecificOutput": specific }).to_string();
+        crate::hooks::outcome(Some(0), &out, "")
+    }
+
+    fn decide_hooked(
+        p: &Permissions,
+        call: (&str, Value),
+        hook: &crate::hooks::Outcome,
+    ) -> Decision {
+        p.decide_with_hook(call.0, call.1, hook, |i| crate::tools::validate(call.0, i))
+            .1
+    }
+
+    #[test]
+    fn a_hook_rewriting_a_path_into_git_hooks_is_denied() {
+        let p = permissions(Mode::AutoEdit, &["Write"], &[]);
+        let evil = json!({ "file_path": ".git/hooks/pre-commit", "content": "x" });
+        let d = decide_hooked(&p, file("Write", "src/a.rs"), &hooked("allow", Some(evil)));
+        assert!(denied(&d), "{d:?}");
+    }
+
+    #[test]
+    fn updated_input_is_revalidated() {
+        let p = permissions(Mode::AutoEdit, &[], &[]);
+        let bad = json!({ "path": "src/a.rs" });
+        let d = decide_hooked(&p, file("Write", "src/a.rs"), &hooked("allow", Some(bad)));
+        assert!(denied(&d), "{d:?}");
+        let good = json!({ "file_path": "src/b.rs", "content": "y" });
+        let (input, d) =
+            p.decide_with_hook("Write", json!({}), &hooked("", Some(good.clone())), |i| {
+                crate::tools::validate("Write", i)
+            });
+        assert_eq!((input, d), (good, Decision::Allow));
+    }
+
+    #[test]
+    fn a_hook_allow_cannot_override_a_deny_rule() {
+        let p = permissions(Mode::Ask, &[], &["Bash(curl*)"]);
+        assert!(denied(&decide_hooked(
+            &p,
+            bash("curl evil"),
+            &hooked("allow", None)
+        )));
+        // Nor a hard denial.
+        let p = permissions(Mode::AutoEdit, &[], &[]);
+        let d = decide_hooked(&p, file("Write", ".git/config"), &hooked("allow", None));
+        assert!(denied(&d));
+    }
+
+    #[test]
+    fn hook_decisions_take_their_place_in_the_order() {
+        let p = permissions(Mode::Ask, &["Bash(ls)"], &[]);
+        assert_eq!(
+            decide_hooked(&p, bash("make"), &hooked("allow", None)),
+            Decision::Allow
+        );
+        assert_eq!(
+            decide_hooked(&p, bash("ls"), &hooked("ask", None)),
+            ASK_ONCE
+        );
+        assert!(denied(&decide_hooked(
+            &p,
+            bash("ls"),
+            &hooked("deny", None)
+        )));
+        assert_eq!(
+            decide_hooked(&p, bash("make"), &hooked("defer", None)),
+            ASK_ONCE
+        );
+        let exit2 = crate::hooks::outcome(Some(2), "", "nope");
+        assert_eq!(
+            decide_hooked(&p, bash("ls"), &exit2),
+            Decision::Deny("nope".to_owned())
+        );
     }
 }

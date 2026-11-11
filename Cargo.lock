@@ -1045,6 +1045,7 @@ dependencies = [
  "ignore",
  "jsonschema",
  "landlock",
+ "regex",
  "reqwest",
  "rmcp",
  "schemars 1.2.3",

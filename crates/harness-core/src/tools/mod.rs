@@ -1,7 +1,7 @@
 //! Built-in tools and their registry (SPEC §6). Names and parameters are a compatibility
 //! surface for plugin hooks: never rename them.
 
-mod bash;
+pub(crate) mod bash;
 mod checkpoint;
 pub(crate) mod confine;
 mod files;
