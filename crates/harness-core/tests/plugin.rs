@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use harness_core::plugin::{Source, load};
+use harness_core::plugin::{Source, load, run_command};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -135,4 +135,46 @@ fn unsupported_components_and_unknown_keys_warn_by_name() {
         assert!(warnings.contains(name), "{name} missing from {warnings}");
     }
     assert!(!warnings.contains("version"));
+}
+
+#[test]
+fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
+    let root = plugin_dir("components");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("skills/review/SKILL.md"),
+        "---\nname: review\ndescription: \"Review a diff\"\n---\nRead ${CLAUDE_PLUGIN_ROOT}/guide.md first.\n",
+    );
+    write(
+        &root.join("commands/fix.md"),
+        "---\ndescription: Fix it\n---\nFix issue $ARGUMENTS now.\n",
+    );
+    write(&root.join("commands/plain.md"), "Just do it.\n");
+    let plugin = load(&root).unwrap();
+
+    let skills = plugin.skills();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].name, "kit:review");
+    assert_eq!(skills[0].description, "Review a diff");
+    assert_eq!(
+        skills[0].body,
+        format!("Read {}/guide.md first.\n", root.display())
+    );
+
+    let commands = plugin.commands();
+    assert_eq!(commands[0].description, "Fix it");
+    assert_eq!(
+        run_command(&commands, "/kit:fix 42 and 43").as_deref(),
+        Some("Fix issue 42 and 43 now.\n")
+    );
+    assert_eq!(
+        run_command(&commands, "/kit:plain fast").as_deref(),
+        Some("Just do it.\n\nARGUMENTS: fast")
+    );
+    assert_eq!(
+        run_command(&commands, "/kit:plain").as_deref(),
+        Some("Just do it.\n")
+    );
+    assert_eq!(run_command(&commands, "/kit:missing"), None);
+    assert_eq!(run_command(&commands, "kit:fix"), None);
 }

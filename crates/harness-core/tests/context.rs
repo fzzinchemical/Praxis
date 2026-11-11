@@ -809,3 +809,31 @@ async fn a_summary_has_its_reasoning_stripped_and_call_ids_never_repeat_after_it
         .unwrap();
     assert!(n >= 8, "{id}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_skill_index_is_frozen_in_the_prefix_and_skill_appends_the_body() {
+    let skill = harness_core::plugin::Skill {
+        name: "kit:review".into(),
+        description: "Review a diff".into(),
+        body: "Step one: read the diff.".into(),
+    };
+    let bodies = vec![
+        tool_reply("s", "Skill", json!({"skill": "kit:review"})),
+        text_reply("done", 4000),
+        text_reply("again", 4000),
+    ];
+    let mut h = Harness::new(bodies, config(20_000)).await;
+    h.agent = Some(h.agent.take().unwrap().with_skills(vec![skill]));
+    h.turn("review it").await;
+    h.turn("more").await;
+    assert_each_body_extends_the_last(&h).await;
+
+    let bodies = h.bodies().await;
+    let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("- kit:review: Review a diff"), "{system}");
+    assert!(!system.contains("Step one"), "bodies load on demand");
+    let tools = bodies[0]["tools"].to_string();
+    assert!(tools.contains("\"Skill\""), "{tools}");
+    let shown = bodies[1]["messages"].to_string();
+    assert!(shown.contains("Step one: read the diff."), "{shown}");
+}

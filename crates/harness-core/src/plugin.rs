@@ -160,6 +160,102 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
     })
 }
 
+/// A skill or command, named `<plugin>:<name>`. Same frontmatter for both (SPEC §12).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Skill {
+    pub name: String,
+    pub description: String,
+    /// With `${CLAUDE_PLUGIN_ROOT}` already expanded.
+    pub body: String,
+}
+
+impl Plugin {
+    /// `<dir>/<name>/SKILL.md` under each skills directory, sorted. Unreadable files are
+    /// skipped with a warning.
+    pub fn skills(&self) -> Vec<Skill> {
+        let mut files = Vec::new();
+        for dir in &self.skills {
+            let mut found: Vec<PathBuf> = fs::read_dir(dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path().join("SKILL.md"))
+                // The same containment rule as the scan: no symlink out of the plugin.
+                .filter(|p| {
+                    p.canonicalize()
+                        .is_ok_and(|real| real.starts_with(&self.root))
+                })
+                .collect();
+            found.sort();
+            files.extend(found);
+        }
+        files.iter().filter_map(|f| self.read_skill(f)).collect()
+    }
+
+    pub fn commands(&self) -> Vec<Skill> {
+        self.commands
+            .iter()
+            .filter_map(|f| self.read_skill(f))
+            .collect()
+    }
+
+    fn read_skill(&self, path: &Path) -> Option<Skill> {
+        let text = fs::read_to_string(path)
+            .inspect_err(|error| tracing::warn!(%error, path = %path.display(), "skipped"))
+            .ok()?;
+        let (front, body) = split_frontmatter(&text);
+        let field = |key: &str| {
+            front.lines().find_map(|line| {
+                let value = line.strip_prefix(key)?.strip_prefix(':')?.trim();
+                Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
+            })
+        };
+        // A SKILL.md is named by its directory, a command by its file.
+        let stem = if path.file_name().is_some_and(|n| n == "SKILL.md") {
+            path.parent()?.file_name()?
+        } else {
+            path.file_stem()?
+        };
+        let name = field("name").unwrap_or_else(|| stem.to_string_lossy().into_owned());
+        let description = field("description").unwrap_or_else(|| {
+            body.lines()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or_default()
+                .trim()
+                .to_owned()
+        });
+        Some(Skill {
+            name: format!("{}:{name}", self.name),
+            description,
+            body: body.replace("${CLAUDE_PLUGIN_ROOT}", &self.root.to_string_lossy()),
+        })
+    }
+}
+
+// shortcut: reads only flat `key: value` lines, not full YAML; add a YAML parser if plugins
+// need multi-line values.
+fn split_frontmatter(text: &str) -> (&str, &str) {
+    text.strip_prefix("---\n")
+        .and_then(|rest| rest.split_once("\n---\n"))
+        .unwrap_or(("", text))
+}
+
+/// Expands `/<plugin>:<name> args` into the command's prompt, or `None` if `input` names no
+/// command. Like Claude Code, arguments are appended when the body has no `$ARGUMENTS`.
+pub fn run_command(commands: &[Skill], input: &str) -> Option<String> {
+    let rest = input.strip_prefix('/')?;
+    let (name, args) = rest.split_once(' ').unwrap_or((rest, ""));
+    let args = args.trim();
+    let command = commands.iter().find(|c| c.name == name)?;
+    Some(if command.body.contains("$ARGUMENTS") {
+        command.body.replace("$ARGUMENTS", args)
+    } else if args.is_empty() {
+        command.body.clone()
+    } else {
+        format!("{}\nARGUMENTS: {args}", command.body)
+    })
+}
+
 /// A manifest value that may be one entry or an array of them.
 fn entries<'a>(manifest: &'a Map<String, Value>, key: &str) -> Result<Vec<&'a Value>, String> {
     Ok(match manifest.get(key) {

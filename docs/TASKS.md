@@ -532,7 +532,7 @@ flowchart LR
   - **Needs:** T3.4.
   - **Done when:** path rules are enforced (`..` and missing paths rejected), replace/add/merge behaviour is tested, a plugin with no manifest loads, and unsupported components warn by name.
 
-- [ ] **T6.2 Skills and commands** (§12)
+- [x] **T6.2 Skills and commands** (§12)
   - **Needs:** T6.1, T2.5.
   - **Done when:** index appears in the frozen prefix, `Skill` loads a body by appended message, the prefix test still passes, and `/<plugin>:<name>` runs a command with argument substitution.
 

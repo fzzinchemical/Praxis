@@ -12,6 +12,7 @@ use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
+use crate::plugin::Skill;
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
@@ -169,6 +170,8 @@ pub struct Agent {
     /// The first failed log write, which stops the turn.
     log_error: Option<std::io::Error>,
     mcp: Option<Arc<Mcp>>,
+    /// Plugin skills, indexed in the prefix and loaded by the `Skill` tool.
+    skills: Vec<Skill>,
 }
 
 /// What one model request produced before it ended.
@@ -204,7 +207,8 @@ impl Agent {
         let budget = Budget::new(config.context_size);
         let tool_schemas = tools::schemas();
         let facts = SessionFacts::capture(tools.workspace());
-        let (system, prefix_warning) = assemble_prefix(&config, &budget, &tool_schemas, &facts);
+        let (system, prefix_warning) =
+            assemble_prefix(&config, &budget, &tool_schemas, &facts, &[]);
         let history = vec![Message::System { content: system }];
         let permissions = Permissions::new(config.policy.clone(), tools.workspace());
         Self {
@@ -227,6 +231,7 @@ impl Agent {
             session: None,
             log_error: None,
             mcp: None,
+            skills: Vec::new(),
         }
     }
 
@@ -234,12 +239,50 @@ impl Agent {
     /// is part of the prefix.
     pub fn with_mcp(mut self, mcp: Arc<Mcp>) -> Self {
         self.tool_schemas.extend(mcp.schemas());
-        let (system, warning) =
-            assemble_prefix(&self.config, &self.budget, &self.tool_schemas, &self.facts);
+        self.mcp = Some(mcp);
+        self.reassemble_prefix();
+        self
+    }
+
+    /// Adds the `Skill` tool and the skills' index to the prefix. Call before the first turn.
+    pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        if skills.is_empty() {
+            return self;
+        }
+        self.tool_schemas.push(skill_schema());
+        self.skills = skills;
+        self.reassemble_prefix();
+        self
+    }
+
+    fn reassemble_prefix(&mut self) {
+        let (system, warning) = assemble_prefix(
+            &self.config,
+            &self.budget,
+            &self.tool_schemas,
+            &self.facts,
+            &self.skills,
+        );
         self.history[0] = Message::System { content: system };
         self.prefix_warning = warning;
-        self.mcp = Some(mcp);
-        self
+    }
+
+    /// The body goes back as the call's result, so it is appended and the prefix stays fixed.
+    fn load_skill(&self, input: &Value) -> ToolOutput {
+        let wanted = input
+            .get("skill")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        match self.skills.iter().find(|s| s.name == wanted) {
+            Some(skill) => ToolOutput {
+                content: skill.body.clone(),
+                is_error: false,
+                structured: Value::Null,
+            },
+            None => ToolOutput::error(format!(
+                "Unknown skill `{wanted}`. Use a name from the skill index."
+            )),
+        }
     }
 
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
@@ -489,7 +532,10 @@ impl Agent {
                     .to_owned()
             })
             .and_then(|input| {
-                match self.mcp.as_ref().and_then(|mcp| mcp.schema(&call.name)) {
+                let skill = (call.name == "Skill")
+                    .then(|| self.tool_schemas.iter().find(|t| t.name == "Skill"))
+                    .flatten();
+                match skill.or_else(|| self.mcp.as_ref()?.schema(&call.name)) {
                     Some(schema) => tools::validate_schema(schema, &input),
                     None => tools::validate(&call.name, &input),
                 }
@@ -633,6 +679,7 @@ impl Agent {
         let output = match checked {
             Ok(input) => match self.check_permission(call, &input, turn).await {
                 Ok(()) => match &self.mcp {
+                    _ if call.name == "Skill" => self.load_skill(&input),
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }
@@ -743,10 +790,22 @@ fn assemble_prefix(
     budget: &Budget,
     tool_schemas: &[ToolSchema],
     facts: &SessionFacts,
+    skills: &[Skill],
 ) -> (String, Option<String>) {
     let teaching = config.profile.tool_format.instructions(tool_schemas);
     let base = config.system_prompt.clone() + teaching.as_deref().unwrap_or_default();
-    let facts = facts.render();
+    let mut facts = facts.render();
+    if !skills.is_empty() {
+        let index: Vec<String> = skills
+            .iter()
+            .map(|s| format!("- {}: {}", s.name, s.description))
+            .collect();
+        // Before the facts, as SPEC §7 orders the prefix.
+        facts = format!(
+            "Skills (load one with the Skill tool when it fits the task):\n{}\n\n{facts}",
+            index.join("\n")
+        );
+    }
     let other_chars = ChatRequest {
         model: config.model.clone(),
         messages: vec![Message::System {
@@ -787,5 +846,18 @@ fn title(name: &str, input: Option<&Value>) -> String {
     match subject {
         Some(subject) => format!("{name} {subject}"),
         None => name.to_owned(),
+    }
+}
+
+fn skill_schema() -> ToolSchema {
+    ToolSchema {
+        name: "Skill".to_owned(),
+        description: "Load a skill's instructions by its name from the skill index.".to_owned(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {"skill": {"type": "string", "description": "The skill's name, such as `plugin:name`."}},
+            "required": ["skill"],
+            "additionalProperties": false
+        }),
     }
 }
