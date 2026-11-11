@@ -431,6 +431,14 @@ fn long_reply() -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn records_time_to_first_token_for_every_request() {
+    let mut h = Harness::new(read_script(2), config(10_000)).await;
+    fs::write(h.workspace.join("f.txt"), "x\n").unwrap();
+    h.turn("go").await;
+    assert_eq!(h.agent.as_ref().unwrap().first_token_ms().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn does_not_compact_below_the_threshold() {
     let mut h = Harness::new(read_script(3), config(10_000)).await;
     fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();

@@ -155,6 +155,7 @@ pub struct Agent {
     /// How to get masked output back, as a tool name and the arguments a call must include.
     refetchable: Vec<(String, Value)>,
     refetches: u32,
+    first_token_ms: Vec<u64>,
 }
 
 /// What one model request produced before it ended.
@@ -168,6 +169,7 @@ struct Reply {
     quiet: bool,
     sent_chars: usize,
     prompt_tokens: Option<u32>,
+    first_token_ms: Option<u64>,
 }
 
 impl Reply {
@@ -207,6 +209,7 @@ impl Agent {
             summarised_messages: 0,
             refetchable: Vec::new(),
             refetches: 0,
+            first_token_ms: Vec::new(),
         }
     }
 
@@ -219,6 +222,12 @@ impl Agent {
     /// read-only call, or a `Read` of a masked result's spool file. Extra arguments still count.
     pub fn refetches(&self) -> u32 {
         self.refetches
+    }
+
+    /// Milliseconds from sending each request to its first chunk, in order. LM Studio reports
+    /// no cached tokens, so a short time on a long prompt is the prefix-cache signal (SPEC §7).
+    pub fn first_token_ms(&self) -> &[u64] {
+        &self.first_token_ms
     }
 
     /// Runs one prompt to completion. `TurnEnded` is always the last event. If the receiver
@@ -272,6 +281,7 @@ impl Agent {
             requests += 1;
             let constrained = retry.take();
             let mut reply = self.request(turn, constrained.clone()).await;
+            self.first_token_ms.extend(reply.first_token_ms);
             if let (Some(_), Some(error)) = (&constrained, &reply.error)
                 && !matches!(error, ProviderError::Cancelled)
                 && !turn.cancel.is_cancelled()
@@ -474,6 +484,8 @@ impl Agent {
             ..Reply::default()
         };
         let mut splitter = ThinkSplitter::default();
+        // Before sending: the server may hold its headers until the prompt is processed.
+        let started = Instant::now();
         let stream = match self.provider.chat(request, turn.cancel.clone()).await {
             Ok(stream) => stream,
             Err(error) => {
@@ -482,12 +494,12 @@ impl Agent {
             }
         };
         pin_mut!(stream);
-        let started = Instant::now();
-        let mut first_chunk = true;
         while let Some(chunk) = stream.next().await {
-            if std::mem::take(&mut first_chunk) {
+            if reply.first_token_ms.is_none() {
+                let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
                 // LM Studio reports no cached tokens, so this is the cache signal (ADR 0002).
-                tracing::info!(ms = started.elapsed().as_millis(), "time to first token");
+                tracing::info!(ms, "time to first token");
+                reply.first_token_ms = Some(ms);
             }
             match chunk {
                 Ok(ChatChunk::Text(delta)) => {

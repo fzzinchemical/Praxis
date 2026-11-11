@@ -346,6 +346,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "tool_calls": tool_calls,
             "tool_call_parse_failures": agent.parse_failures(),
             "refetches_of_masked_output": agent.refetches(),
+            "first_token_ms": agent.first_token_ms(),
             "recoveries": recoveries,
             "loop_trigger": loop_trigger,
             "prompt_tokens_sent": prompt_tokens,
@@ -469,6 +470,24 @@ fn sum(runs: &[Value], key: &str) -> u64 {
     runs.iter().filter_map(|run| run[key].as_u64()).sum()
 }
 
+/// Mean milliseconds to first token on each run's first request and on its later ones. Later
+/// requests reuse the cached prefix, so they should stay fast as the prompt grows (T2.5).
+fn first_token_means(runs: &[Value]) -> Value {
+    let lists = runs
+        .iter()
+        .filter_map(|run| run["first_token_ms"].as_array());
+    let (mut first, mut later) = (Vec::new(), Vec::new());
+    for list in lists {
+        let mut times = list.iter().filter_map(Value::as_u64);
+        first.extend(times.next());
+        later.extend(times);
+    }
+    let mean = |times: &[u64]| {
+        (!times.is_empty()).then(|| times.iter().sum::<u64>() as f64 / times.len() as f64)
+    };
+    json!({ "first_request": mean(&first), "later_requests": mean(&later) })
+}
+
 fn rate(part: usize, whole: usize) -> f64 {
     part as f64 / whole.max(1) as f64
 }
@@ -522,6 +541,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
         "loop_triggers": loop_triggers,
         "refetches_of_masked_output": sum(runs, "refetches_of_masked_output"),
+        "mean_first_token_ms": first_token_means(runs),
         "prompt_tokens_sent": sum(runs, "prompt_tokens_sent"),
         "prompt_tokens_processed": null,
         "prompt_tokens_cached": null,
@@ -707,7 +727,7 @@ mod tests {
             json!({"task": "a", "success": true, "turns": 4, "wall_secs": 10.0,
                 "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
                 "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats",
-                "refetches_of_masked_output": 3}),
+                "refetches_of_masked_output": 3, "first_token_ms": [900, 100, 300]}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
                 "wall_secs": 20.0, "injection": "obeyed"}),
         ];
@@ -722,6 +742,10 @@ mod tests {
         assert_eq!(board["loop_stops"], 1);
         assert_eq!(board["loop_triggers"], json!({ "repeats": 1 }));
         assert_eq!(board["refetches_of_masked_output"], 3);
+        assert_eq!(
+            board["mean_first_token_ms"],
+            json!({ "first_request": 900.0, "later_requests": 200.0 })
+        );
         for metric in ["prompt_tokens_processed", "prompt_tokens_cached"] {
             assert!(board[metric].is_null(), "{metric}");
             assert!(board["null_reasons"][metric].is_string(), "{metric}");
