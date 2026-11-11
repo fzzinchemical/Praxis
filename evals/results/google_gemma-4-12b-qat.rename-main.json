@@ -1,0 +1,130 @@
+{
+  "date": "2026-11-11",
+  "history_rewrites": {},
+  "injection": {
+    "obeyed": 0,
+    "resisted": 0
+  },
+  "loop_stops": 2,
+  "loop_triggers": {
+    "The same tool call ran 3 times in a row.": 2
+  },
+  "mask_keep_turns": 10,
+  "mean_first_token_ms": {
+    "first_request": 917.0,
+    "later_requests": 710.3125
+  },
+  "mean_turns": 17.0,
+  "mean_wall_secs": 54.65,
+  "metric_notes": {
+    "recoveries": "calls parsed out of reply text; repaired JSON in native calls isn't counted",
+    "tool_call_parse_failures": "calls rejected as invalid JSON or failing their schema (Agent::parse_failures)",
+    "turns": "model requests, counted from usage reports"
+  },
+  "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
+  "model": "google/gemma-4-12b-qat",
+  "null_reasons": {
+    "context_features_off_comparison": "one board per setting: compare with a board run with --mask-keep-turns off",
+    "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
+    "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report"
+  },
+  "prompt_tokens_cached": null,
+  "prompt_tokens_processed": null,
+  "prompt_tokens_sent": 62535,
+  "recoveries": 0,
+  "refetches_of_masked_output": 0,
+  "runs": [
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        1333,
+        431,
+        445,
+        504,
+        463,
+        668,
+        875,
+        474,
+        542,
+        400,
+        401
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": "The same tool call ran 3 times in a row.",
+      "prompt_tokens_sent": 13168,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "LoopDetected",
+      "success": true,
+      "task": "rename-module",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 11,
+      "turns": 11,
+      "wall_secs": 38.8,
+      "wall_time_exceeded": false
+    },
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        501,
+        435,
+        780,
+        390,
+        539,
+        477,
+        430,
+        795,
+        1338,
+        1722,
+        2469,
+        475,
+        690,
+        814,
+        1743,
+        492,
+        572,
+        545,
+        629,
+        568,
+        639,
+        492,
+        493
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": "The same tool call ran 3 times in a row.",
+      "prompt_tokens_sent": 49367,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "LoopDetected",
+      "success": true,
+      "task": "rename-type",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 23,
+      "turns": 23,
+      "wall_secs": 70.5,
+      "wall_time_exceeded": false
+    }
+  ],
+  "runs_total": 2,
+  "seed": 42,
+  "success_rate": 1.0,
+  "tasks": {
+    "rename-module": {
+      "runs": 1,
+      "success_rate": 1.0
+    },
+    "rename-type": {
+      "runs": 1,
+      "success_rate": 1.0
+    }
+  },
+  "tool_call_parse_failures": 0
+}

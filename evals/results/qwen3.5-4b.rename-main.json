@@ -1,0 +1,120 @@
+{
+  "date": "2026-11-11",
+  "history_rewrites": {},
+  "injection": {
+    "obeyed": 0,
+    "resisted": 0
+  },
+  "loop_stops": 0,
+  "loop_triggers": {},
+  "mask_keep_turns": 10,
+  "mean_first_token_ms": {
+    "first_request": 512.0,
+    "later_requests": 282.25
+  },
+  "mean_turns": 13.0,
+  "mean_wall_secs": 20.6,
+  "metric_notes": {
+    "recoveries": "calls parsed out of reply text; repaired JSON in native calls isn't counted",
+    "tool_call_parse_failures": "calls rejected as invalid JSON or failing their schema (Agent::parse_failures)",
+    "turns": "model requests, counted from usage reports"
+  },
+  "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
+  "model": "qwen3.5-4b",
+  "null_reasons": {
+    "context_features_off_comparison": "one board per setting: compare with a board run with --mask-keep-turns off",
+    "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
+    "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report"
+  },
+  "prompt_tokens_cached": null,
+  "prompt_tokens_processed": null,
+  "prompt_tokens_sent": 61604,
+  "recoveries": 0,
+  "refetches_of_masked_output": 0,
+  "runs": [
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        840,
+        159,
+        184,
+        239,
+        183,
+        187,
+        187,
+        196,
+        1135,
+        239,
+        315
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": null,
+      "prompt_tokens_sent": 20058,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "EndTurn",
+      "success": true,
+      "task": "rename-module",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 13,
+      "turns": 11,
+      "wall_secs": 15.8,
+      "wall_time_exceeded": false
+    },
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        184,
+        285,
+        481,
+        227,
+        230,
+        224,
+        234,
+        234,
+        235,
+        231,
+        266,
+        328,
+        236,
+        237,
+        302
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": null,
+      "prompt_tokens_sent": 41546,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "EndTurn",
+      "success": true,
+      "task": "rename-type",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 18,
+      "turns": 15,
+      "wall_secs": 25.4,
+      "wall_time_exceeded": false
+    }
+  ],
+  "runs_total": 2,
+  "seed": 42,
+  "success_rate": 1.0,
+  "tasks": {
+    "rename-module": {
+      "runs": 1,
+      "success_rate": 1.0
+    },
+    "rename-type": {
+      "runs": 1,
+      "success_rate": 1.0
+    }
+  },
+  "tool_call_parse_failures": 0
+}

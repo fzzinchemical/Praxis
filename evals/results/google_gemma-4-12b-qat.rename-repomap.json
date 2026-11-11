@@ -1,0 +1,143 @@
+{
+  "date": "2026-11-11",
+  "history_rewrites": {},
+  "injection": {
+    "obeyed": 0,
+    "resisted": 0
+  },
+  "loop_stops": 1,
+  "loop_triggers": {
+    "The same tool call ran 5 times within the last 20 calls.": 1
+  },
+  "mask_keep_turns": 10,
+  "mean_first_token_ms": {
+    "first_request": 977.0,
+    "later_requests": 961.8444444444444
+  },
+  "mean_turns": 23.0,
+  "mean_wall_secs": 103.25,
+  "metric_notes": {
+    "recoveries": "calls parsed out of reply text; repaired JSON in native calls isn't counted",
+    "tool_call_parse_failures": "calls rejected as invalid JSON or failing their schema (Agent::parse_failures)",
+    "turns": "model requests, counted from usage reports"
+  },
+  "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
+  "model": "google/gemma-4-12b-qat",
+  "null_reasons": {
+    "context_features_off_comparison": "one board per setting: compare with a board run with --mask-keep-turns off",
+    "prompt_tokens_cached": "LM Studio's chat route reports no cached-token field (SPEC §5.2)",
+    "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report"
+  },
+  "prompt_tokens_cached": null,
+  "prompt_tokens_processed": null,
+  "prompt_tokens_sent": 102494,
+  "recoveries": 0,
+  "refetches_of_masked_output": 0,
+  "runs": [
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        1418,
+        521,
+        421,
+        550,
+        431,
+        426,
+        472,
+        470,
+        887,
+        523,
+        525,
+        534,
+        485,
+        534,
+        539,
+        552,
+        503,
+        551,
+        478
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": "The same tool call ran 5 times within the last 20 calls.",
+      "prompt_tokens_sent": 32323,
+      "provider_error": null,
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "LoopDetected",
+      "success": true,
+      "task": "rename-module",
+      "tool_call_parse_failures": 0,
+      "tool_calls": 19,
+      "turns": 19,
+      "wall_secs": 82.1,
+      "wall_time_exceeded": false
+    },
+    {
+      "check_message": "",
+      "context": 32768,
+      "first_token_ms": [
+        536,
+        792,
+        538,
+        1329,
+        1929,
+        1758,
+        482,
+        483,
+        850,
+        1631,
+        480,
+        1411,
+        1665,
+        2462,
+        492,
+        3010,
+        4062,
+        512,
+        741,
+        564,
+        1799,
+        2029,
+        1727,
+        540,
+        714,
+        909,
+        771,
+        201
+      ],
+      "history_rewrites": {},
+      "injection": null,
+      "loop_trigger": null,
+      "prompt_tokens_sent": 70171,
+      "provider_error": "LM Studio reported an error: Engine protocol predict request failed: fetch failed",
+      "recoveries": 0,
+      "refetches_of_masked_output": 0,
+      "run": 1,
+      "stop_reason": "ProviderError",
+      "success": true,
+      "task": "rename-type",
+      "tool_call_parse_failures": 1,
+      "tool_calls": 27,
+      "turns": 27,
+      "wall_secs": 124.4,
+      "wall_time_exceeded": false
+    }
+  ],
+  "runs_total": 2,
+  "seed": 42,
+  "success_rate": 1.0,
+  "tasks": {
+    "rename-module": {
+      "runs": 1,
+      "success_rate": 1.0
+    },
+    "rename-type": {
+      "runs": 1,
+      "success_rate": 1.0
+    }
+  },
+  "tool_call_parse_failures": 1
+}
