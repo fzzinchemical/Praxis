@@ -343,13 +343,13 @@ fn rule_paths(frontmatter: &str) -> Option<Vec<&str>> {
     let mut lines = frontmatter.lines();
     let value = lines.find_map(|line| line.strip_prefix("paths:"))?.trim();
     let items: Vec<&str> = if let Some(inline) = value.strip_prefix('[') {
-        inline.trim_end_matches(']').split(',').collect()
+        split_outside_braces(inline.trim_end_matches(']'))
     } else if value.is_empty() {
         lines
             .map_while(|line| line.trim_start().strip_prefix("- "))
             .collect()
     } else {
-        value.split(',').collect()
+        split_outside_braces(value)
     };
     Some(
         items
@@ -358,6 +358,26 @@ fn rule_paths(frontmatter: &str) -> Option<Vec<&str>> {
             .filter(|item| !item.is_empty())
             .collect(),
     )
+}
+
+/// Splits on commas, except inside `{a,b}` brace patterns, which the glob matcher expands.
+fn split_outside_braces(list: &str) -> Vec<&str> {
+    let mut depth = 0usize;
+    let mut start = 0;
+    let mut out = Vec::new();
+    for (i, c) in list.char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                out.push(&list[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&list[start..]);
+    out
 }
 
 /// The current branch from `HEAD`. The repository is untrusted and this lands in the prompt, so
@@ -663,5 +683,13 @@ mod tests {
             Some(vec!["src/**/*.rs", "docs/*.md"])
         );
         assert_eq!(rule_paths("name: x"), None);
+        assert_eq!(
+            rule_paths("paths: src/*.{ts,tsx}, docs/*.md"),
+            Some(vec!["src/*.{ts,tsx}", "docs/*.md"])
+        );
+        assert_eq!(
+            rule_paths("paths: [\"src/{a,b}/*.rs\"]"),
+            Some(vec!["src/{a,b}/*.rs"])
+        );
     }
 }
