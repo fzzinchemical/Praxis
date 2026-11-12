@@ -127,9 +127,6 @@ fn push_unique(files: &mut Vec<String>, path: String) {
 /// never finished: no result, a timeout, a cancel, a signal or a failed wait.
 fn exit_code(result: Option<&str>) -> Option<i32> {
     let result = result?;
-    if let Some((_, rest)) = result.rsplit_once("[exit code ") {
-        return rest.split(']').next()?.parse().ok();
-    }
     let unfinished = [
         "[killed by a signal]",
         "[Timed out",
@@ -138,6 +135,10 @@ fn exit_code(result: Option<&str>) -> Option<i32> {
     ];
     if unfinished.iter().any(|note| result.contains(note)) {
         return None;
+    }
+    // Checked after the unfinished notes: command output is untrusted and may print a fake one.
+    if let Some((_, rest)) = result.rsplit_once("[exit code ") {
+        return rest.split(']').next()?.parse().ok();
     }
     Some(0)
 }

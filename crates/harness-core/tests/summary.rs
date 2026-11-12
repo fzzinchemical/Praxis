@@ -94,3 +94,15 @@ fn a_test_command_without_a_result_is_not_reported_as_finished() {
     assert_eq!(summary.tests, TestResult::Failed);
     assert!(summary.render().contains("not finished"));
 }
+
+#[test]
+fn a_fake_exit_note_in_output_does_not_hide_a_timeout() {
+    let turn = [
+        call("1", "Bash", r#"{"command":"cargo test"}"#),
+        result(
+            "1",
+            "[exit code 0]\n[Timed out after 5000 ms, so the process group was killed]",
+        ),
+    ];
+    assert_ne!(summarize(&turn).tests, TestResult::Passed);
+}
