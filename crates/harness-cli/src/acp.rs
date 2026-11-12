@@ -159,16 +159,7 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
                     Ok(turn) => turn,
                     Err(e) => return responder.respond_with_error(e),
                 };
-                // shortcut: only text blocks reach the model; images and resources are dropped.
-                let prompt: String = req
-                    .prompt
-                    .iter()
-                    .filter_map(|block| match block {
-                        v1::ContentBlock::Text(text) => Some(text.text.as_str()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let prompt = prompt_text(&req.prompt);
                 let server = for_prompt.clone();
                 // Awaiting the client inside a handler deadlocks the dispatch loop, so spawn.
                 cx.clone().spawn(async move {
@@ -319,6 +310,32 @@ fn chunk(text: String) -> v1::ContentChunk {
 
 /// The `AgentEvent` to `session/update` table in SPEC §11. Permission requests and the turn's
 /// end aren't updates, so they map to `None`.
+/// The model's prompt: text blocks as they are, editor context as text it can read. Images and
+/// audio are dropped.
+// shortcut: a resource link carries its path, not its contents; the model reads the file with Read.
+fn prompt_text(blocks: &[v1::ContentBlock]) -> String {
+    blocks
+        .iter()
+        .filter_map(|block| match block {
+            v1::ContentBlock::Text(text) => Some(text.text.clone()),
+            v1::ContentBlock::ResourceLink(link) => Some(format!(
+                "Attached file: {}",
+                link.uri.trim_start_matches("file://")
+            )),
+            v1::ContentBlock::Resource(embedded) => match &embedded.resource {
+                v1::EmbeddedResourceResource::TextResourceContents(text) => Some(format!(
+                    "Selection from {}:\n```\n{}\n```",
+                    text.uri.trim_start_matches("file://"),
+                    text.text
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
     Some(match event {
         AgentEvent::TextDelta(text) => v1::SessionUpdate::AgentMessageChunk(chunk(text)),
@@ -727,6 +744,57 @@ mod tests {
         let (output, asked) = read_through_client(&dir, false).await;
         assert!(output.contains("on disk"), "{output}");
         assert!(asked.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn attached_editor_context_reaches_the_model_as_text() {
+        let dir = temp_dir("context");
+        let server = MockServer::start().await;
+        let done = sse(&[
+            json!({"choices": [{"delta": {"content": "done"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(done, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let file = dir.join("a.rs").display().to_string();
+        let blocks = vec![
+            v1::ContentBlock::from("go".to_owned()),
+            v1::ContentBlock::ResourceLink(v1::ResourceLink::new("a.rs", format!("file://{file}"))),
+            v1::ContentBlock::Resource(v1::EmbeddedResource::new(
+                v1::EmbeddedResourceResource::TextResourceContents(v1::TextResourceContents::new(
+                    "let x = 1;",
+                    format!("file://{file}#L3-3"),
+                )),
+            )),
+        ];
+        let run = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                cx.send_request(v1::InitializeRequest::new(ProtocolVersion::V1))
+                    .block_task()
+                    .await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let prompt = v1::PromptRequest::new(session.session_id, blocks);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body = requests[0].body_json::<Value>().unwrap().to_string();
+        assert!(body.contains(&format!("Attached file: {file}")), "{body}");
+        assert!(
+            body.contains(&format!("Selection from {file}#L3-3")),
+            "{body}"
+        );
+        assert!(body.contains("let x = 1;"), "{body}");
     }
 
     #[test]

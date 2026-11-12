@@ -13,6 +13,11 @@
 <form id="prompt-form">
 <label for="prompt" class="visually-hidden">Message</label>
 <textarea id="prompt" rows="2" placeholder="Ask Harness. Enter sends, Shift+Enter adds a line."></textarea>
+<div id="context-bar" class="context-bar" role="group" aria-label="Attached context">
+<div id="chips" class="chips"></div>
+<button type="button" id="add-file" class="secondary">Add file</button>
+<label class="toggle"><input type="checkbox" id="problems"> Include problems</label>
+</div>
 <div class="composer-actions">
 <button type="button" id="stop" class="secondary">Stop</button>
 <button type="submit">Send</button>

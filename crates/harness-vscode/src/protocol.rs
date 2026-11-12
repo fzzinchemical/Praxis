@@ -9,9 +9,18 @@ use std::path::{Component, Path};
 #[derive(Debug, PartialEq)]
 pub enum FromPanel {
     Ready,
-    Prompt(String),
+    /// The text, the active file the chip kept (if any), files added with "Add file", and whether
+    /// to attach the active file's problems.
+    Prompt {
+        text: String,
+        file: Option<String>,
+        files: Vec<String>,
+        problems: bool,
+    },
     /// The stop button.
     Cancel,
+    /// The "Add file" button: ask the user for files to attach.
+    AddFile,
     /// A permission request id (a JSON-RPC number or string) and the chosen option, `None` meaning dismissed.
     Permission(Value, Option<String>),
 }
@@ -21,8 +30,20 @@ impl FromPanel {
         let value: Value = serde_json::from_str(message).ok()?;
         match value["type"].as_str()? {
             "ready" => Some(Self::Ready),
-            "prompt" => Some(Self::Prompt(value["text"].as_str()?.to_owned())),
+            "prompt" => Some(Self::Prompt {
+                text: value["text"].as_str()?.to_owned(),
+                file: value["file"].as_str().map(str::to_owned),
+                files: value["files"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|file| file.as_str().map(str::to_owned))
+                    .collect::<Option<_>>()?,
+                problems: value["problems"].as_bool().unwrap_or(false),
+            }),
             "cancel" => Some(Self::Cancel),
+            "add_file" => Some(Self::AddFile),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -32,9 +53,93 @@ impl FromPanel {
     }
 }
 
+/// Editor context attached to one prompt (SPEC §11). Paths are absolute.
+#[derive(Debug, Default, PartialEq)]
+pub struct Context {
+    /// Files attached as `resource_link` blocks.
+    pub files: Vec<String>,
+    /// The active selection, attached as an embedded `resource`.
+    pub selection: Option<Selection>,
+    /// The problems of the active file, attached as a text block.
+    pub problems: Option<Problems>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Selection {
+    pub path: String,
+    pub text: String,
+    /// 1-based, inclusive.
+    pub start_line: u64,
+    pub end_line: u64,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Problems {
+    pub path: String,
+    pub items: Vec<Problem>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Problem {
+    /// 1-based.
+    pub line: u64,
+    /// `error`, `warning`, `info` or `hint`.
+    pub severity: &'static str,
+    pub message: String,
+}
+
+/// The `severity` of a VS Code diagnostic, where 0 is an error.
+pub fn severity(code: u64) -> &'static str {
+    ["error", "warning", "info", "hint"]
+        .get(code as usize)
+        .copied()
+        .unwrap_or("hint")
+}
+
+/// The ACP content blocks of a prompt. Anything outside the workspace is dropped, since the
+/// webview and the file picker are both untrusted.
+pub fn prompt_blocks(text: &str, context: &Context, root: &str) -> Vec<Value> {
+    let mut blocks = vec![json!({"type": "text", "text": text})];
+    for path in context.files.iter().filter(|path| inside(root, path)) {
+        blocks.push(
+            json!({"type": "resource_link", "uri": format!("file://{path}"),
+            "name": Path::new(path).file_name().and_then(|name| name.to_str()).unwrap_or(path)}),
+        );
+    }
+    if let Some(selection) = context.selection.as_ref().filter(|s| inside(root, &s.path)) {
+        blocks.push(json!({"type": "resource", "resource": {
+            "uri": format!("file://{}#L{}-{}", selection.path, selection.start_line, selection.end_line),
+            "text": selection.text}}));
+    }
+    if let Some(problems) = context
+        .problems
+        .as_ref()
+        .filter(|p| inside(root, &p.path) && !p.items.is_empty())
+    {
+        let lines: Vec<String> = problems
+            .items
+            .iter()
+            .map(|item| format!("- line {} {}: {}", item.line, item.severity, item.message))
+            .collect();
+        let text = format!("Problems in {}:\n{}", problems.path, lines.join("\n"));
+        blocks.push(json!({"type": "text", "text": text}));
+    }
+    blocks
+}
+
 /// A line of status text for the panel.
 pub fn notice(text: &str) -> Value {
     json!({"type": "notice", "text": text})
+}
+
+/// The file the active editor shows, or `None` for no editor.
+pub fn active_file(path: Option<&str>) -> Value {
+    json!({"type": "active", "path": path})
+}
+
+/// Files the user picked with "Add file".
+pub fn picked_files(files: &[String]) -> Value {
+    json!({"type": "picked", "files": files})
 }
 
 /// What one line from `harness acp` asks the extension to do.
@@ -119,9 +224,10 @@ impl Client {
     }
 
     /// The `session/prompt` line, or `None` while no session is open yet.
-    pub fn prompt(&mut self, text: &str) -> Option<String> {
+    pub fn prompt(&mut self, text: &str, context: &Context) -> Option<String> {
         let session = self.session.as_deref()?;
-        let params = json!({"sessionId": session, "prompt": [{"type": "text", "text": text}]});
+        let blocks = prompt_blocks(text, context, &self.cwd);
+        let params = json!({"sessionId": session, "prompt": blocks});
         let line = request(self.next_id, "session/prompt", params);
         self.next_id += 1;
         Some(line)
@@ -253,7 +359,7 @@ impl Client {
 }
 
 /// `path` is absolute, under `root` and free of `..`, so it cannot leave the workspace.
-fn inside(root: &str, path: &str) -> bool {
+pub fn inside(root: &str, path: &str) -> bool {
     let path = Path::new(path);
     path.is_absolute()
         && path.starts_with(root)
@@ -338,7 +444,27 @@ mod tests {
         );
         assert_eq!(
             FromPanel::parse(r#"{"type":"prompt","text":"hi"}"#),
-            Some(FromPanel::Prompt("hi".to_owned()))
+            Some(FromPanel::Prompt {
+                text: "hi".to_owned(),
+                file: None,
+                files: vec![],
+                problems: false
+            })
+        );
+        assert_eq!(
+            FromPanel::parse(
+                r#"{"type":"prompt","text":"hi","file":"/work/a.rs","files":["/work/b.rs"],"problems":true}"#
+            ),
+            Some(FromPanel::Prompt {
+                text: "hi".to_owned(),
+                file: Some("/work/a.rs".to_owned()),
+                files: vec!["/work/b.rs".to_owned()],
+                problems: true
+            })
+        );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"add_file"}"#),
+            Some(FromPanel::AddFile)
         );
         assert_eq!(
             FromPanel::parse(r#"{"type":"cancel"}"#),
@@ -357,6 +483,7 @@ mod tests {
         );
         for bad in [
             r#"{"type":"prompt"}"#,
+            r#"{"type":"prompt","text":"hi","files":[1]}"#,
             r#"{"type":"exec"}"#,
             r#"{"type":"permission","id":null,"option":"x"}"#,
             r#"{"type":"permission","id":{"n":7},"option":"x"}"#,
@@ -376,7 +503,7 @@ mod tests {
             init["params"]["clientCapabilities"]["fs"]["readTextFile"],
             true
         );
-        assert_eq!(client.prompt("hi"), None);
+        assert_eq!(client.prompt("hi", &Context::default()), None);
 
         let reaction = client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}"#);
         let new = sent(&reaction);
@@ -386,7 +513,8 @@ mod tests {
 
         let reaction = client.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}"#);
         assert_eq!(reaction.show, Some(notice("ready")));
-        let prompt: Value = serde_json::from_str(&client.prompt("hi").unwrap()).unwrap();
+        let prompt: Value =
+            serde_json::from_str(&client.prompt("hi", &Context::default()).unwrap()).unwrap();
         assert_eq!(prompt["method"], "session/prompt");
         assert_eq!(prompt["params"]["sessionId"], "s1");
         assert_eq!(prompt["params"]["prompt"][0]["text"], "hi");
@@ -602,7 +730,63 @@ mod tests {
                 "Harness could not start: LM Studio has no model loaded."
             ))
         );
-        assert_eq!(client.prompt("hi"), None);
+        assert_eq!(client.prompt("hi", &Context::default()), None);
+    }
+
+    #[test]
+    fn prompts_carry_the_file_selection_and_problems_as_blocks() {
+        let context = Context {
+            files: vec!["/work/a.rs".into(), "/etc/passwd".into()],
+            selection: Some(Selection {
+                path: "/work/a.rs".into(),
+                text: "let x = 1;".into(),
+                start_line: 3,
+                end_line: 4,
+            }),
+            problems: Some(Problems {
+                path: "/work/a.rs".into(),
+                items: vec![Problem {
+                    line: 3,
+                    severity: severity(0),
+                    message: "expected `;`".into(),
+                }],
+            }),
+        };
+        let blocks = prompt_blocks("explain", &context, "/work");
+        assert_eq!(blocks.len(), 4, "the outside file is dropped");
+        assert_eq!(blocks[0], json!({"type": "text", "text": "explain"}));
+        assert_eq!(
+            blocks[1],
+            json!({"type": "resource_link", "uri": "file:///work/a.rs", "name": "a.rs"})
+        );
+        assert_eq!(blocks[2]["type"], "resource");
+        assert_eq!(
+            blocks[2]["resource"],
+            json!({"uri": "file:///work/a.rs#L3-4", "text": "let x = 1;"})
+        );
+        assert_eq!(
+            blocks[3]["text"],
+            "Problems in /work/a.rs:\n- line 3 error: expected `;`"
+        );
+    }
+
+    #[test]
+    fn a_selection_outside_the_workspace_or_no_problems_add_no_blocks() {
+        let outside = Context {
+            selection: Some(Selection {
+                path: "/home/me/x.rs".into(),
+                text: "secret".into(),
+                start_line: 1,
+                end_line: 1,
+            }),
+            problems: Some(Problems {
+                path: "/work/a.rs".into(),
+                items: vec![],
+            }),
+            ..Context::default()
+        };
+        assert_eq!(prompt_blocks("hi", &outside, "/work").len(), 1);
+        assert_eq!(severity(9), "hint");
     }
 
     #[test]

@@ -13,8 +13,8 @@ use view::{Phase, Status};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
-    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlTextAreaElement, KeyboardEvent,
-    MessageEvent,
+    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement, HtmlTextAreaElement,
+    KeyboardEvent, MessageEvent,
 };
 
 #[wasm_bindgen]
@@ -43,6 +43,13 @@ struct Ui {
     ready: bool,
     send: Element,
     stop: Element,
+    /// The file the active editor shows, and whether the user kept its chip.
+    active: Option<String>,
+    active_on: bool,
+    /// Files picked with "Add file".
+    added: Vec<String>,
+    chips: Element,
+    problems: HtmlInputElement,
 }
 
 /// A disabled control carries the attribute, which browsers and screen readers both honour.
@@ -76,6 +83,8 @@ pub fn start() -> Result<(), JsValue> {
     set_enabled(&send, false)?;
     set_enabled(&stop, false)?;
     let input: HtmlTextAreaElement = by_id(&document, "prompt")?.dyn_into()?;
+    let problems: HtmlInputElement = by_id(&document, "problems")?.dyn_into()?;
+    let chips = by_id(&document, "chips")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         status_line: by_id(&document, "status")?,
@@ -92,6 +101,11 @@ pub fn start() -> Result<(), JsValue> {
         ready: false,
         send,
         stop: stop.clone(),
+        active: None,
+        active_on: false,
+        added: Vec::new(),
+        chips: chips.clone(),
+        problems: problems.clone(),
     }));
 
     let state = ui.clone();
@@ -125,7 +139,11 @@ pub fn start() -> Result<(), JsValue> {
         let text = input.value();
         // Before the session is ready a prompt would only be refused, so the text stays in the box.
         if !text.trim().is_empty() && state.borrow().ready {
-            api.post_message(&json!({"type": "prompt", "text": text}).to_string());
+            let ui = state.borrow();
+            let message = json!({"type": "prompt", "text": text, "file": ui.attached_file(),
+                "files": ui.added, "problems": ui.problems.checked()});
+            drop(ui);
+            api.post_message(&message.to_string());
             input.set_value("");
             let _ = state.borrow_mut().begin(&text);
         }
@@ -160,6 +178,39 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     output.add_event_listener_with_callback("click", on_click.as_ref().unchecked_ref())?;
+
+    // Removing a chip drops the file from the next prompt; the active file's chip comes back on a new file.
+    let state = ui.clone();
+    let on_chip = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(button) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let Ok(Some(chip)) = button.closest("[data-chip]") else {
+            return;
+        };
+        let key = chip.get_attribute("data-chip").unwrap_or_default();
+        let mut ui = state.borrow_mut();
+        if key == "active" {
+            ui.active_on = false;
+        } else if let Some(index) = key
+            .strip_prefix("added:")
+            .and_then(|i| i.parse::<usize>().ok())
+            && index < ui.added.len()
+        {
+            ui.added.remove(index);
+        }
+        let _ = ui.render_chips();
+    });
+    chips.add_event_listener_with_callback("click", on_chip.as_ref().unchecked_ref())?;
+    on_chip.forget();
+
+    let api = vscode.clone();
+    let on_add = Closure::<dyn FnMut()>::new(move || {
+        api.post_message(&json!({"type": "add_file"}).to_string());
+    });
+    by_id(&window.document().ok_or("no document")?, "add-file")?
+        .add_event_listener_with_callback("click", on_add.as_ref().unchecked_ref())?;
+    on_add.forget();
 
     let state = ui;
     let tick = Closure::<dyn FnMut()>::new(move || state.borrow().show_status());
@@ -208,6 +259,42 @@ impl Ui {
         set_enabled(&self.stop, false)
     }
 
+    fn attached_file(&self) -> Option<String> {
+        self.active.clone().filter(|_| self.active_on)
+    }
+
+    /// Redraws the chips for the active file and the picked files, each with a remove button.
+    fn render_chips(&self) -> Result<(), JsValue> {
+        self.chips.set_text_content(Some(""));
+        let active = self.attached_file().map(|path| (path, "active".to_owned()));
+        let picked = self
+            .added
+            .iter()
+            .enumerate()
+            .map(|(index, path)| (path.clone(), format!("added:{index}")));
+        for (path, key) in active.into_iter().chain(picked) {
+            let name = path
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(path.as_str())
+                .to_owned();
+            let chip = self.document.create_element("span")?;
+            chip.set_class_name("chip");
+            chip.set_attribute("title", &path)?;
+            let label = self.document.create_element("span")?;
+            label.set_text_content(Some(&name));
+            let remove = self.document.create_element("button")?;
+            remove.set_attribute("type", "button")?;
+            remove.set_attribute("data-chip", &key)?;
+            remove.set_attribute("aria-label", &format!("Remove {name}"))?;
+            remove.set_text_content(Some("\u{00d7}"));
+            chip.append_child(&label)?;
+            chip.append_child(&remove)?;
+            self.chips.append_child(&chip)?;
+        }
+        Ok(())
+    }
+
     fn set_ready(&mut self, ready: bool) -> Result<(), JsValue> {
         self.ready = ready;
         set_enabled(&self.send, ready)?;
@@ -247,6 +334,28 @@ impl Ui {
                     // Safe only because `view::markdown` escapes raw HTML and drops unsafe links.
                     element.set_inner_html(&view::markdown(markdown));
                 }
+            }
+            "active" => {
+                let path = message["path"].as_str().map(str::to_owned);
+                // A new active file brings its chip back; the same file keeps the user's choice.
+                if path != self.active {
+                    self.active_on = true;
+                }
+                self.active = path;
+                self.render_chips()?;
+            }
+            "picked" => {
+                for file in message["files"]
+                    .as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                {
+                    let Some(file) = file.as_str() else { continue };
+                    if !self.added.iter().any(|known| known == file) {
+                        self.added.push(file.to_owned());
+                    }
+                }
+                self.render_chips()?;
             }
             "tool" => self.tool(message)?,
             "permission" => self.permission(message)?,

@@ -186,6 +186,38 @@ main {
   color: var(--vscode-input-placeholderForeground);
 }
 
+.context-bar {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chips {
+  display: contents;
+}
+
+.chip {
+  align-items: center;
+  background: var(--vscode-badge-background);
+  border-radius: 10px;
+  color: var(--vscode-badge-foreground);
+  display: inline-flex;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+}
+
+.chip button {
+  background: transparent;
+  color: inherit;
+  padding: 0 4px;
+}
+
+.toggle {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+}
+
 .composer-actions {
   display: flex;
   gap: 6px;

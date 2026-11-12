@@ -6,7 +6,7 @@
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
-use protocol::{Client, FromPanel, Lines, Reaction, Review};
+use protocol::{Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
@@ -63,10 +63,21 @@ extern "C" {
     // which throws; bind the namespace object and read the property instead.
     #[wasm_bindgen(thread_local_v2, js_name = workspace)]
     static WORKSPACE: JsValue;
+    #[wasm_bindgen(thread_local_v2, js_name = window)]
+    static WINDOW: JsValue;
+
+    #[wasm_bindgen(js_namespace = window, js_name = onDidChangeActiveTextEditor)]
+    fn on_did_change_active_text_editor(listener: &Closure<dyn FnMut(JsValue)>) -> JsValue;
+    #[wasm_bindgen(js_namespace = window, js_name = showOpenDialog)]
+    fn show_open_dialog(options: &Object) -> Promise;
+    #[wasm_bindgen(js_namespace = languages, js_name = getDiagnostics)]
+    fn get_diagnostics(uri: &Uri) -> Array;
 
     type Uri;
     #[wasm_bindgen(static_method_of = Uri, js_name = joinPath)]
     fn join_path(base: &Uri, path: &str) -> Uri;
+    #[wasm_bindgen(static_method_of = Uri, js_name = file)]
+    fn file_uri(path: &str) -> Uri;
     #[wasm_bindgen(method, js_name = toString)]
     fn to_uri_string(this: &Uri) -> String;
     #[wasm_bindgen(method, getter, js_name = fsPath)]
@@ -78,6 +89,8 @@ extern "C" {
     fn uri(this: &TextDocument) -> Uri;
     #[wasm_bindgen(method, js_name = getText)]
     fn get_text(this: &TextDocument) -> String;
+    #[wasm_bindgen(method, js_name = getText)]
+    fn get_text_in(this: &TextDocument, range: &JsValue) -> String;
 
     type WebviewPanel;
     #[wasm_bindgen(method, getter)]
@@ -197,8 +210,17 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
     let state = shared.clone();
     let on_message = Closure::<dyn FnMut(JsValue)>::new(move |message: JsValue| {
         match message.as_string().as_deref().and_then(FromPanel::parse) {
-            Some(FromPanel::Ready) => start(&state),
-            Some(FromPanel::Prompt(text)) => send_prompt(&state, &text),
+            Some(FromPanel::Ready) => {
+                post_active(&state);
+                start(&state);
+            }
+            Some(FromPanel::Prompt {
+                text,
+                file,
+                files,
+                problems,
+            }) => send_prompt(&state, &text, file, files, problems),
+            Some(FromPanel::AddFile) => add_files(&state),
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
                 let lines = panel.client.as_mut().map(Client::cancel);
@@ -220,6 +242,12 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
     });
     webview.on_did_receive_message(&on_message);
     on_message.forget();
+
+    let state = shared.clone();
+    let on_editor = Closure::<dyn FnMut(JsValue)>::new(move |_editor: JsValue| post_active(&state));
+    on_did_change_active_text_editor(&on_editor);
+    // shortcut: the listener outlives the panel and holds its state; upgrade if panels multiply.
+    on_editor.forget();
 
     let state = shared;
     let on_dispose = Closure::<dyn FnMut()>::new(move || {
@@ -319,15 +347,148 @@ fn start(state: &Shared) {
     panel.lines = Lines::default();
 }
 
-fn send_prompt(state: &Shared, text: &str) {
+/// Tells the webview which file the active editor shows, so its chip follows the editor.
+fn post_active(state: &Shared) {
+    let panel = state.borrow();
+    if !panel.closed {
+        panel
+            .webview
+            .post_message(&protocol::active_file(active_path().as_deref()).to_string());
+    }
+}
+
+/// Attaches the active file's selection and problems when the webview kept its chip.
+fn send_prompt(
+    state: &Shared,
+    text: &str,
+    file: Option<String>,
+    files: Vec<String>,
+    problems: bool,
+) {
+    let active = active_path();
+    let selection = file.as_deref().and_then(active_selection);
+    let problems = file
+        .as_deref()
+        .filter(|path| problems && active.as_deref() == Some(*path))
+        .and_then(problems_of);
+    let context = Context {
+        files: file.into_iter().chain(files).collect(),
+        selection,
+        problems,
+    };
     let mut panel = state.borrow_mut();
-    let line = panel.client.as_mut().and_then(|client| client.prompt(text));
+    let line = panel
+        .client
+        .as_mut()
+        .and_then(|client| client.prompt(text, &context));
     match (line, &panel.child) {
         (Some(line), Some(child)) => {
             child.stdin().write(&format!("{line}\n"));
         }
         _ => panel.webview.notify("Harness is not ready yet."),
     }
+}
+
+/// Opens VS Code's file picker. Paths outside the workspace are refused, not attached.
+fn add_files(state: &Shared) {
+    let Some(cwd) = workspace_dir() else {
+        return;
+    };
+    let options = Object::new();
+    let set = |key: &str, value: JsValue| Reflect::set(&options, &key.into(), &value);
+    let _ = set("canSelectMany", true.into());
+    let _ = set("canSelectFolders", false.into());
+    let _ = set("defaultUri", Uri::file_uri(&cwd).into());
+    let (webview, output) = {
+        let panel = state.borrow();
+        (panel.webview.clone(), panel.output.clone())
+    };
+    let on_picked = Closure::<dyn FnMut(JsValue)>::new(move |picked: JsValue| {
+        // The picker resolves to undefined when the user cancels.
+        if picked.is_undefined() {
+            return;
+        }
+        let (inside, outside): (Vec<String>, Vec<String>) = Array::from(&picked)
+            .iter()
+            .map(|uri| uri.unchecked_into::<Uri>().fs_path())
+            .partition(|path| protocol::inside(&cwd, path));
+        if !outside.is_empty() {
+            webview.notify(&format!(
+                "Not attached, outside the workspace: {}",
+                outside.join(", ")
+            ));
+        }
+        webview.post_message(&protocol::picked_files(&inside).to_string());
+    });
+    let failed = failure_logger(&output);
+    let _ = show_open_dialog(&options).then(&on_picked).catch(&failed);
+    // Each closure runs once and must outlive its promise, so the host keeps them.
+    on_picked.forget();
+    failed.forget();
+}
+
+/// The active editor, if it shows a file on disk.
+fn active_editor() -> Option<JsValue> {
+    let editor = WINDOW
+        .with(|window| Reflect::get(window, &"activeTextEditor".into()))
+        .ok()?;
+    (!editor.is_null() && !editor.is_undefined()).then_some(editor)
+}
+
+fn property(value: &JsValue, key: &str) -> Option<JsValue> {
+    Reflect::get(value, &key.into()).ok()
+}
+
+/// The path of the active editor's file, unsaved or not.
+fn active_path() -> Option<String> {
+    let editor = active_editor()?;
+    editor_path(&editor)
+}
+
+fn editor_path(editor: &JsValue) -> Option<String> {
+    let uri = property(&property(editor, "document")?, "uri")?;
+    (property(&uri, "scheme")?.as_string()? == "file")
+        .then(|| property(&uri, "fsPath")?.as_string())
+        .flatten()
+}
+
+/// The active editor's non-empty selection, when it shows `path`.
+fn active_selection(path: &str) -> Option<Selection> {
+    let editor = active_editor()?;
+    if editor_path(&editor)? != path {
+        return None;
+    }
+    let range = property(&editor, "selection")?;
+    if property(&range, "isEmpty")?.as_bool()? {
+        return None;
+    }
+    let document: TextDocument = property(&editor, "document")?.unchecked_into();
+    let line = |key: &str| Some(property(&property(&range, key)?, "line")?.as_f64()? as u64 + 1);
+    Some(Selection {
+        path: path.to_owned(),
+        text: document.get_text_in(&range),
+        start_line: line("start")?,
+        end_line: line("end")?,
+    })
+}
+
+/// The diagnostics VS Code holds for `path`, as the agent will read them.
+fn problems_of(path: &str) -> Option<Problems> {
+    let items = get_diagnostics(&Uri::file_uri(path))
+        .iter()
+        .filter_map(|diagnostic| {
+            let start = property(&property(&diagnostic, "range")?, "start")?;
+            Some(Problem {
+                line: property(&start, "line")?.as_f64()? as u64 + 1,
+                severity: protocol::severity(property(&diagnostic, "severity")?.as_f64()? as u64),
+                message: property(&diagnostic, "message")?.as_string()?,
+            })
+        })
+        .collect();
+    Some(Problems {
+        path: path.to_owned(),
+        items,
+    })
 }
 
 fn react(state: &Shared, reaction: Reaction) {
