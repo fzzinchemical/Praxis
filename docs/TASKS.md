@@ -628,6 +628,7 @@ flowchart LR
     T8_6["T8.6<br/>Per-agent models"]
     T8_7["T8.7<br/>Anthropic scoreboard"]
     T8_8["T8.8<br/>Orchestrator workflow"]
+    T8_9["T8.9<br/>Built-in general agent"]
     T2_1(["T2.1"])
     T2_5(["T2.5"])
     T3_1(["T3.1"])
@@ -645,11 +646,12 @@ flowchart LR
     T8_4 --> T8_7
     T2_1 -.-> T8_7
     T8_6 --> T8_8
+    T6_5 -.-> T8_9
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class T8_2,T8_3,T8_4,T8_5,T8_6,T8_8 task
+    class T8_2,T8_3,T8_4,T8_5,T8_6,T8_8,T8_9 task
     class T8_1,T8_7 human
     class T2_1,T2_5,T3_1,T3_5,T6_5 other
 ```
@@ -684,3 +686,7 @@ flowchart LR
 - [ ] **T8.8 Orchestrator workflow** ([ADR 0005](adr/0005-orchestrator-model-delegates-to-local-workers.md)) · *Should*
   - **Needs:** T8.6.
   - **Done when:** on the fake server, an orchestrator session delegates two steps to a worker on another model, and only the workers' reports enter its history; the same test passes with the orchestrator on `anthropic/` and on `lmstudio/`; a worker can't use a tool the session denies; and an eval run records success, wall time and model swaps for a local orchestrator with a local worker.
+
+- [ ] **T8.9 Built-in general agent** (§12) · *Should*
+  - **Needs:** T6.5.
+  - **Done when:** a session with no plugins offers the `Agent` tool listing `general`; on the fake server a `general` call runs in a fresh history with every session tool except `Agent` and returns its last reply; session deny rules still apply to its calls; and a plugin agent named `general` fails to load with an error naming the plugin.

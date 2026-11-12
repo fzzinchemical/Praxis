@@ -907,6 +907,8 @@ Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference
 
 Path rules from the manifest reference: component paths must begin with `./` (`skills` may also be `.`), must exist, and must resolve inside the plugin root. `commands` and `agents` replace the default scan, `skills` adds to it, and `hooks` and `mcpServers` merge with their default files.
 
+A built-in `general` agent is always offered through the same `Agent` tool, so delegation works with no plugin installed: it gets every session tool except `Agent`, has no `model` (so it runs on the session model), and its system prompt asks for a short report of what it found or changed. A plugin agent named `general` is an error at load, naming the plugin.
+
 Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/harness/plugins/`. `harness plugin install <path|git URL>` clones into `plugins/<name>/` (a local path may be a plugin subdirectory of a marketplace repo: the repo is cloned and only that subdirectory kept), pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. Each session (CLI and `harness acp`) loads enabled plugins at start: skills join the index, agents are offered through an `Agent` tool (`subagent_type`, `prompt`) that runs one in a fresh history with only its allowed tools and returns its last reply, `PreToolUse` hooks run in the permission check, and MCP servers connect and are pinned. `/<plugin>:<cmd>` works in the CLI only; other hook events don't run yet.
 
 ### Skills
