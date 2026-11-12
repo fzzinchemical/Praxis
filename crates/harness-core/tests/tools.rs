@@ -812,3 +812,21 @@ async fn bash_output_is_unfiltered_by_default() {
         output.content
     );
 }
+
+#[tokio::test]
+async fn read_is_never_filtered_even_when_output_filtering_is_on() {
+    let f = Fixture::new();
+    let ctx = Arc::new(ToolContext::new(&f.ws()).unwrap().with_output_filter(true));
+    f.file("a.txt", "same\nsame\nsame\n\u{1b}[31mred\u{1b}[0m\n");
+    let output = execute(
+        "Read",
+        json!({ "file_path": "a.txt" }),
+        ctx,
+        CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        output.content,
+        "     1\tsame\n     2\tsame\n     3\tsame\n     4\t\u{1b}[31mred\u{1b}[0m\n"
+    );
+}

@@ -334,8 +334,11 @@ mod tests {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join(".env"), "KEY=1").unwrap();
         let link = dir.join("src/env-link");
-        if fs::symlink_metadata(&link).is_err() {
-            std::os::unix::fs::symlink(dir.join(".env"), &link).unwrap();
+        // Tests share this directory and run in parallel, so another test may create the link first.
+        match std::os::unix::fs::symlink(dir.join(".env"), &link) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => panic!("couldn't create the test symlink: {error}"),
         }
         dir.canonicalize().unwrap()
     }
