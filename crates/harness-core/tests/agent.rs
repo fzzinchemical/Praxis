@@ -621,3 +621,14 @@ async fn a_failed_log_write_stops_the_turn_before_any_request() {
     assert_eq!(events, ["notice", "ended:LogFailed"]);
     assert!(h.server.received_requests().await.unwrap().is_empty());
 }
+
+/// SPEC §11: the prompt sits in the prefix, so it stays short and covers each contract point.
+#[test]
+fn system_prompt_covers_the_contract_within_budget() {
+    let prompt = harness_core::agent::system_prompt(std::path::Path::new("/w")).to_lowercase();
+    for point in ["assumptions", "unsure", "disagree", "small", "verified"] {
+        assert!(prompt.contains(point), "missing {point:?}: {prompt}");
+    }
+    // About 150 tokens at the §7 estimate of chars / 3.5; growth has to argue for itself.
+    assert!(prompt.len() <= 520, "{} chars", prompt.len());
+}
