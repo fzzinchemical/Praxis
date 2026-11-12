@@ -908,3 +908,50 @@ async fn a_skill_with_disable_model_invocation_is_left_out_of_the_index_and_the_
     let shown = bodies[1]["messages"].to_string();
     assert!(!shown.contains("Secret steps."), "{shown}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subdirectory_memory_file_loads_once_on_first_read_and_keeps_the_prefix() {
+    let workspace = new_workspace();
+    fs::create_dir_all(workspace.join("sub")).unwrap();
+    fs::write(workspace.join("sub/AGENTS.md"), "SUB-RULES").unwrap();
+    fs::write(workspace.join("sub/a.rs"), "fn a() {}").unwrap();
+    fs::write(workspace.join("sub/b.rs"), "fn b() {}").unwrap();
+    let bodies = vec![
+        tool_reply("a", "Read", json!({"file_path": "sub/a.rs"})),
+        tool_reply("b", "Read", json!({"file_path": "sub/b.rs"})),
+        text_reply("done", 4000),
+    ];
+    let mut h = Harness::in_workspace(workspace, bodies, config(20_000)).await;
+    h.turn("go").await;
+    assert_each_body_extends_the_last(&h).await;
+
+    let sent = h.bodies().await;
+    let count = |body: &Value| {
+        serde_json::to_string(body)
+            .unwrap()
+            .matches("SUB-RULES")
+            .count()
+    };
+    assert_eq!(count(&sent[0]), 0, "not loaded before any read");
+    assert_eq!(count(&sent[1]), 1, "appended after the first read");
+    assert_eq!(count(&sent[2]), 1, "not appended again by the second read");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_read_does_not_load_subdirectory_memory() {
+    let workspace = new_workspace();
+    fs::create_dir_all(workspace.join("sub")).unwrap();
+    fs::write(workspace.join("sub/AGENTS.md"), "SUB-RULES").unwrap();
+    let bodies = vec![
+        tool_reply("a", "Read", json!({"file_path": "sub/missing.rs"})),
+        text_reply("done", 4000),
+    ];
+    let mut h = Harness::in_workspace(workspace, bodies, config(20_000)).await;
+    h.turn("go").await;
+    let sent = h.bodies().await;
+    assert!(
+        !serde_json::to_string(&sent[1])
+            .unwrap()
+            .contains("SUB-RULES")
+    );
+}

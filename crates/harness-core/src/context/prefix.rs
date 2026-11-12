@@ -89,28 +89,45 @@ fn project_memory(root: &Path, cwd: &Path) -> Vec<String> {
     let Ok(below) = cwd.strip_prefix(&root) else {
         return Vec::new();
     };
+    dirs_memory(&root, below).into_iter().flatten().collect()
+}
+
+/// The memory of one directory, `rel` below `root`, for a directory first touched after the
+/// prefix was frozen (SPEC §12, nested memory). Same file rules as `load_memory`; `AGENTS.md`
+/// is judged over the directories from `root` down to `rel`, not the whole workspace.
+pub fn dir_memory(root: &Path, rel: &Path) -> Vec<String> {
+    let Ok(root) = root.canonicalize() else {
+        return Vec::new();
+    };
+    dirs_memory(&root, rel).pop().unwrap_or_default()
+}
+
+/// The memory files of each directory from `root` down to `below`, root first.
+fn dirs_memory(root: &Path, below: &Path) -> Vec<Vec<String>> {
     // `ancestors` yields `a/b`, `a`, `""`; reversed, that is root first.
     let mut dirs: Vec<PathBuf> = below.ancestors().map(Path::to_path_buf).collect();
     dirs.reverse();
     let claude: Vec<Option<String>> = dirs
         .iter()
         .map(|dir| {
-            read_in(&root, &dir.join("CLAUDE.md"))
-                .or_else(|| read_in(&root, &dir.join(".claude/CLAUDE.md")))
+            read_in(root, &dir.join("CLAUDE.md"))
+                .or_else(|| read_in(root, &dir.join(".claude/CLAUDE.md")))
         })
         .collect();
     let agents_only = claude.iter().all(Option::is_none);
     dirs.iter()
         .zip(claude)
-        .flat_map(|(dir, main)| {
+        .map(|(dir, main)| {
             let main = if agents_only {
-                read_in(&root, &dir.join("AGENTS.md"))
+                read_in(root, &dir.join("AGENTS.md"))
             } else {
                 main
             };
-            [main, read_in(&root, &dir.join("CLAUDE.local.md"))]
+            [main, read_in(root, &dir.join("CLAUDE.local.md"))]
+                .into_iter()
+                .flatten()
+                .collect()
         })
-        .flatten()
         .collect()
 }
 
@@ -409,6 +426,20 @@ mod tests {
         std::os::unix::fs::symlink(dir.join("secret"), workspace.join("AGENTS.md")).unwrap();
         assert!(load_memory(&workspace, &workspace, None, None).is_empty());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_subdirectory_loads_only_its_own_memory_with_the_same_file_rules() {
+        let root = scratch("dir");
+        write(&root.join("CLAUDE.md"), "root");
+        write(&root.join("sub/.claude/CLAUDE.md"), "sub");
+        write(&root.join("sub/CLAUDE.local.md"), "sub-local");
+        write(&root.join("other/AGENTS.md"), "other-agents");
+        assert_eq!(dir_memory(&root, Path::new("sub")), ["sub", "sub-local"]);
+        // The root's CLAUDE.md is on the way, so AGENTS.md is ignored, as in `load_memory`.
+        assert!(dir_memory(&root, Path::new("other")).is_empty());
+        assert!(dir_memory(&root, Path::new("none")).is_empty());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

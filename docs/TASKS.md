@@ -764,7 +764,7 @@ flowchart LR
   - **Needs:** T9.1.
   - **Done when:** `@path` imports expand relative to the importing file to four hops; a fifth hop and a cycle stop; `@x` inside a code span or fenced block stays literal; `@../../outside.md` and a symlink out of the workspace are skipped with a warning (hostile fixture extended).
 
-- [ ] **T9.3 Nested memory** (§7, §12) · *Should*
+- [x] **T9.3 Nested memory** (§7, §12) · *Should*
   - **Needs:** T9.1.
   - **Done when:** on the fake server, the first `Read` of `sub/a.rs` appends `sub/AGENTS.md` as a message, a second `Read` in `sub/` doesn't append it again, and consecutive request bodies still share the prefix.
 

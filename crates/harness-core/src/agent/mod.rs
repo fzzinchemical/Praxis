@@ -10,7 +10,7 @@ pub mod recovery;
 use crate::config::{Backend, ModelRef};
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
-use crate::context::prefix::SessionFacts;
+use crate::context::prefix::{SessionFacts, dir_memory};
 use crate::hooks::{Hook, Outcome, PermissionDecision};
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
@@ -20,12 +20,12 @@ use crate::provider::{
     ToolCall, ToolSchema,
 };
 use crate::session::SessionLog;
-use crate::tools::{self, FileDiff, ToolContext, ToolOutput};
+use crate::tools::{self, FileDiff, ToolContext, ToolOutput, confine};
 use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -165,6 +165,10 @@ pub struct Agent {
     /// Frozen at session start: changing the array forces a full reprocess (SPEC §7).
     tool_schemas: Vec<ToolSchema>,
     facts: SessionFacts,
+    /// Directories below the workspace whose memory is loaded or checked (SPEC §12).
+    nested_dirs: HashSet<PathBuf>,
+    /// Memory a file tool reached this round, appended after its results.
+    pending_memory: Vec<String>,
     /// The server has shown the estimate is wrong, so compact before the next request.
     compact_next: bool,
     /// Messages a summary removed. Generated call ids count these so they never repeat.
@@ -247,6 +251,8 @@ impl Agent {
             prefix_warning,
             tool_schemas,
             facts,
+            nested_dirs: HashSet::new(),
+            pending_memory: Vec::new(),
             compact_next: false,
             summarised_messages: 0,
             refetchable: Vec::new(),
@@ -712,6 +718,11 @@ impl Agent {
                     content,
                 });
             }
+            // After every result of this round, so the tool-call pairing stays valid.
+            if !self.pending_memory.is_empty() {
+                let content = std::mem::take(&mut self.pending_memory).join("\n\n");
+                self.record(Message::User { content });
+            }
             if turn.cancel.is_cancelled() {
                 return StopReason::Cancelled;
             }
@@ -790,6 +801,27 @@ impl Agent {
             name: name.to_owned(),
             arguments: input.get("arguments").unwrap_or(&json!({})).to_string(),
         })
+    }
+
+    /// Queues the memory of each directory between the workspace and `file_path` not loaded yet,
+    /// so each is appended once per session (SPEC §12). The path is confined like the tool's own.
+    fn queue_nested_memory(&mut self, file_path: &str) {
+        let Ok(root) = self.tools.workspace().canonicalize() else {
+            return;
+        };
+        let Ok(path) = confine::resolve(&root, file_path) else {
+            return;
+        };
+        let Some(rel) = path.parent().and_then(|dir| dir.strip_prefix(&root).ok()) else {
+            return;
+        };
+        let mut dir = PathBuf::new();
+        for part in rel.components() {
+            dir.push(part);
+            if self.nested_dirs.insert(dir.clone()) {
+                self.pending_memory.extend(dir_memory(&root, &dir));
+            }
+        }
     }
 
     /// Only a call that passes this may reach the permission path (SPEC §5.3).
@@ -995,6 +1027,13 @@ impl Agent {
             },
             Err(problem) => ToolOutput::error(problem),
         };
+        if !output.is_error
+            && matches!(call.name.as_str(), "Read" | "Write" | "Edit")
+            && let Some(path) = recovery::parse_arguments(&call.arguments)
+                .and_then(|args| args["file_path"].as_str().map(str::to_owned))
+        {
+            self.queue_nested_memory(&path);
+        }
         let content = output.content.clone();
         // A tool that succeeded despite the cancel keeps its result: the work happened.
         let outcome = if turn.cancel.is_cancelled() && output.is_error {
