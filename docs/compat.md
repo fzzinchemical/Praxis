@@ -26,4 +26,27 @@ Results of running unmodified Claude Code plugins through `harness plugin instal
 
 - `SessionStart` and `UserPromptSubmit` hooks don't run. Ponytail's main mechanism injects its rules through `SessionStart` `additionalContext`, so without it the plugin only works when the model chooses to load the skill.
 - `SubagentStart` is not in the supported event list.
-- T6.7 "Done when" is not met. This plugin has no MCP server and no `PreToolUse` hook, so a second plugin is needed to prove those parts.
+- On its own, this plugin can't meet the T6.7 "Done when": it has no MCP server and no `PreToolUse` hook. See below.
+
+## anthropics/claude-plugins-official: hookify and playwright
+
+No single unmodified plugin found has a skill, a `PreToolUse` hook and a working MCP server. By the owner's decision, T6.7 "Done when" is met with two unmodified plugins from one repo: `plugins/hookify` (skill and `PreToolUse` hook) and `external_plugins/playwright` (stdio MCP server).
+
+- Source: https://github.com/anthropics/claude-plugins-official, commit `e37d307bd9f85dab6fea5dfb5e3dc146753b2d2d`, checked 2026-11-12. hookify is version 0.1.1; `npx` resolved `@playwright/mcp@latest` to 0.0.85.
+- How: shallow clone in a temp dir; `harness plugin install <repo>/plugins/hookify` and `<repo>/external_plugins/playwright`, then `enable`, with `XDG_DATA_HOME` and `XDG_CONFIG_HOME` in temp dirs. hookify's Python scripts were read before running. The temp workspace held hookify's own example rule `examples/dangerous-rm.local.md`, copied to `.claude/hookify.dangerous-rm.local.md` as its docs say. User config allowed `Bash(rm *)` and `mcp__plugin_playwright_playwright`, so any block had to come from the hook. A one-shot session ran against a local fake OpenAI-compatible server (not LM Studio) that scripted three tool calls. Playwright's npm cache and browser (Chromium headless shell) went into temp dirs.
+
+| Part | Result |
+|---|---|
+| Install from a marketplace subdirectory | Works after a fix. Install used to `git clone` the given path, which fails for a subdirectory of a repo. A local path inside a repo now clones the repo, pins its HEAD and keeps only that subdirectory. Git URLs must still point at a plugin repo's root. |
+| hookify skill | Works. `hookify:writing-hookify-rules` is in the index (named from its frontmatter), and `Skill` returns the body. |
+| hookify `PreToolUse` hook | Works after a fix. `Bash {"command":"rm -rf victim.txt"}` was denied and the file survived. hookify denies with `permissionDecision: "deny"` and puts its message only in `systemMessage`, so the model used to get an empty error. A deny without `permissionDecisionReason` now falls back to `systemMessage`, and the model sees the rule's text. |
+| hookify `PostToolUse`, `Stop`, `UserPromptSubmit` | Parsed and listed, not run (only `PreToolUse` runs today, SPEC §12). |
+| hookify commands and agent | Not exercised. |
+| `hooks/hooks.json` `description` key | Ignored with a warning, as specified. |
+| playwright MCP server | Works. It connects as `plugin_playwright_playwright`; its tools appear in the MCP index. `mcp__plugin_playwright_playwright__browser_navigate` to a `file://` page in the workspace returned the page title. |
+
+### Gaps, not fixed here
+
+- Playwright's defaults don't fit this machine without plugin changes, so the run set environment variables instead: `PLAYWRIGHT_MCP_BROWSER=chromium` (no Chrome installed; the default is the `chrome` channel), `PLAYWRIGHT_MCP_HEADLESS=true`, `PLAYWRIGHT_MCP_ISOLATED=true`, and `PLAYWRIGHT_MCP_ALLOW_UNRESTRICTED_FILE_ACCESS=true` (`file:` URLs are blocked by default). The browser was installed with `playwright install chromium` into a temp `PLAYWRIGHT_BROWSERS_PATH`. The harness passes its environment to the server, so these work. They are the plugin's own runtime needs (Node, `npx`, a browser), not harness gaps.
+- hookify's `systemMessage` is not shown to the user; the harness ignores `systemMessage` everywhere except as the fallback deny reason above.
+- Installing a subdirectory from a git URL is unsupported; clone the marketplace repo locally first.

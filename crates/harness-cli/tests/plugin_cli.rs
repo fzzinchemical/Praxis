@@ -125,6 +125,32 @@ fn install_pins_a_commit_and_lists_what_it_runs_before_enabling() {
 }
 
 #[test]
+fn installs_a_plugin_from_a_subdirectory_of_a_local_repo() {
+    // Marketplace repos such as claude-plugins-official keep plugins in `plugins/<name>/`.
+    let home = temp("subdir");
+    let repo = home.join("market");
+    let src = repo.join("plugins/demo");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(repo.join("README.md"), "market").unwrap();
+    let commit = source_repo(&src);
+    fs::remove_dir_all(src.join(".git")).unwrap();
+    git(&repo, &["init", "--quiet"]);
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "--quiet", "-m", "market"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+    assert_ne!(head, commit);
+
+    let shown = stdout(&harness(&home, &["install", src.to_str().unwrap()]));
+    assert!(
+        shown.contains(&head) && shown.contains("echo hook-ran"),
+        "{shown}"
+    );
+    let installed = home.join("xdg-data/harness/plugins/demo");
+    assert!(installed.join("hooks/hooks.json").is_file());
+    assert!(!installed.join("README.md").exists());
+}
+
+#[test]
 fn remove_keeps_data_unless_its_removal_is_confirmed_separately() {
     let home = temp("remove");
     let src = home.join("src");

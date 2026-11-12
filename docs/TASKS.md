@@ -554,7 +554,7 @@ flowchart LR
   - **Needs:** T6.3, T6.4.
   - **Done when:** install from path or git pins a commit, lists what it can run before enabling, and removal cleans up, with data removal confirmed separately.
 
-- [ ] **T6.7 Compatibility check**
+- [x] **T6.7 Compatibility check**
   - **Needs:** T6.2, T6.6.
   - **Done when:** an unmodified existing Claude Code plugin with a skill, a hook and an MCP server works, recorded in `docs/compat.md`, along with what didn't.
 

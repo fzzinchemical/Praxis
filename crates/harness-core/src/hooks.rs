@@ -186,7 +186,10 @@ pub fn outcome(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
     let block = if json.get("decision").and_then(Value::as_str) == Some("block") {
         Some(text(&json, "reason").unwrap_or_default())
     } else if permission == Some(PermissionDecision::Deny) {
-        Some(permission_reason.clone().unwrap_or_default())
+        let why = permission_reason
+            .clone()
+            .or_else(|| text(&json, "systemMessage"));
+        Some(why.unwrap_or_default())
     } else {
         None
     };
@@ -352,6 +355,13 @@ mod tests {
         assert_eq!(outcome(Some(0), deny, "").block.as_deref(), Some("r"));
         let block = r#"{"decision":"block","reason":"r2"}"#;
         assert_eq!(outcome(Some(0), block, "").block.as_deref(), Some("r2"));
+        // hookify denies with only a `systemMessage`; the model should still learn why.
+        let hookify =
+            r#"{"hookSpecificOutput":{"permissionDecision":"deny"},"systemMessage":"no rm"}"#;
+        assert_eq!(
+            outcome(Some(0), hookify, "").block.as_deref(),
+            Some("no rm")
+        );
     }
 
     fn hook(command: &str, args: Option<&[&str]>, secs: u64) -> Hook {

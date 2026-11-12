@@ -607,10 +607,20 @@ impl Store {
             .rsplit('/')
             .next()
             .unwrap_or("plugin");
-        let clone = staging.join(base.strip_suffix(".git").unwrap_or(base));
-        let target = clone.to_string_lossy();
-        git(&staging, &["clone", "--quiet", "--", source, &target])?;
-        let commit = git(&clone, &["rev-parse", "HEAD"])?;
+        let checkout = staging.join(base.strip_suffix(".git").unwrap_or(base));
+        // A local plugin may sit in a subdirectory of a marketplace repo: clone the repo, keep the subdirectory.
+        // shortcut: git URLs must point at a plugin repo's root; add a subdirectory argument when someone needs it.
+        let (repo, prefix) = match Path::new(source).is_dir() {
+            true => (
+                git(Path::new(source), &["rev-parse", "--show-toplevel"])?,
+                git(Path::new(source), &["rev-parse", "--show-prefix"])?,
+            ),
+            false => (source.to_owned(), String::new()),
+        };
+        let target = checkout.to_string_lossy();
+        git(&staging, &["clone", "--quiet", "--", &repo, &target])?;
+        let commit = git(&checkout, &["rev-parse", "HEAD"])?;
+        let clone = checkout.join(&prefix);
         let name = load(&clone)?.name;
         let valid = name
             .chars()
