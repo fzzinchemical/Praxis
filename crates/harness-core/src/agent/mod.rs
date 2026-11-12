@@ -371,7 +371,11 @@ impl Agent {
                 }
                 ended
             };
+            // Reads are shared with the child, but its history is not: neither side may stub
+            // a read that only the other one saw.
+            self.tools.forget_reads();
             let (reply, ended) = tokio::join!(run, forward);
+            self.tools.forget_reads();
             match (reply, ended) {
                 (Some(reply), StopReason::EndTurn) => ToolOutput {
                     content: reply,
