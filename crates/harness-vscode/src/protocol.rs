@@ -3,6 +3,7 @@
 //! Lines are framed by hand with `serde_json` rather than the `agent-client-protocol` crate (SPEC §11).
 
 use serde_json::{Value, json};
+use std::path::{Component, Path};
 
 /// A message from the webview. The webview is untrusted, so anything else is dropped.
 #[derive(Debug, PartialEq)]
@@ -45,6 +46,8 @@ pub struct Reaction {
     pub send: Option<String>,
     /// A proposed file change to open in VS Code's diff editor.
     pub review: Option<Review>,
+    /// A file the agent asked for, which the host answers with `file_reply` (SPEC §11).
+    pub read: Option<FileRead>,
 }
 
 /// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
@@ -69,6 +72,23 @@ fn review_of(tool_call: &Value) -> Option<Review> {
     })
 }
 
+/// An `fs/read_text_file` request whose path has passed the workspace check.
+#[derive(Debug, PartialEq)]
+pub struct FileRead {
+    pub id: Value,
+    pub path: String,
+}
+
+/// The answer to `fs/read_text_file`. `None` means the host could not read the file.
+pub fn file_reply(id: Value, text: Option<&str>) -> String {
+    match text {
+        Some(content) => json!({"jsonrpc": "2.0", "id": id, "result": {"content": content}}),
+        None => json!({"jsonrpc": "2.0", "id": id,
+            "error": {"code": -32002, "message": "the file cannot be read"}}),
+    }
+    .to_string()
+}
+
 const INITIALIZE: u64 = 0;
 const NEW_SESSION: u64 = 1;
 
@@ -87,7 +107,7 @@ impl Client {
         let line = request(
             INITIALIZE,
             "initialize",
-            json!({"protocolVersion": 1, "clientCapabilities": {}}),
+            json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true}}}),
         );
         let client = Self {
             cwd: cwd.to_owned(),
@@ -151,6 +171,7 @@ impl Client {
         match (message["method"].as_str(), &message["id"]) {
             (Some("session/update"), _) => update(&message["params"]["update"]),
             (Some("session/request_permission"), id) => self.permission(id, &message["params"]),
+            (Some("fs/read_text_file"), id) => self.read_file(id, &message["params"]),
             (Some(_), _) => Reaction::default(),
             (None, id) => self.response(id.as_u64(), &message["result"]),
         }
@@ -163,7 +184,7 @@ impl Client {
             return Reaction {
                 show: Some(notice("permission refused: unsupported request id")),
                 send: Some(send.to_string()),
-                review: None,
+                ..Reaction::default()
             };
         };
         let offered = params["options"]
@@ -187,6 +208,28 @@ impl Client {
         }
     }
 
+    /// Refuses paths outside the workspace; the host reads anything inside, unsaved text first.
+    fn read_file(&self, id: &Value, params: &Value) -> Reaction {
+        let path = params["path"].as_str().unwrap_or_default();
+        if !inside(&self.cwd, path) {
+            // shortcut: a symlink inside the workspace can point outside and the host follows it;
+            // the agent's own Read resolves links first, so this only guards direct requests.
+            let refusal = json!({"jsonrpc": "2.0", "id": id,
+                "error": {"code": -32602, "message": "path is outside the workspace"}});
+            return Reaction {
+                send: Some(refusal.to_string()),
+                ..Reaction::default()
+            };
+        }
+        Reaction {
+            read: Some(FileRead {
+                id: id.clone(),
+                path: path.to_owned(),
+            }),
+            ..Reaction::default()
+        }
+    }
+
     fn response(&mut self, id: Option<u64>, result: &Value) -> Reaction {
         match id {
             Some(INITIALIZE) => Reaction {
@@ -207,6 +250,14 @@ impl Client {
             },
         }
     }
+}
+
+/// `path` is absolute, under `root` and free of `..`, so it cannot leave the workspace.
+fn inside(root: &str, path: &str) -> bool {
+    let path = Path::new(path);
+    path.is_absolute()
+        && path.starts_with(root)
+        && !path.components().any(|part| part == Component::ParentDir)
 }
 
 fn update(update: &Value) -> Reaction {
@@ -312,6 +363,10 @@ mod tests {
         let (mut client, init) = Client::start("/work");
         let init: Value = serde_json::from_str(&init).unwrap();
         assert_eq!(init["method"], "initialize");
+        assert_eq!(
+            init["params"]["clientCapabilities"]["fs"]["readTextFile"],
+            true
+        );
         assert_eq!(client.prompt("hi"), None);
 
         let reaction = client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{"protocolVersion":1}}"#);
@@ -457,6 +512,48 @@ mod tests {
         client.on_line(ASK);
         let answer: Value = serde_json::from_str(&client.answer(7, None).unwrap()).unwrap();
         assert_eq!(answer["result"]["outcome"]["outcome"], "cancelled");
+    }
+
+    #[test]
+    fn file_reads_are_answered_only_inside_the_workspace() {
+        let mut client = session();
+        let read = |path: &str| {
+            json!({"jsonrpc": "2.0", "id": 9, "method": "fs/read_text_file",
+                "params": {"sessionId": "s1", "path": path}})
+            .to_string()
+        };
+        assert_eq!(
+            client.on_line(&read("/work/src/a.rs")).read,
+            Some(FileRead {
+                id: json!(9),
+                path: "/work/src/a.rs".into()
+            })
+        );
+        for outside in [
+            "/etc/passwd",
+            "/workx/a.rs",
+            "/work/../etc/passwd",
+            "src/a.rs",
+            "",
+        ] {
+            let reaction = client.on_line(&read(outside));
+            assert_eq!(reaction.read, None, "{outside}");
+            let refusal = sent(&reaction);
+            assert_eq!(refusal["id"], 9);
+            assert_eq!(refusal["error"]["code"], -32602);
+        }
+    }
+
+    #[test]
+    fn file_replies_carry_the_text_or_an_error() {
+        let ok: Value = serde_json::from_str(&file_reply(json!(9), Some("hi"))).unwrap();
+        assert_eq!(
+            ok,
+            json!({"jsonrpc": "2.0", "id": 9, "result": {"content": "hi"}})
+        );
+        let failed: Value = serde_json::from_str(&file_reply(json!(9), None)).unwrap();
+        assert_eq!(failed["id"], 9);
+        assert_eq!(failed["error"]["code"], -32002);
     }
 
     #[test]

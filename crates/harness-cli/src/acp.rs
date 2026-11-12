@@ -7,9 +7,11 @@ use agent_client_protocol::{
 use harness_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome};
 use harness_core::provider::Message;
 use harness_core::session::SessionLog;
+use harness_core::tools::EditorReader;
 use harness_core::tools::FileDiff;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -26,6 +28,8 @@ struct Server {
     new_agent: NewAgent,
     sessions_dir: PathBuf,
     sessions: Mutex<HashMap<String, Slot>>,
+    /// Whether the client advertised `fs.readTextFile` at `initialize`.
+    client_reads: AtomicBool,
 }
 
 impl Server {
@@ -34,7 +38,11 @@ impl Server {
     }
 
     /// Creates or resumes a session log and returns its id with the messages to replay.
-    fn open(&self, resume: Option<&str>) -> anyhow::Result<(String, Vec<Message>)> {
+    fn open(
+        &self,
+        resume: Option<&str>,
+        cx: &ConnectionTo<Client>,
+    ) -> anyhow::Result<(String, Vec<Message>)> {
         let (log, prior) = match resume {
             Some(id) => SessionLog::resume(&self.sessions_dir, id)?,
             None => (SessionLog::create(&self.sessions_dir)?, Vec::new()),
@@ -44,6 +52,11 @@ impl Server {
         agent
             .tools()
             .checkpoint_into(self.sessions_dir.join(&id).join("checkpoints"));
+        if self.client_reads.load(Ordering::Relaxed) {
+            agent
+                .tools()
+                .read_from_editor(editor_reader(cx.clone(), id.clone()));
+        }
         let agent = Some(agent.with_session(log, prior.clone()));
         let cancel = CancellationToken::new();
         self.sessions().insert(id.clone(), Slot { agent, cancel });
@@ -81,13 +94,21 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
         new_agent,
         sessions_dir,
         sessions: Mutex::default(),
+        client_reads: AtomicBool::new(false),
     });
-    let (for_new, for_load, for_prompt, for_cancel) =
-        (server.clone(), server.clone(), server.clone(), server);
+    let (for_init, for_new, for_load, for_prompt, for_cancel) = (
+        server.clone(),
+        server.clone(),
+        server.clone(),
+        server.clone(),
+        server,
+    );
     AcpAgent
         .v1()
         .on_receive_request(
-            async |req: v1::InitializeRequest, responder, _cx| {
+            async move |req: v1::InitializeRequest, responder, _cx| {
+                let reads = req.client_capabilities.fs.read_text_file;
+                for_init.client_reads.store(reads, Ordering::Relaxed);
                 let capabilities = v1::AgentCapabilities::new().load_session(true);
                 responder.respond(
                     v1::InitializeResponse::new(req.protocol_version)
@@ -105,7 +126,7 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
         // shortcut: sessions run in the launch directory and ignore `cwd` and `mcpServers`;
         // T5.2 decides whether the extension can ever pass a different folder.
         .on_receive_request(
-            async move |_req: v1::NewSessionRequest, responder, _cx| match for_new.open(None) {
+            async move |_req: v1::NewSessionRequest, responder, cx| match for_new.open(None, &cx) {
                 Ok((id, _)) => responder.respond(v1::NewSessionResponse::new(id)),
                 Err(e) => responder.respond_with_internal_error(format!("{e:#}")),
             },
@@ -113,7 +134,7 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
         )
         .on_receive_request(
             async move |req: v1::LoadSessionRequest, responder, cx| {
-                let prior = match for_load.open(Some(&req.session_id.to_string())) {
+                let prior = match for_load.open(Some(&req.session_id.to_string()), &cx) {
                     Ok((_, prior)) => prior,
                     Err(e) => {
                         return responder
@@ -206,6 +227,18 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
             },
             on_receive_notification!(),
         )
+}
+
+/// Reads through the client, so `Read` sees unsaved buffers. Runs on the tool's blocking thread,
+/// never in the dispatch loop, so waiting for the client's answer here cannot deadlock.
+/// shortcut: a failed request falls back to the disk, which `Read` has already confined.
+fn editor_reader(cx: ConnectionTo<Client>, session: String) -> EditorReader {
+    EditorReader(Box::new(move |path| {
+        let request = v1::ReadTextFileRequest::new(session.clone(), path);
+        let answer =
+            tokio::runtime::Handle::current().block_on(cx.send_request(request).block_task());
+        answer.ok().map(|reply| reply.content)
+    }))
 }
 
 /// The tool call a permission request shows. A `Write` or `Edit` also carries its diff, so the
@@ -378,11 +411,16 @@ mod tests {
 
     /// A fake LM Studio that writes `ok.txt` through `Write`, then says "done".
     async fn fake_server() -> MockServer {
+        fake_server_calling("Write", json!({"file_path": "ok.txt", "content": "x"})).await
+    }
+
+    /// A fake LM Studio that calls `name` with `args`, then says "done".
+    async fn fake_server_calling(name: &str, input: Value) -> MockServer {
         let server = MockServer::start().await;
-        let args = json!({"file_path": "ok.txt", "content": "x"}).to_string();
+        let args = input.to_string();
         let write = sse(&[
             json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
-                "function": {"name": "Write", "arguments": args}}]}, "finish_reason": null}]}),
+                "function": {"name": name, "arguments": args}}]}, "finish_reason": null}]}),
             json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
         ]);
         let done = sse(&[
@@ -622,6 +660,73 @@ mod tests {
                 "loaded"
             ]
         );
+    }
+
+    /// Has the model `Read` `a.txt` while the client holds an unsaved edit to it. Returns the
+    /// tool output the model saw and the paths the client was asked to read.
+    async fn read_through_client(dir: &Path, advertise: bool) -> (String, Vec<String>) {
+        let server = fake_server_calling("Read", json!({"file_path": "a.txt"})).await;
+        let (asked, output) = (Log::default(), Log::default());
+        let (on_read, on_update) = (asked.clone(), output.clone());
+        let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+            "protocolVersion": 1,
+            "clientCapabilities": {"fs": {"readTextFile": advertise}}
+        }))
+        .unwrap();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |req: v1::ReadTextFileRequest, responder, _cx| {
+                    push(&on_read, req.path.display().to_string());
+                    responder.respond(v1::ReadTextFileResponse::new("unsaved buffer"))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    if update["sessionUpdate"] == "tool_call_update" {
+                        let text = update["content"][0]["content"]["text"].as_str();
+                        push(&on_update, text.unwrap_or_default().to_owned());
+                    }
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(harness(&server, dir), async |cx| {
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(dir);
+                let session = cx.send_request(session).block_task().await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let output = output.lock().unwrap().join("");
+        let asked = asked.lock().unwrap().clone();
+        (output, asked)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_returns_the_unsaved_buffer_when_the_client_serves_files() {
+        let dir = temp_dir("read-buffer");
+        std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
+        let (output, asked) = read_through_client(&dir, true).await;
+        assert!(output.contains("unsaved buffer"), "{output}");
+        assert!(!output.contains("on disk"), "{output}");
+        assert_eq!(asked, [dir.join("a.txt").display().to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_uses_the_disk_when_the_client_does_not_serve_files() {
+        let dir = temp_dir("read-disk");
+        std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
+        let (output, asked) = read_through_client(&dir, false).await;
+        assert!(output.contains("on disk"), "{output}");
+        assert!(asked.is_empty());
     }
 
     #[test]

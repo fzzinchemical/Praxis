@@ -90,7 +90,11 @@ pub(super) type RangeKey = (PathBuf, usize, usize);
 
 pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     let path = ctx.resolve_read(&input.file_path)?;
-    let bytes = read_bytes(&path)?;
+    // An open editor buffer, unsaved edits included, beats the file on disk (SPEC §11).
+    let bytes = match ctx.editor_text(&path) {
+        Some(text) => text.into_bytes(),
+        None => read_bytes(&path)?,
+    };
     let text = text_of(&bytes, &path)?;
     let hash = hash_of(&bytes);
     // Only a change from what the agent last saw counts: its own writes update that hash too.

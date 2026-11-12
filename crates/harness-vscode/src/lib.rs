@@ -47,10 +47,6 @@ extern "C" {
     fn open_text_document(options: &Object) -> Promise;
     #[wasm_bindgen(js_namespace = commands, js_name = executeCommand)]
     fn execute_command(command: &str, left: &Uri, right: &Uri, title: &str) -> Promise;
-    type TextDocument;
-    #[wasm_bindgen(method, getter)]
-    fn uri(this: &TextDocument) -> Uri;
-
     #[wasm_bindgen(js_namespace = window, js_name = createOutputChannel)]
     fn create_output_channel(name: &str) -> OutputChannel;
     #[derive(Clone)]
@@ -73,6 +69,15 @@ extern "C" {
     fn join_path(base: &Uri, path: &str) -> Uri;
     #[wasm_bindgen(method, js_name = toString)]
     fn to_uri_string(this: &Uri) -> String;
+    #[wasm_bindgen(method, getter, js_name = fsPath)]
+    fn fs_path(this: &Uri) -> String;
+
+    /// An open editor document; `getText` includes unsaved edits.
+    type TextDocument;
+    #[wasm_bindgen(method, getter)]
+    fn uri(this: &TextDocument) -> Uri;
+    #[wasm_bindgen(method, js_name = getText)]
+    fn get_text(this: &TextDocument) -> String;
 
     type WebviewPanel;
     #[wasm_bindgen(method, getter)]
@@ -92,6 +97,12 @@ extern "C" {
     fn post_message(this: &Webview, message: &str);
     #[wasm_bindgen(method, js_name = onDidReceiveMessage)]
     fn on_did_receive_message(this: &Webview, callback: &Closure<dyn FnMut(JsValue)>);
+}
+
+#[wasm_bindgen(module = "fs")]
+extern "C" {
+    #[wasm_bindgen(catch, js_name = readFileSync)]
+    fn read_file_sync(path: &str, encoding: &str) -> Result<JsValue, JsValue>;
 }
 
 #[wasm_bindgen(module = "child_process")]
@@ -331,6 +342,10 @@ fn react(state: &Shared, reaction: Reaction) {
             .output
             .append(&format!("could not open the diff: {error:?}\n"));
     }
+    if let Some(read) = reaction.read {
+        let text = editor_text(&read.path);
+        panel.send([protocol::file_reply(read.id, text.as_deref())]);
+    }
     panel.send(reaction.send);
 }
 
@@ -372,6 +387,21 @@ fn failure_logger(output: &OutputChannel) -> Closure<dyn FnMut(JsValue)> {
     Closure::new(move |error: JsValue| {
         output.append(&format!("diff review failed: {error:?}\n"));
     })
+}
+
+/// The text of an open document at `path`, unsaved edits included, else the file on disk.
+fn editor_text(path: &str) -> Option<String> {
+    let documents = WORKSPACE.with(|workspace| Reflect::get(workspace, &"textDocuments".into()));
+    let documents: Array = documents.ok()?.unchecked_into();
+    if let Some(document) = documents
+        .iter()
+        .map(|value| value.unchecked_into::<TextDocument>())
+        .find(|document| document.uri().fs_path() == path)
+    {
+        return Some(document.get_text());
+    }
+    // shortcut: reads the whole file into memory with no size cap; cap it if large files show up.
+    read_file_sync(path, "utf8").ok()?.as_string()
 }
 
 fn exited(state: &Shared, code: &str) {

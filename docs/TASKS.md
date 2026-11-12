@@ -459,7 +459,7 @@ flowchart TB
   - **Needs:** T3.2, T3.7, T0.5.
   - **Done when:** in-process tests cover the event mapping table, permission round trip, `session/load`, and cancellation ordering; and a test confirms nothing but protocol messages reach stdout.
 
-- [ ] **T5.2 Extension core** (§11)
+- [x] **T5.2 Extension core** (§11)
   - **Needs:** T5.1, T0.6.
   - **Do:** bindings, spawn, ACP connection, machine-scoped settings, restart on exit, output channel, untrusted-workspace declaration.
   - **Done when:** native tests cover message mapping; the checklist item "open panel, send prompt, see a response" passes.
@@ -469,7 +469,7 @@ flowchart TB
   - **Do:** streaming, stop button, status line, collapsed tool output, permissions, safe markdown, CSP, accessibility (§11).
   - **Done when:** native tests confirm `<script>` and `javascript:` links in model text render inert; the checklist's keyboard-only pass succeeds; and the status line shows phase, elapsed time and context used.
 
-- [x] **T5.4 Diff review** (§11)
+- [ ] **T5.4 Diff review** (§11)
   - **Needs:** T5.3.
   - **Done when:** checklist confirms a `Write` or `Edit` opens the native diff, accept applies it, reject leaves the file unchanged, and the model is told which.
 

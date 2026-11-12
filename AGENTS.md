@@ -101,3 +101,4 @@ Known before implementation. Details are in SPEC.
 - The pre-commit hook exports `GIT_DIR` and `GIT_INDEX_FILE`, so any `git` a test spawns must `env_remove` them (and `GIT_WORK_TREE`), or it writes to this repo's index and config (`tests/plugin_cli.rs`).
 - Once the CLI starts its terminal reader, it owns stdin: later prompts must read its channel (`approve_mcp_change` uses `block_in_place`), never `stdin().read_line`.
 - The ACP crate rejects `session/new` sent before the `initialize` answer arrives, so clients and tests must wait for it. `Stdio` needs the crate's `stdio` feature.
+- In wasm-bindgen 0.2.128 a `getter` on a namespaced free function (`workspace.workspaceFolders`) is emitted as a call and throws. Bind the namespace with `thread_local_v2` and read the property with `Reflect::get` (`harness-vscode/src/lib.rs`).

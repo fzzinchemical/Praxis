@@ -22,7 +22,7 @@ use std::io::{self, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
@@ -86,10 +86,23 @@ impl ToolError {
     }
 }
 
+type ReadFn = dyn Fn(&Path) -> Option<String> + Send + Sync;
+
+/// Returns an editor's text for an absolute path, unsaved edits included, or `None` to read disk.
+pub struct EditorReader(pub Box<ReadFn>);
+
+impl std::fmt::Debug for EditorReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("EditorReader")
+    }
+}
+
 /// Per-session state shared by tool calls.
 #[derive(Debug)]
 pub struct ToolContext {
     workspace: PathBuf,
+    /// Set by the ACP front end when the client can serve `fs/read_text_file` (SPEC §11).
+    editor: OnceLock<EditorReader>,
     /// The already scrubbed environment for child processes.
     env: Vec<(OsString, OsString)>,
     /// Content hash of each file as last read or written, so `Edit` can spot outside changes.
@@ -127,6 +140,7 @@ impl ToolContext {
             workspace: workspace
                 .canonicalize()
                 .map_err(ToolError::io("open the workspace", workspace))?,
+            editor: OnceLock::new(),
             env: bash::child_env(vars),
             seen: Mutex::default(),
             spool_dir: new_temp_path("spool"),
@@ -139,6 +153,17 @@ impl ToolContext {
             reads: Mutex::default(),
             turn: AtomicU64::new(0),
         })
+    }
+
+    /// Lets `Read` see what the editor shows. Set once, before the session's first turn.
+    pub fn read_from_editor(&self, reader: EditorReader) {
+        // shortcut: a second call keeps the first reader; the ACP front end sets it once per session.
+        let _ = self.editor.set(reader);
+    }
+
+    /// The editor's text for `path`, if the client serves it.
+    fn editor_text(&self, path: &Path) -> Option<String> {
+        (self.editor.get()?.0)(path)
     }
 
     /// Runs every `Bash` command through `sandbox`'s helper (SPEC §9).
