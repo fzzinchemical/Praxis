@@ -13,8 +13,11 @@ use praxis_core::provider::Provider;
 use praxis_core::tools::ToolContext;
 use praxis_core::trust::TrustStore;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, ServerNotification, Tool,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
+    GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
+    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
+    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
+    ServerConfig, ServerNotification, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt as _};
@@ -34,7 +37,52 @@ static CHANGED: AtomicBool = AtomicBool::new(false);
 
 impl ServerHandler for Echo {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_resources()
+                .enable_prompts()
+                .build(),
+        )
+    }
+
+    async fn list_resources(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        let resource = Resource::new("memo://note", "note");
+        Ok(ListResourcesResult::with_all_items(vec![resource]))
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        let text = format!("body of {}", request.uri);
+        Ok(ReadResourceResult::new(vec![ResourceContents::text(text, request.uri)]).into())
+    }
+
+    async fn list_prompts(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        let who = PromptArgument::new("who").with_required(true);
+        let prompt = Prompt::new("greet", Some("Says hello."), Some(vec![who]));
+        Ok(ListPromptsResult::with_all_items(vec![prompt]))
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResponse, ErrorData> {
+        let who = request.arguments.and_then(|a| a.get("who").cloned());
+        let text = format!("hello {}", who.unwrap_or(Value::Null));
+        let message = PromptMessage::new_text(Role::User, text);
+        Ok(GetPromptResult::new(vec![message]).into())
     }
 
     async fn list_tools(
@@ -126,6 +174,51 @@ async fn slow_or_failing_servers_dont_block_startup() {
     );
     let all = notices.join("\n");
     assert!(all.contains("`broken`") && all.contains("`slow`"), "{all}");
+}
+
+/// Resources and prompts reach the model as `read_resource` and `get_prompt` tools per server.
+async fn resources_and_prompts_are_tools() {
+    let (mcp, notices) = Mcp::connect(&servers(), Duration::from_secs(2)).await;
+    assert!(
+        notices
+            .iter()
+            .all(|n| n.contains("`broken`") || n.contains("`slow`"))
+    );
+    let names: Vec<String> = mcp.schemas().into_iter().map(|s| s.name).collect();
+    assert!(
+        names.contains(&"mcp__test__read_resource".to_owned()),
+        "{names:?}"
+    );
+    assert!(
+        names.contains(&"mcp__test__get_prompt".to_owned()),
+        "{names:?}"
+    );
+
+    let cancel = CancellationToken::new();
+    let read = mcp
+        .call(
+            "mcp__test__read_resource",
+            json!({"uri": "memo://note"}),
+            cancel.clone(),
+        )
+        .await;
+    assert!(
+        !read.is_error && read.content == "body of memo://note",
+        "{}",
+        read.content
+    );
+    let prompt = mcp
+        .call(
+            "mcp__test__get_prompt",
+            json!({"name": "greet", "arguments": {"who": "Ada"}}),
+            cancel,
+        )
+        .await;
+    assert!(
+        !prompt.is_error && prompt.content == "hello \"Ada\"",
+        "{}",
+        prompt.content
+    );
 }
 
 fn sse(chunks: &[Value]) -> String {
@@ -339,7 +432,12 @@ async fn changed_descriptions_hide_the_tool_until_approved_again() {
         shown.push(change.to_owned());
         false
     });
-    assert!(names(&mcp).is_empty(), "{:?}", names(&mcp));
+    // The fixture also serves a resource and a prompt, which are separate, unchanged tools.
+    assert!(
+        !names(&mcp).contains(&"mcp__test__echo".to_owned()),
+        "{:?}",
+        names(&mcp)
+    );
     assert!(
         notices.iter().any(|n| n.contains("mcp__test__echo")),
         "{notices:?}"
@@ -360,7 +458,8 @@ async fn changed_descriptions_hide_the_tool_until_approved_again() {
     assert!(names(&mcp).contains(&"mcp__test__echo".to_owned()));
     let (mut mcp, _) = Mcp::connect(&with(hostile), Duration::from_secs(10)).await;
     let notices = mcp.pin(Some(&store), &mut |_| panic!("approved content asks again"));
-    assert!(notices.is_empty() && names(&mcp).len() == 4, "{notices:?}");
+    // Four echo tools plus the resource and prompt tools.
+    assert!(notices.is_empty() && names(&mcp).len() == 6, "{notices:?}");
 }
 
 async fn plugin_tools_take_the_plugin_name_and_are_pinned() {
@@ -691,6 +790,8 @@ fn main() {
     println!("changed_descriptions_hide_the_tool_until_approved_again ... ok");
     runtime.block_on(plugin_tools_take_the_plugin_name_and_are_pinned());
     println!("plugin_tools_take_the_plugin_name_and_are_pinned ... ok");
+    runtime.block_on(resources_and_prompts_are_tools());
+    println!("resources_and_prompts_are_tools ... ok");
     runtime.block_on(http_headers_resolve_from_the_environment_without_being_logged());
     println!("http_headers_resolve_from_the_environment_without_being_logged ... ok");
     runtime.block_on(indexed_mode_hides_mcp_schemas_behind_search_and_call());

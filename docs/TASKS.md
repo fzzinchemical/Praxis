@@ -428,6 +428,7 @@ flowchart LR
 - [ ] **T4.5 Real server check and resources**
   - **Needs:** T4.4, T4.6.
   - **Done when:** real filesystem, git and browser MCP servers work on a small-window model, with eval scores no worse than without them. Resources and prompts are added.
+  - **Status:** resources and prompts are done, with fixture tests (`resources_and_prompts_are_tools`). Still open for a human: the real filesystem, git and browser servers (they need npm and network) and the eval comparison on a small-window model. Left unticked until both are done.
 
 - [x] **T4.6 Pin MCP tool definitions** (§13)
   - **Needs:** T4.1.
