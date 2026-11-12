@@ -306,3 +306,15 @@ fn unknown_user_config_keys_are_rejected() {
             .is_err()
     );
 }
+
+#[test]
+fn a_plugin_agent_named_general_fails_to_load_naming_the_plugin() {
+    let root = plugin_dir("general-agent");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(&root.join("agents/general.md"), "Do anything.\n");
+
+    let error = load(&root).unwrap_err();
+
+    assert!(error.contains("kit"), "{error}");
+    assert!(error.contains("general"), "{error}");
+}

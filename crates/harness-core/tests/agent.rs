@@ -4,6 +4,7 @@
 #![cfg(test)]
 
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
+use harness_core::permissions::Policy;
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
 use serde_json::{Value, json};
@@ -77,6 +78,15 @@ impl Harness {
     }
 
     async fn in_workspace(workspace: PathBuf, bodies: Vec<String>, max_turn_requests: u32) -> Self {
+        Self::with_policy(workspace, bodies, max_turn_requests, Policy::default()).await
+    }
+
+    async fn with_policy(
+        workspace: PathBuf,
+        bodies: Vec<String>,
+        max_turn_requests: u32,
+        policy: Policy,
+    ) -> Self {
         let server = MockServer::start().await;
         Mock::given(matchers::method("POST"))
             .respond_with(Script {
@@ -97,7 +107,7 @@ impl Harness {
                 max_turn_requests,
                 profile: harness_core::agent::profile::ModelProfile::default(),
                 seed: None,
-                policy: harness_core::permissions::Policy::default(),
+                policy,
                 masking: true,
             },
         );
@@ -668,4 +678,92 @@ fn system_prompt_covers_the_contract_within_budget() {
     }
     // About 150 tokens at the §7 estimate of chars / 3.5; growth has to argue for itself.
     assert!(prompt.len() <= 520, "{} chars", prompt.len());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_session_without_plugins_offers_the_general_agent() {
+    let mut h = Harness::new(vec![text_reply("hi")], 50).await;
+    h.agent = Some(h.agent.take().unwrap().with_agents(Vec::new()));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let agent = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["function"]["name"] == "Agent")
+        .expect("the Agent tool is offered");
+    assert!(
+        agent["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("- general:")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_general_agent_runs_fresh_without_the_agent_tool_and_returns_its_reply() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "general", "prompt": "look"}),
+        )]),
+        text_reply("found it"),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    h.agent = Some(h.agent.take().unwrap().with_agents(Vec::new()));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let child = h.request_messages(1).await;
+    assert_eq!(child.len(), 2);
+    assert_eq!(child[1]["content"], "look");
+    let requests = h.server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    let tools: Vec<&str> = body["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["function"]["name"].as_str().unwrap())
+        .collect();
+    assert!(tools.contains(&"Read"), "{tools:?}");
+    assert!(!tools.contains(&"Agent"), "{tools:?}");
+    let parent = h.request_messages(2).await;
+    assert_eq!(parent.last().unwrap()["content"], "found it");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_general_agent_obeys_session_deny_rules() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "general", "prompt": "write"}),
+        )]),
+        tool_reply(&[("s1", "Write", json!({"file_path": "x", "content": "y"}))]),
+        text_reply("refused"),
+        text_reply("done"),
+    ];
+    let workspace = new_workspace();
+    let policy = harness_core::permissions::Policy::new(
+        harness_core::permissions::Mode::Ask,
+        &[],
+        &["Write".to_owned()],
+    )
+    .unwrap();
+    let mut h = Harness::with_policy(workspace.clone(), script, 50, policy).await;
+    h.agent = Some(h.agent.take().unwrap().with_agents(Vec::new()));
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            panic!("a denied call must not ask")
+        })
+        .await;
+
+    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(!workspace.join("x").exists());
 }

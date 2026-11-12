@@ -151,7 +151,7 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
     let hooks = sources("hooks", "hooks/hooks.json")?;
     let mcp_servers = sources("mcpServers", ".mcp.json")?;
 
-    Ok(Plugin {
+    let plugin = Plugin {
         name,
         user_config: manifest.get("userConfig").cloned(),
         root,
@@ -161,7 +161,16 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
         hooks,
         mcp_servers,
         warnings,
-    })
+    };
+    // `general` is the built-in agent's name (SPEC §12); an agent file named so is an error.
+    let reserved = format!("{}:general", plugin.name);
+    if plugin.agents().iter().any(|a| a.skill.name == reserved) {
+        return Err(format!(
+            "{}: agent `general` is reserved for the built-in agent",
+            plugin.name
+        ));
+    }
+    Ok(plugin)
 }
 
 /// A skill or command, named `<plugin>:<name>`. Same frontmatter for both (SPEC §12).

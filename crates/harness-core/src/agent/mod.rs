@@ -290,11 +290,10 @@ impl Agent {
         self
     }
 
-    /// Adds the `Agent` tool, listing `agents` in its description. Call before the first turn.
+    /// Adds the `Agent` tool, listing the built-in `general` agent and `agents`. Call before the
+    /// first turn.
     pub fn with_agents(mut self, agents: Vec<AgentDef>) -> Self {
-        if agents.is_empty() {
-            return self;
-        }
+        let agents: Vec<AgentDef> = std::iter::once(general_agent()).chain(agents).collect();
         self.tool_schemas.push(agent_schema(&agents));
         self.agents = agents;
         self.reassemble_prefix();
@@ -1184,6 +1183,21 @@ fn indexed_schemas() -> [ToolSchema; 2] {
             }),
         },
     ]
+}
+
+/// Offered in every session with no plugin needed (SPEC §12). Without `Agent`, so it can't nest.
+fn general_agent() -> AgentDef {
+    AgentDef {
+        skill: Skill {
+            name: "general".to_owned(),
+            description: "General-purpose agent for a self-contained task.".to_owned(),
+            body: "Do the task alone. End with a short report of what you found or changed."
+                .to_owned(),
+        },
+        tools: None,
+        disallowed_tools: vec!["Agent".to_owned()],
+        max_turns: None,
+    }
 }
 
 fn agent_schema(agents: &[AgentDef]) -> ToolSchema {

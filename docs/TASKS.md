@@ -710,6 +710,6 @@ flowchart LR
   - **Needs:** T8.6.
   - **Done when:** on the fake server, an orchestrator session delegates two steps to a worker on another model, and only the workers' reports enter its history; the same test passes with the orchestrator on `anthropic/` and on `lmstudio/`; a worker can't use a tool the session denies; and an eval run records success, wall time and model swaps for a local orchestrator with a local worker.
 
-- [ ] **T8.9 Built-in general agent** (§12) · *Should*
+- [x] **T8.9 Built-in general agent** (§12) · *Should*
   - **Needs:** T6.5.
   - **Done when:** a session with no plugins offers the `Agent` tool listing `general`; on the fake server a `general` call runs in a fresh history with every session tool except `Agent` and returns its last reply; session deny rules still apply to its calls; and a plugin agent named `general` fails to load with an error naming the plugin.
