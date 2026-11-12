@@ -113,8 +113,16 @@ impl Client {
             return show(notice(&format!("unreadable agent output: {line}")));
         };
         if let Some(error) = message.get("error") {
-            let text = error["message"].as_str().unwrap_or("unknown error");
-            return show(json!({"type": "done", "reason": format!("error: {text}")}));
+            let text = error["data"]
+                .as_str()
+                .or(error["message"].as_str())
+                .unwrap_or("unknown error");
+            return match message["id"].as_u64() {
+                Some(INITIALIZE | NEW_SESSION) => {
+                    show(notice(&format!("Harness could not start: {text}")))
+                }
+                _ => show(json!({"type": "done", "reason": format!("error: {text}")})),
+            };
         }
         match (message["method"].as_str(), &message["id"]) {
             (Some("session/update"), _) => update(&message["params"]["update"]),
@@ -392,6 +400,21 @@ mod tests {
         client.on_line(ASK);
         let answer: Value = serde_json::from_str(&client.answer(7, None).unwrap()).unwrap();
         assert_eq!(answer["result"]["outcome"]["outcome"], "cancelled");
+    }
+
+    #[test]
+    fn a_startup_error_is_shown_as_a_notice_with_its_detail() {
+        // ACP puts the reason in `data`; `message` is only the generic "Internal error".
+        let mut client = Client::start("/work").0;
+        let failed = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":"LM Studio has no model loaded."}}"#;
+        client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#);
+        assert_eq!(
+            client.on_line(failed).show,
+            Some(notice(
+                "Harness could not start: LM Studio has no model loaded."
+            ))
+        );
+        assert_eq!(client.prompt("hi"), None);
     }
 
     #[test]

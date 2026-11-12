@@ -615,6 +615,17 @@ fn with_session(agent: Agent, resume: Option<&str>) -> Result<Agent> {
     Ok(agent.with_session(log, prior))
 }
 
+async fn serve_acp(new_agent: acp::NewAgent) -> Result<u8> {
+    let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
+        eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
+        return Ok(EXIT_USAGE);
+    };
+    acp::agent(new_agent, dir)
+        .connect_to(agent_client_protocol::Stdio::new())
+        .await?;
+    Ok(0)
+}
+
 async fn run(
     cli: Cli,
     (config, policy): (Config, Policy),
@@ -657,7 +668,15 @@ async fn run(
         }
         None => None,
     };
-    let ready = ready_model(&provider, requested, &config, &mut terminal).await?;
+    let ready = match ready_model(&provider, requested, &config, &mut terminal).await {
+        Ok(ready) => ready,
+        // Stay up so the editor shows the problem on session/new instead of a dead process.
+        Err(error) if acp => {
+            let message = error.to_string();
+            return serve_acp(Box::new(move || Err(anyhow::anyhow!("{message}")))).await;
+        }
+        Err(error) => return Err(error.into()),
+    };
     let models = provider.list_models().await?;
     let reported = models.iter().find(|m| {
         m.loaded_instances
@@ -712,15 +731,7 @@ async fn run(
         })
     };
     if acp {
-        let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
-            eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
-            return Ok(EXIT_USAGE);
-        };
-        let agent = acp::agent(Box::new(new_agent), dir);
-        agent
-            .connect_to(agent_client_protocol::Stdio::new())
-            .await?;
-        return Ok(0);
+        return serve_acp(Box::new(new_agent)).await;
     }
     let agent = with_session(new_agent()?, cli.resume.as_deref())?;
     match prompt {

@@ -539,6 +539,44 @@ async fn acp_mode_writes_only_protocol_messages_to_stdout() {
     assert!(seen.iter().any(chunk), "{seen:?}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_without_a_loaded_model_stays_up_and_reports_it_on_session_new() {
+    let server = server(None, Replies(vec![text_reply("unused")])).await;
+    let dir = workspace();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let requests = [
+        json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": 1}}),
+        json!({"jsonrpc": "2.0", "id": 1, "method": "session/new",
+            "params": {"cwd": dir, "mcpServers": []}}),
+    ];
+    let mut answers = Vec::new();
+    for request in requests {
+        stdin
+            .write_all(format!("{request}\n").as_bytes())
+            .await
+            .unwrap();
+        let line = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("stdout closed before the answer");
+        answers.push(serde_json::from_str::<Value>(&line).unwrap());
+    }
+    assert!(answers[0]["result"].is_object(), "{answers:?}");
+    assert!(
+        answers[1]["error"]["data"]
+            .as_str()
+            .is_some_and(|data| data.contains("no model loaded")),
+        "{answers:?}"
+    );
+    assert!(child.try_wait().unwrap().is_none(), "acp exited early");
+}
+
 /// An enabled plugin under the test's data dir, written directly so no git is involved.
 fn enabled_plugin(dir: &Path) {
     let plugins = dir.join("xdg-data/harness/plugins");

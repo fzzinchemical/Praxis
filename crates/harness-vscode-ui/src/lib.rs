@@ -36,6 +36,19 @@ struct Ui {
     message: Option<(Element, String)>,
     /// Tool call id to its summary and output elements.
     tools: HashMap<String, (Element, Element)>,
+    /// Set by the extension's "ready" notice; cleared again by an exit or failure notice.
+    ready: bool,
+    send: Element,
+    stop: Element,
+}
+
+/// A disabled control carries the attribute, which browsers and screen readers both honour.
+fn set_enabled(element: &Element, enabled: bool) -> Result<(), JsValue> {
+    if enabled {
+        element.remove_attribute("disabled")
+    } else {
+        element.set_attribute("disabled", "")
+    }
 }
 
 type Shared = Rc<RefCell<Ui>>;
@@ -53,6 +66,12 @@ pub fn start() -> Result<(), JsValue> {
     let output = by_id(&document, "output")?;
     let form = by_id(&document, "prompt-form")?;
     let stop = by_id(&document, "stop")?;
+    // The Send button has no id; it is the form's submit button.
+    let send = form
+        .query_selector("button[type=submit]")?
+        .ok_or("no Send button")?;
+    set_enabled(&send, false)?;
+    set_enabled(&stop, false)?;
     let input: HtmlTextAreaElement = by_id(&document, "prompt")?.dyn_into()?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
@@ -67,6 +86,9 @@ pub fn start() -> Result<(), JsValue> {
         ended: Some(js_sys::Date::now()),
         message: None,
         tools: HashMap::new(),
+        ready: false,
+        send,
+        stop: stop.clone(),
     }));
 
     let state = ui.clone();
@@ -86,7 +108,8 @@ pub fn start() -> Result<(), JsValue> {
     let on_submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         event.prevent_default();
         let text = input.value();
-        if !text.trim().is_empty() {
+        // Before the session is ready a prompt would only be refused, so the text stays in the box.
+        if !text.trim().is_empty() && state.borrow().ready {
             api.post_message(&json!({"type": "prompt", "text": text}).to_string());
             input.set_value("");
             let _ = state.borrow_mut().begin(&text);
@@ -153,8 +176,24 @@ impl Ui {
         self.ended = None;
         self.status.phase = Phase::ProcessingPrompt;
         self.output.set_attribute("aria-busy", "true")?;
+        set_enabled(&self.stop, true)?;
         self.show_status();
         Ok(())
+    }
+
+    /// Leaves the busy state, so a dead or failed session never looks like it is still working.
+    fn idle(&mut self) -> Result<(), JsValue> {
+        self.message = None;
+        self.status.phase = Phase::Idle;
+        self.ended = Some(js_sys::Date::now());
+        self.output.remove_attribute("aria-busy")?;
+        set_enabled(&self.stop, false)
+    }
+
+    fn set_ready(&mut self, ready: bool) -> Result<(), JsValue> {
+        self.ready = ready;
+        set_enabled(&self.send, ready)?;
+        if ready { Ok(()) } else { self.idle() }
     }
 
     fn show_status(&self) {
@@ -168,7 +207,16 @@ impl Ui {
         let text = |key: &str| message[key].as_str().unwrap_or_default();
         match text("type") {
             "notice" => {
-                self.append("p", "notice", text("text"))?;
+                // These texts come from `harness-vscode/src/lib.rs` and `protocol.rs`.
+                let notice = text("text");
+                if notice == "ready" {
+                    self.set_ready(true)?;
+                } else if notice.starts_with("harness acp")
+                    || notice.starts_with("Harness could not start")
+                {
+                    self.set_ready(false)?;
+                }
+                self.append("p", "notice", notice)?;
             }
             "text" => {
                 self.status.phase = Phase::Generating;
@@ -192,10 +240,7 @@ impl Ui {
                 }
             }
             "done" => {
-                self.message = None;
-                self.status.phase = Phase::Idle;
-                self.ended = Some(js_sys::Date::now());
-                self.output.remove_attribute("aria-busy")?;
+                self.idle()?;
                 self.append("p", "notice", &format!("Turn ended: {}", text("reason")))?;
                 // A prompt left open after the turn ended can no longer be answered.
                 let stale = self.output.query_selector_all("fieldset")?;

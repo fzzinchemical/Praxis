@@ -276,10 +276,11 @@ fn start(state: &Shared) {
     child.stderr().on("data", &on_stderr);
     // Node emits `error` for a missing binary; unhandled, it would crash the extension host.
     let on_error = listener(state, |state, error| {
-        state
-            .borrow()
-            .output
-            .append(&format!("harness acp: {error}\n"));
+        let panel = state.borrow();
+        panel.output.append(&format!("harness acp: {error}\n"));
+        panel
+            .webview
+            .notify(&format!("harness acp failed: {error}"));
     });
     child.on_child("error", &on_error);
     let on_close = listener(state, |state, code| exited(state, &code));
