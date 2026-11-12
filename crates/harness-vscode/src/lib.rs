@@ -67,7 +67,7 @@ extern "C" {
     static WINDOW: JsValue;
 
     #[wasm_bindgen(js_namespace = window, js_name = onDidChangeActiveTextEditor)]
-    fn on_did_change_active_text_editor(listener: &Closure<dyn FnMut(JsValue)>) -> JsValue;
+    fn on_did_change_active_text_editor(listener: &Closure<dyn FnMut(JsValue)>) -> Disposable;
     #[wasm_bindgen(js_namespace = window, js_name = showOpenDialog)]
     fn show_open_dialog(options: &Object) -> Promise;
     #[wasm_bindgen(js_namespace = languages, js_name = getDiagnostics)]
@@ -92,11 +92,23 @@ extern "C" {
     #[wasm_bindgen(method, js_name = getText)]
     fn get_text_in(this: &TextDocument, range: &JsValue) -> String;
 
+    /// What a VS Code `on*` registration returns; `dispose` removes the listener.
+    type Disposable;
+    #[wasm_bindgen(method)]
+    fn dispose(this: &Disposable);
+
+    /// A promise from VS Code. Its callbacks are `once_into_js` functions, which free themselves.
+    type Thenable;
+    #[wasm_bindgen(method, js_name = then)]
+    fn then_once(this: &Thenable, on_ok: &JsValue) -> Thenable;
+    #[wasm_bindgen(method, js_name = catch)]
+    fn catch_once(this: &Thenable, on_err: &JsValue) -> Thenable;
+
     type WebviewPanel;
     #[wasm_bindgen(method, getter)]
     fn webview(this: &WebviewPanel) -> Webview;
     #[wasm_bindgen(method, js_name = onDidDispose)]
-    fn on_did_dispose(this: &WebviewPanel, callback: &Closure<dyn FnMut()>);
+    fn on_did_dispose(this: &WebviewPanel, callback: &JsValue);
 
     #[derive(Clone)]
     type Webview;
@@ -109,7 +121,8 @@ extern "C" {
     #[wasm_bindgen(method, js_name = postMessage)]
     fn post_message(this: &Webview, message: &str);
     #[wasm_bindgen(method, js_name = onDidReceiveMessage)]
-    fn on_did_receive_message(this: &Webview, callback: &Closure<dyn FnMut(JsValue)>);
+    fn on_did_receive_message(this: &Webview, callback: &Closure<dyn FnMut(JsValue)>)
+    -> Disposable;
 }
 
 #[wasm_bindgen(module = "fs")]
@@ -130,7 +143,9 @@ extern "C" {
     #[wasm_bindgen(method, getter)]
     fn stderr(this: &ChildProcess) -> Emitter;
     #[wasm_bindgen(method, js_name = on)]
-    fn on_child(this: &ChildProcess, event: &str, callback: &Closure<dyn FnMut(JsValue)>);
+    fn on_child(this: &ChildProcess, event: &str, callback: &JsValue);
+    #[wasm_bindgen(method, js_name = removeListener)]
+    fn off_child(this: &ChildProcess, event: &str, callback: &JsValue);
     #[wasm_bindgen(method)]
     fn kill(this: &ChildProcess) -> bool;
 
@@ -142,7 +157,9 @@ extern "C" {
     #[wasm_bindgen(method, js_name = setEncoding)]
     fn set_encoding(this: &Emitter, encoding: &str);
     #[wasm_bindgen(method)]
-    fn on(this: &Emitter, event: &str, callback: &Closure<dyn FnMut(JsValue)>);
+    fn on(this: &Emitter, event: &str, callback: &JsValue);
+    #[wasm_bindgen(method, js_name = removeListener)]
+    fn off(this: &Emitter, event: &str, callback: &JsValue);
 }
 
 impl Webview {
@@ -156,9 +173,23 @@ struct Panel {
     webview: Webview,
     output: OutputChannel,
     child: Option<ChildProcess>,
+    /// The child's event listeners; they must be removed before their closures drop.
+    listeners: Option<ChildListeners>,
     client: Option<Client>,
     lines: Lines,
     closed: bool,
+    /// Webview and editor registrations, disposed when the panel closes.
+    disposables: Vec<Disposable>,
+    /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
+    closures: Vec<Closure<dyn FnMut(JsValue)>>,
+}
+
+/// The child's listeners. `close` is a once-closure, so it frees itself when it runs.
+struct ChildListeners {
+    stdout: Closure<dyn FnMut(JsValue)>,
+    stderr: Closure<dyn FnMut(JsValue)>,
+    error: Closure<dyn FnMut(JsValue)>,
+    close: JsValue,
 }
 
 impl Panel {
@@ -170,6 +201,19 @@ impl Panel {
             }
         }
     }
+}
+
+/// Unhooks the child's listeners, then kills it. Closures drop only after they are unhooked,
+/// so a late event can't reach a freed closure.
+fn detach(panel: &mut Panel) {
+    let (Some(child), Some(listeners)) = (panel.child.take(), panel.listeners.take()) else {
+        return;
+    };
+    child.stdout().off("data", listeners.stdout.as_ref());
+    child.stderr().off("data", listeners.stderr.as_ref());
+    child.off_child("error", listeners.error.as_ref());
+    child.off_child("close", &listeners.close);
+    child.kill();
 }
 
 type Shared = Rc<RefCell<Panel>>;
@@ -202,9 +246,12 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
         webview: webview.clone(),
         output: output.clone(),
         child: None,
+        listeners: None,
         client: None,
         lines: Lines::default(),
         closed: false,
+        disposables: Vec::new(),
+        closures: Vec::new(),
     }));
 
     let state = shared.clone();
@@ -248,25 +295,37 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
                 .append("ignored an unknown panel message\n"),
         }
     });
-    webview.on_did_receive_message(&on_message);
-    on_message.forget();
+    let on_editor = {
+        let state = shared.clone();
+        Closure::<dyn FnMut(JsValue)>::new(move |_editor: JsValue| post_active(&state))
+    };
+    let message_registration = webview.on_did_receive_message(&on_message);
+    let editor_registration = on_did_change_active_text_editor(&on_editor);
 
     let state = shared.clone();
-    let on_editor = Closure::<dyn FnMut(JsValue)>::new(move |_editor: JsValue| post_active(&state));
-    on_did_change_active_text_editor(&on_editor);
-    // shortcut: the listener outlives the panel and holds its state; upgrade if panels multiply.
-    on_editor.forget();
-
-    let state = shared;
-    let on_dispose = Closure::<dyn FnMut()>::new(move || {
-        let mut panel = state.borrow_mut();
-        panel.closed = true;
-        if let Some(child) = panel.child.take() {
-            child.kill();
+    let on_dispose = Closure::once_into_js(move || {
+        let (disposables, closures) = {
+            let mut panel = state.borrow_mut();
+            panel.closed = true;
+            detach(&mut panel);
+            (
+                std::mem::take(&mut panel.disposables),
+                std::mem::take(&mut panel.closures),
+            )
+        };
+        for registration in disposables {
+            registration.dispose();
         }
+        // Dropping the closures releases their clones of `state`, so the panel can free.
+        drop(closures);
     });
     panel.on_did_dispose(&on_dispose);
-    on_dispose.forget();
+
+    {
+        let mut panel = shared.borrow_mut();
+        panel.disposables = vec![message_registration, editor_registration];
+        panel.closures = vec![on_message, on_editor];
+    }
 
     let script = webview.as_webview_uri(&Uri::join_path(root, "ui/harness_vscode_ui.js"));
     let style = webview.as_webview_uri(&Uri::join_path(root, "ui/ui.css"));
@@ -331,9 +390,9 @@ fn start(state: &Shared) {
             react(state, reaction);
         }
     });
-    child.stdout().on("data", &on_stdout);
+    child.stdout().on("data", on_stdout.as_ref());
     let on_stderr = listener(state, |state, chunk| state.borrow().output.append(&chunk));
-    child.stderr().on("data", &on_stderr);
+    child.stderr().on("data", on_stderr.as_ref());
     // Node emits `error` for a missing binary; unhandled, it would crash the extension host.
     let on_error = listener(state, |state, error| {
         let panel = state.borrow();
@@ -342,15 +401,22 @@ fn start(state: &Shared) {
             .webview
             .notify(&format!("harness acp failed: {error}"));
     });
-    child.on_child("error", &on_error);
-    let on_close = listener(state, |state, code| exited(state, &code));
+    child.on_child("error", on_error.as_ref());
+    let on_close = {
+        let state = state.clone();
+        Closure::once_into_js(move |code: JsValue| exited(&state, &text_of(code)))
+    };
     child.on_child("close", &on_close);
-    for closure in [on_stdout, on_stderr, on_error, on_close] {
-        closure.forget();
-    }
 
     let mut panel = state.borrow_mut();
+    detach(&mut panel);
     panel.child = Some(child);
+    panel.listeners = Some(ChildListeners {
+        stdout: on_stdout,
+        stderr: on_stderr,
+        error: on_error,
+        close: on_close,
+    });
     panel.client = Some(client);
     panel.lines = Lines::default();
 }
@@ -411,7 +477,7 @@ fn add_files(state: &Shared) {
         let panel = state.borrow();
         (panel.webview.clone(), panel.output.clone())
     };
-    let on_picked = Closure::<dyn FnMut(JsValue)>::new(move |picked: JsValue| {
+    let on_picked = Closure::once_into_js(move |picked: JsValue| {
         // The picker resolves to undefined when the user cancels.
         if picked.is_undefined() {
             return;
@@ -429,10 +495,10 @@ fn add_files(state: &Shared) {
         webview.post_message(&protocol::picked_files(&inside).to_string());
     });
     let failed = failure_logger(&output);
-    let _ = show_open_dialog(&options).then(&on_picked).catch(&failed);
-    // Each closure runs once and must outlive its promise, so the host keeps them.
-    on_picked.forget();
-    failed.forget();
+    let _ = show_open_dialog(&options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_picked)
+        .catch_once(&failed);
 }
 
 /// The active editor, if it shows a file on disk.
@@ -531,16 +597,18 @@ fn open_review(review: &Review, output: &OutputChannel) -> Result<(), JsValue> {
     let sides = Array::of2(&old, &new);
     let (failed_open, failed_diff) = (failure_logger(output), failure_logger(output));
     let title = review.title.clone();
-    let on_sides = Closure::<dyn FnMut(JsValue)>::new(move |opened: JsValue| {
+    let on_sides = Closure::once_into_js(move |opened: JsValue| {
         let opened = Array::from(&opened);
         let left = opened.get(0).unchecked_into::<TextDocument>().uri();
         let right = opened.get(1).unchecked_into::<TextDocument>().uri();
-        let _ = execute_command("vscode.diff", &left, &right, &title).catch(&failed_diff);
+        let _ = execute_command("vscode.diff", &left, &right, &title)
+            .unchecked_into::<Thenable>()
+            .catch_once(&failed_diff);
     });
-    let _ = Promise::all(&sides).then(&on_sides).catch(&failed_open);
-    // Each closure runs once and must outlive its promise, so the host keeps it.
-    on_sides.forget();
-    failed_open.forget();
+    let _ = Promise::all(&sides)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_sides)
+        .catch_once(&failed_open);
     Ok(())
 }
 
@@ -554,9 +622,9 @@ fn untitled(text: &str) -> Result<Promise, JsValue> {
 }
 
 /// Logs a failed step of opening a diff to the output channel.
-fn failure_logger(output: &OutputChannel) -> Closure<dyn FnMut(JsValue)> {
+fn failure_logger(output: &OutputChannel) -> JsValue {
     let output = output.clone();
-    Closure::new(move |error: JsValue| {
+    Closure::once_into_js(move |error: JsValue| {
         output.append(&format!("diff review failed: {error:?}\n"));
     })
 }
@@ -579,7 +647,7 @@ fn editor_text(path: &str) -> Option<String> {
 fn exited(state: &Shared, code: &str) {
     {
         let mut panel = state.borrow_mut();
-        panel.child = None;
+        detach(&mut panel);
         panel.client = None;
         if panel.closed {
             return;
@@ -588,24 +656,26 @@ fn exited(state: &Shared, code: &str) {
     }
     let message = format!("Harness exited ({code}). Its log is in the Harness output channel.");
     let state = state.clone();
-    let on_choice = Closure::<dyn FnMut(JsValue)>::new(move |choice: JsValue| {
+    let on_choice = Closure::once_into_js(move |choice: JsValue| {
         if choice.as_string().as_deref() == Some(RESTART) && !state.borrow().closed {
             start(&state);
         }
     });
-    let _ = show_error_with_action(&message, RESTART).then(&on_choice);
-    // One small closure per exit.
-    on_choice.forget();
+    let _ = show_error_with_action(&message, RESTART)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_choice);
+}
+
+/// The text of a Node event argument: a string, a number, or its debug form.
+fn text_of(value: JsValue) -> String {
+    value
+        .as_string()
+        .or_else(|| value.as_f64().map(|number| number.to_string()))
+        .unwrap_or_else(|| format!("{value:?}"))
 }
 
 /// Wraps `handle` as a Node event listener, turning its argument into text.
 fn listener(state: &Shared, handle: fn(&Shared, String)) -> Closure<dyn FnMut(JsValue)> {
     let state = state.clone();
-    Closure::new(move |value: JsValue| {
-        let text = value
-            .as_string()
-            .or_else(|| value.as_f64().map(|number| number.to_string()))
-            .unwrap_or_else(|| format!("{value:?}"));
-        handle(&state, text);
-    })
+    Closure::new(move |value: JsValue| handle(&state, text_of(value)))
 }
