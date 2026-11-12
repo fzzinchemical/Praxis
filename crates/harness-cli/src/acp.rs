@@ -531,7 +531,6 @@ fn replay(message: Message) -> Option<v1::SessionUpdate> {
     }
 }
 
-/// `None` for a turn that failed rather than stopped: the client gets an error instead.
 /// ISO 8601 UTC for `secs` since the Unix epoch, the format ACP's `updated_at` uses.
 fn iso8601(secs: u64) -> String {
     // Howard Hinnant's civil_from_days, so no date crate is needed.
@@ -553,6 +552,7 @@ fn iso8601(secs: u64) -> String {
     )
 }
 
+/// `None` for a turn that failed rather than stopped: the client gets an error instead.
 fn stop_reason(stop: StopReason) -> Option<v1::StopReason> {
     match stop {
         StopReason::EndTurn => Some(v1::StopReason::EndTurn),
