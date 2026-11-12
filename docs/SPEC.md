@@ -603,8 +603,9 @@ The widening items so far are `permissions.allow`, `agent.auto_load = true` and 
 
 ### Sessions
 
-- `~/.local/share/harness/sessions/<id>.jsonl`: one JSON record per line, append-only, mode `0600`. Tolerate a truncated last line on load, since a crash can cause one.
-- Resume (`--resume <id>`) rebuilds history from the log; the system prefix is rebuilt fresh, not logged. A failed log write stops the turn (`LogFailed`) before another request or tool runs.
+- `~/.local/share/harness/sessions/<id>.jsonl`: a header line, then one JSON record per line, append-only, mode `0600`. The header is `{"session":{"workspace":"<canonical path>","started":<Unix seconds, UTC>}}`. Tolerate a truncated last line on load, since a crash can cause one.
+- Session index: listing a workspace's sessions reads each log's header, its mtime (last activity, since logs only grow) and its first user line (the title, trimmed), newest first. Logs with no readable header, or a truncated one, are skipped and belong to no workspace.
+- Resume (`--resume <id>`) rebuilds history from the log; `--resume` with no ID picks the newest session of the current workspace. The system prefix is rebuilt fresh, not logged. A failed log write stops the turn (`LogFailed`) before another request or tool runs.
 - Before any `Write` or `Edit`, save the original in `<id>/checkpoints/`. `/undo` restores the last turn's files. Bash side effects can't be undone, and the UI must say so.
 - Sessions contain source code and tool output. They never leave the machine.
 

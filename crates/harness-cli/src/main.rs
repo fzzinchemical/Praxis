@@ -18,7 +18,7 @@ use harness_core::permissions::{Mode, Policy};
 use harness_core::plugin::{AgentDef, Skill, Store, run_command};
 use harness_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
-use harness_core::session::SessionLog;
+use harness_core::session::{self, SessionLog};
 use harness_core::summary::summarize;
 use harness_core::tools::ToolContext;
 use harness_core::trust::TrustStore;
@@ -51,9 +51,9 @@ struct Cli {
     /// Set a config key for this run, as KEY=VALUE with a dotted key: `agent.auto_load=true`.
     #[arg(long = "config-override", value_name = "KEY=VALUE", global = true)]
     overrides: Vec<String>,
-    /// Continue the session with this id instead of starting a new one.
-    #[arg(long, value_name = "ID")]
-    resume: Option<String>,
+    /// Continue the session with this id, or without one the newest session in this workspace.
+    #[arg(long, value_name = "ID", num_args = 0..=1)]
+    resume: Option<Option<String>>,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -652,21 +652,32 @@ async fn list_models(provider: &Provider) -> Result<u8> {
 }
 
 /// Sessions are logged when a data directory can be found (SPEC §8).
-fn with_session(agent: Agent, resume: Option<&str>) -> Result<Agent> {
+fn with_session(agent: Agent, resume: Option<Option<&str>>, workspace: &Path) -> Result<Agent> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("No HOME or XDG_DATA_HOME, so this session isn't saved.");
         return Ok(agent);
     };
     let (log, prior) = match resume {
-        Some(id) => SessionLog::resume(&dir, id)
-            .map_err(|e| anyhow::anyhow!("can't resume session `{}`: {e}", sanitize(id)))?,
-        None => (SessionLog::create(&dir)?, Vec::new()),
+        Some(Some(id)) => resume_log(&dir, id)?,
+        Some(None) => {
+            let newest = session::list(&dir, workspace)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("no earlier session in this workspace to resume"))?;
+            resume_log(&dir, &newest.id)?
+        }
+        None => (SessionLog::create(&dir, workspace)?, Vec::new()),
     };
     eprintln!("Session {}", log.id());
     agent
         .tools()
         .checkpoint_into(dir.join(log.id()).join("checkpoints"));
     Ok(agent.with_session(log, prior))
+}
+
+fn resume_log(dir: &Path, id: &str) -> Result<(SessionLog, Vec<Message>)> {
+    SessionLog::resume(dir, id)
+        .map_err(|e| anyhow::anyhow!("can't resume session `{}`: {e}", sanitize(id)))
 }
 
 /// The ACP model picker: the models `list_models` reported at startup, loaded on demand.
@@ -828,6 +839,7 @@ async fn run(
         models: models.clone(),
         default,
     };
+    let session_workspace = workspace.clone();
     let new_agent = move || {
         let tools = Arc::new(tool_context(&workspace, &config)?);
         let agent = Agent::new(provider.clone(), tools, agent_config.clone())
@@ -842,7 +854,8 @@ async fn run(
     if acp {
         return serve_acp(Box::new(new_agent), picker).await;
     }
-    let agent = with_session(new_agent()?, cli.resume.as_deref())?;
+    let resume = cli.resume.as_ref().map(Option::as_deref);
+    let agent = with_session(new_agent()?, resume, &session_workspace)?;
     match prompt {
         Some(prompt) => {
             let prompt = run_command(&plugins.commands, &prompt).unwrap_or(prompt);

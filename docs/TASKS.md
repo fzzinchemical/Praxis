@@ -503,7 +503,7 @@ flowchart TB
   - **Needs:** T5.3, T3.2.
   - **Done when:** tests confirm `/plan` can't write or run anything, and carrying out a plan needs a separate action from the developer. It also works in the REPL.
 
-- [ ] **T5.10 Session index** (§8) · *Should*
+- [x] **T5.10 Session index** (§8) · *Should*
   - **Needs:** T3.7.
   - **Do:** record each session's workspace root, start and last-activity time (UTC) and a title (the first user prompt, trimmed) in a first header line of the log; list sessions for one workspace, newest first, reading headers only. Logs without a header still load and list under no workspace.
   - **Done when:** tests confirm listing filters by canonical workspace path, orders by last activity, skips a truncated or headerless log without failing, and `harness --resume` with no ID picks from this workspace's sessions only.

@@ -717,7 +717,7 @@ async fn resuming_a_session_sends_the_same_history() {
         text_reply("done"),
     ];
     let mut first = Harness::in_workspace(workspace.clone(), script, 50).await;
-    let log = SessionLog::create(&dir).unwrap();
+    let log = SessionLog::create(&dir, &workspace).unwrap();
     let id = log.id().to_owned();
     first.agent = Some(first.agent.take().unwrap().with_session(log, Vec::new()));
     first

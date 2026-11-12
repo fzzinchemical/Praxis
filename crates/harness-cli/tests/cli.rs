@@ -625,3 +625,40 @@ async fn enabled_plugins_add_skills_commands_and_blocking_hooks() {
     assert!(second.contains("blocked-by-hook"), "{second}");
     assert!(!second.contains("file-content-marker"), "{second}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn bare_resume_continues_the_newest_session_of_this_workspace_only() {
+    let server = server(
+        Some(32768),
+        Replies(vec![text_reply("a"), text_reply("b"), text_reply("c")]),
+    )
+    .await;
+    let root = workspace();
+    let (here, there) = (root.join("here"), root.join("there"));
+    fs::create_dir_all(&here).unwrap();
+    fs::create_dir_all(&there).unwrap();
+
+    let first = command(&server.uri(), &root, &["--model", "m", "first here"])
+        .current_dir(&here)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(first.status.code(), Some(0), "{}", err(&first));
+    let other = command(&server.uri(), &root, &["--model", "m", "first there"])
+        .current_dir(&there)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(other.status.code(), Some(0), "{}", err(&other));
+    let resumed = command(&server.uri(), &root, &["--model", "m", "again", "--resume"])
+        .current_dir(&here)
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(resumed.status.code(), Some(0), "{}", err(&resumed));
+
+    let chats = requests_to(&server, CHAT).await;
+    let sent = chats[2]["messages"].to_string();
+    assert!(sent.contains("first here"), "{sent}");
+    assert!(!sent.contains("first there"), "{sent}");
+}

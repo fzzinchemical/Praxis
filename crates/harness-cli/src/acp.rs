@@ -80,7 +80,10 @@ impl<M: Models> Server<M> {
     ) -> anyhow::Result<(String, Vec<Message>, String)> {
         let (log, prior) = match resume {
             Some(id) => SessionLog::resume(&self.sessions_dir, id)?,
-            None => (SessionLog::create(&self.sessions_dir)?, Vec::new()),
+            None => (
+                SessionLog::create(&self.sessions_dir, &std::env::current_dir()?)?,
+                Vec::new(),
+            ),
         };
         let id = log.id().to_owned();
         let agent = (self.new_agent)()?;
