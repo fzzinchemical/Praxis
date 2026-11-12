@@ -710,6 +710,7 @@ flowchart LR
 - [ ] **T8.8 Orchestrator workflow** ([ADR 0005](adr/0005-orchestrator-model-delegates-to-local-workers.md)) · *Should*
   - **Needs:** T8.6.
   - **Done when:** on the fake server, an orchestrator session delegates two steps to a worker on another model, and only the workers' reports enter its history; the same test passes with the orchestrator on `anthropic/` and on `lmstudio/`; a worker can't use a tool the session denies; and an eval run records success, wall time and model swaps for a local orchestrator with a local worker.
+  - **Remains:** the `anthropic/` orchestrator run (blocked by T8.3); the built-in orchestrator profile (ADR 0005 consequences); eval runs in orchestrated mode (the runner records `model_swaps`, but no task sets a worker yet) and the live run the owner executes.
 
 - [x] **T8.9 Built-in general agent** (§12) · *Should*
   - **Needs:** T6.5.

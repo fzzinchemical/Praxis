@@ -27,7 +27,7 @@ use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -187,6 +187,15 @@ pub struct Agent {
     agents: Vec<AgentDef>,
     /// A subagent's `tools` and `disallowedTools`, also applied to `CallTool`'s inner names.
     limits: Option<(Option<Vec<String>>, Vec<String>)>,
+    /// Shared with subagents, so a session tree counts every switch of model (ADR 0005).
+    swaps: Arc<Mutex<ModelSwaps>>,
+}
+
+/// The model of the last request in a session tree, and how often the next one differed.
+#[derive(Default)]
+struct ModelSwaps {
+    last: Option<String>,
+    count: u32,
 }
 
 /// What one model request produced before it ended.
@@ -251,6 +260,7 @@ impl Agent {
             mcp_index: String::new(),
             agents: Vec::new(),
             limits: None,
+            swaps: Arc::default(),
         }
     }
 
@@ -355,6 +365,7 @@ impl Agent {
             }
             child.mcp.clone_from(&self.mcp);
             child.hooks.clone_from(&self.hooks);
+            child.swaps = Arc::clone(&self.swaps);
             child.reassemble_prefix();
 
             let (tx, mut rx) = mpsc::channel(16);
@@ -510,6 +521,15 @@ impl Agent {
     /// no cached tokens, so a short time on a long prompt is the prefix-cache signal (SPEC §7).
     pub fn first_token_ms(&self) -> &[u64] {
         &self.first_token_ms
+    }
+
+    /// Times a request in this session or its subagents named a different model than the request
+    /// before it. Each one can make LM Studio unload a model and load another (ADR 0005).
+    pub fn model_swaps(&self) -> u32 {
+        self.swaps
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .count
     }
 
     /// The conversation so far, for the turn summary (T5.7).
@@ -856,6 +876,17 @@ impl Agent {
 
     async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {
         let profile = &self.config.profile;
+        {
+            let mut swaps = self.swaps.lock().unwrap_or_else(PoisonError::into_inner);
+            if swaps
+                .last
+                .as_ref()
+                .is_some_and(|last| *last != self.config.model)
+            {
+                swaps.count += 1;
+            }
+            swaps.last = Some(self.config.model.clone());
+        }
         let quiet = constrained.is_some();
         let request = self.chat_request(constrained);
         let mut reply = Reply {

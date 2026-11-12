@@ -854,3 +854,112 @@ async fn the_general_agent_obeys_session_deny_rules() {
     assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
     assert!(!workspace.join("x").exists());
 }
+
+/// Serves the LM Studio model list that a worker on `worker` needs to load.
+async fn serve_worker_model(server: &MockServer) {
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [{
+            "key": "worker",
+            "loaded_instances": [{"id": "worker-1", "config": {"context_length": 100_000}}]
+        }]})))
+        .mount(server)
+        .await;
+}
+
+fn lmstudio_worker(name: &str, disallowed: Vec<String>) -> harness_core::plugin::AgentDef {
+    harness_core::plugin::AgentDef {
+        skill: harness_core::plugin::Skill {
+            name: name.into(),
+            description: "Does one step".into(),
+            body: "You do one step.".into(),
+        },
+        tools: None,
+        disallowed_tools: disallowed,
+        max_turns: Some(5),
+        model: Some(harness_core::config::ModelRef {
+            backend: harness_core::config::Backend::LmStudio,
+            model: "worker".into(),
+        }),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_orchestrator_delegates_two_steps_and_keeps_only_the_reports() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:step", "prompt": "step one"}),
+        )]),
+        text_reply("report one"),
+        tool_reply(&[(
+            "p2",
+            "Agent",
+            json!({"subagent_type": "kit:step", "prompt": "step two"}),
+        )]),
+        text_reply("report two"),
+        text_reply("both steps are done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    serve_worker_model(&h.server).await;
+    let step = lmstudio_worker("kit:step", vec![]);
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![step]));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let models: Vec<Value> = requests
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST)
+        .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
+        .collect();
+    assert_eq!(models, ["m", "worker-1", "m", "worker-1", "m"]);
+    // Only the two reports come back; neither worker's transcript reaches the orchestrator.
+    // Requests: parent, model list, worker, parent, model list, worker, parent.
+    let parent = h.request_messages(6).await;
+    let contents: Vec<&Value> = parent.iter().map(|m| &m["content"]).collect();
+    assert_eq!(parent.len(), 6, "{contents:?}");
+    assert_eq!(parent[3]["content"], "report one");
+    assert_eq!(parent[5]["content"], "report two");
+    assert!(
+        !contents
+            .iter()
+            .any(|c| c.as_str() == Some("You do one step."))
+    );
+    assert_eq!(h.agent.as_ref().unwrap().model_swaps(), 4);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_worker_on_another_model_obeys_the_session_deny_rules() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:step", "prompt": "write"}),
+        )]),
+        tool_reply(&[("s1", "Write", json!({"file_path": "x", "content": "y"}))]),
+        text_reply("refused"),
+        text_reply("done"),
+    ];
+    let workspace = new_workspace();
+    let policy = harness_core::permissions::Policy::new(
+        harness_core::permissions::Mode::Ask,
+        &[],
+        &["Write".to_owned()],
+    )
+    .unwrap();
+    let mut h = Harness::with_policy(workspace.clone(), script, 50, policy).await;
+    serve_worker_model(&h.server).await;
+    let step = lmstudio_worker("kit:step", vec![]);
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![step]));
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            panic!("a denied call must not ask")
+        })
+        .await;
+
+    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(!workspace.join("x").exists());
+}

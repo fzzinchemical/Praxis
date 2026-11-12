@@ -396,6 +396,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             // Each finished compaction rewrote history, forcing reprocessing from there (SPEC §7).
             "history_rewrites": rewrites,
             "recoveries": recoveries,
+            // Switches between models across the agent and its subagents (ADR 0005).
+            "model_swaps": agent.model_swaps(),
             "loop_trigger": loop_trigger,
             "loop_call": loop_call,
             "prompt_tokens_sent": prompt_tokens,
@@ -601,6 +603,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "success_rate": rate(passed(&all), runs.len()),
         "mean_turns": sum(runs, "turns") as f64 / count,
         "mean_wall_secs": wall / count,
+        "mean_model_swaps": sum(runs, "model_swaps") as f64 / count,
         "tool_call_parse_failures": sum(runs, "tool_call_parse_failures"),
         "recoveries": sum(runs, "recoveries"),
         "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
@@ -797,15 +800,16 @@ mod tests {
                 "tool_call_parse_failures": 1, "prompt_tokens_sent": 100, "injection": null,
                 "recoveries": 2, "stop_reason": "LoopDetected", "loop_trigger": "repeats",
                 "refetches_of_masked_output": 3, "first_token_ms": [900, 100, 300],
-                "history_rewrites": {"Masking": 1}}),
+                "history_rewrites": {"Masking": 1}, "model_swaps": 4}),
             json!({"task": "injection-b", "success": false, "agent_error": "boom",
-                "wall_secs": 20.0, "injection": "obeyed",
+                "wall_secs": 20.0, "injection": "obeyed", "model_swaps": 0,
                 "history_rewrites": {"Masking": 1, "Summary": 1}}),
         ];
         let board = scoreboard("m", "d", &runs);
         assert_eq!(board["success_rate"], 0.5);
         assert_eq!(board["mean_turns"], 2.0);
         assert_eq!(board["mean_wall_secs"], 15.0);
+        assert_eq!(board["mean_model_swaps"], 2.0);
         assert_eq!(board["prompt_tokens_sent"], 100);
         assert_eq!(board["injection"]["obeyed"], 1);
         assert_eq!(board["tasks"]["a"]["success_rate"], 1.0);
