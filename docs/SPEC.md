@@ -121,7 +121,6 @@ Verified latest versions on 2026-11-06. Use the current compatible release at T0
 | `directories` | 6 | XDG paths |
 | `sha2` | 0.11 | Trust hashes |
 | `landlock` | 0.4 | Sandbox |
-| `tree-sitter` + grammar crates | 0.27 | Repo map |
 | `wasm-bindgen`, `js-sys`, `web-sys`, `wasm-bindgen-futures` | Pin to the installed CLI | Extension |
 | `leptos` (CSR) | 0.8 | Webview UI, not yet tried: T0.6 used `web-sys` directly |
 | `pulldown-cmark` | 0.13 | Markdown in the webview |
@@ -369,7 +368,7 @@ Mapping rules:
 | `Grep` | `pattern`, `path?`, `glob?`, `output_mode?`, `-i?`, `multiline?` | allow in workspace |
 | `Glob` | `pattern`, `path?` | allow in workspace |
 
-Later additions: `RepoMap` (T2.8), `Skill` (T6.2), `ToolSearch` and `CallTool` (T4.4).
+Later additions: `Skill` (T6.2), `ToolSearch` and `CallTool` (T4.4).
 
 ```rust
 pub struct ToolOutput { pub content: String, pub is_error: bool, pub structured: serde_json::Value }
@@ -499,6 +498,8 @@ In indexed mode, permissions, hooks and logs act on the **inner** tool name, nev
 ### Repo map
 
 Tree-sitter extracts symbols (file, signature, line). Respect `.gitignore`, cache by mtime, and fit a byte budget, preferring files near recent edits. It's exposed as a tool so the prefix stays stable. Start with Rust, Python, TypeScript, Go and C/C++.
+
+**Cut (2026-11-12):** T2.8 added 40% more prompt tokens with no gain in success, so it isn't built. `tree-sitter` stays out of the dependencies.
 
 ## 8. Config, trust and sessions
 

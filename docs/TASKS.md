@@ -250,10 +250,11 @@ flowchart LR
   - **Needs:** T1.7.
   - **Done when:** tests cover each trigger, including one where legitimately repeated calls with different arguments do not trigger it.
 
-- [ ] **T2.8 Repo map** (§7) · *Should*
+- [x] ~~**T2.8 Repo map**~~ (§7) · *Should* · **Cut (2026-11-12)**
   - **Needs:** T2.4.
   - **Done when:** symbols are extracted for each starting language, `.gitignore` is respected, the budget holds, and eval tokens drop on the rename task without losing success.
   - **Result so far (2026-11-11):** the tool and its tests are on branch `feat/t2-8-repo-map`, unmerged. On both rename tasks, one run each with seed 42, success stayed 4/4 but prompt tokens rose from 124k to 173k (+40%) against main (`evals/results/*.rename-{main,repomap}.json`). The fixture repos have three or four files, so the extra tool schema costs more than a map saves; a larger repo is needed before deciding whether to keep, change or cut the task.
+  - **Decision (2026-11-12):** the owner cut it. The branch was deleted; commit `0107b65` holds the code if it's ever revisited.
 
 - [x] **T2.9 M2 checkpoint** `HUMAN` reviews
   - **Needs:** T2.1-T2.6.
