@@ -595,7 +595,7 @@ flowchart TD
 | `allow` rules, wider mode | Ignored with a notice |
 | MCP servers, hooks, plugins | Not started |
 | `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
-| `AGENTS.md` | Loaded as context; it can't grant anything |
+| `AGENTS.md`, `CLAUDE.md`, rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
 
 Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
 
@@ -914,6 +914,36 @@ Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/
 ### Skills
 
 The prompt has an index of `name: description`, frozen at session start and subject to the budget. The `Skill` tool returns the body on demand, as an appended message. Substitute `$ARGUMENTS` (`UNVERIFIED` for the full list of substitutions; see Claude Code's skills doc).
+
+### Markdown sources outside plugins
+
+Decided in [ADR 0007](adr/0007-markdown-sources-like-claude-code.md). Project markdown is untrusted context: it never grants permissions, starts processes or enables a backend.
+
+**Memory files**, in prefix order (broadest first, nearest last):
+
+1. User: `~/.claude/CLAUDE.md`, then `~/.config/harness/AGENTS.md` (or under `$XDG_CONFIG_HOME`).
+2. Each directory from the workspace root down to cwd: `CLAUDE.md` or `.claude/CLAUDE.md`, then `CLAUDE.local.md`. `AGENTS.md` is read only if no `CLAUDE.md` exists in the workspace (Claude Code's default). Never above the workspace root.
+3. Rules without a `paths` field: `~/.claude/rules/**/*.md`, `~/.config/harness/rules/**/*.md`, then `.claude/rules/**/*.md` and `.harness/rules/**/*.md`.
+
+All of them sit in the frozen prefix under the existing budget, trimmed broadest-first with a warning. Block-level HTML comments outside code are stripped.
+
+**Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/harness/`; otherwise it's skipped with a warning.
+
+**Nested memory** (*Should*): the first time `Read`, `Write` or `Edit` touches a file under a subdirectory of cwd, that directory's memory file, and any rule whose `paths` glob matches the file, is appended as a message. Each is loaded once per session.
+
+**Skills, commands and agents:**
+
+| Kind | User | Project | Name |
+|---|---|---|---|
+| Skills | `~/.claude/skills/<name>/SKILL.md`, `~/.config/harness/skills/` | `.claude/skills/`, `.harness/skills/` | `name` field, else directory |
+| Commands | `~/.claude/commands/**/*.md`, `~/.config/harness/commands/` | `.claude/commands/`, `.harness/commands/` | File stem; subdirectories join with `:` (`frontend/component.md` is `frontend:component`) |
+| Agents | `~/.claude/agents/**/*.md`, `~/.config/harness/agents/` | `.claude/agents/`, `.harness/agents/` | `name` field |
+
+- Skills and commands share one namespace, invoked as `/<name>` in the CLI. A skill beats a command of the same name. On a clash, user beats project for skills and commands, and project beats user for agents (Claude Code's order). `.harness/` beats `.claude/` at the same level, so a harness-only override is possible. Plugin entries stay namespaced and never clash. A standalone agent named `general` is an error, as for plugins.
+- Frontmatter read: `name`, `description`, `when_to_use` (appended to the description), `argument-hint`, `disable-model-invocation` (left out of the index), `user-invocable: false` (no `/` command), `model`; agents also take `tools`, `disallowedTools`, `maxTurns` as in §12. `allowed-tools`, `permissionMode`, `hooks`, `mcpServers` and `` !`cmd` `` injection warn and are ignored. Other unknown fields are ignored silently, as in Claude Code.
+- Substitutions in skill and command bodies: `$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` (0-based, split like a shell), `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_SESSION_ID}`; `\$` escapes. With no placeholder, `ARGUMENTS: <value>` is appended.
+- **Settings:** `~/.claude/settings.json` sits just below the user layer and `.claude/settings.json` plus `.claude/settings.local.json` just below the project layer (§8). Only `permissions.allow`, `permissions.deny` and `hooks` are read, in Claude Code's rule syntax, which §9 already uses; other keys are ignored without a warning, because they're Claude Code's own. Project allow rules and hooks are widening items for the trust gate.
+- Unreadable or malformed files are skipped with a warning naming the path; never fail silently.
 
 ### Hooks
 

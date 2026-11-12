@@ -16,8 +16,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M6** | [Plugins](#m6-plugins) | 7 | An unmodified Claude Code plugin works. |
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
+| **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
 
-74 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+82 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -713,3 +714,75 @@ flowchart LR
 - [x] **T8.9 Built-in general agent** (§12) · *Should*
   - **Needs:** T6.5.
   - **Done when:** a session with no plugins offers the `Agent` tool listing `general`; on the fake server a `general` call runs in a fresh history with every session tool except `Agent` and `Skill` and returns its last reply; session deny rules still apply to its calls; and a plugin agent named `general` fails to load with an error naming the plugin.
+
+---
+
+## M9: Markdown sources
+
+> A repository and user setup made for Claude Code work unchanged; `.claude/` compatibility comes first ([ADR 0007](adr/0007-markdown-sources-like-claude-code.md)). Each task reuses the plugin markdown parser in `plugin.rs`.
+
+```mermaid
+flowchart LR
+    T9_1["T9.1<br/>Memory file hierarchy"]
+    T9_2["T9.2<br/>Memory imports"]
+    T9_3["T9.3<br/>Nested memory"]
+    T9_4["T9.4<br/>Standalone skills and commands"]
+    T9_5["T9.5<br/>Standalone agents"]
+    T9_6["T9.6<br/>Path-scoped rules"]
+    T9_7["T9.7<br/>Skill frontmatter and substitutions"]
+    T9_8["T9.8<br/>Claude Code settings"]
+    T3_5(["T3.5"])
+    T6_3(["T6.3"])
+    T3_6(["T3.6"])
+    T6_2(["T6.2"])
+    T6_5(["T6.5"])
+    T8_9(["T8.9"])
+    T3_6 -.-> T9_1
+    T9_1 --> T9_2
+    T9_1 --> T9_3
+    T6_2 -.-> T9_4
+    T9_4 --> T9_5
+    T6_5 -.-> T9_5
+    T8_9 -.-> T9_5
+    T9_3 --> T9_6
+    T9_4 --> T9_7
+    T3_5 -.-> T9_8
+    T6_3 -.-> T9_8
+
+    classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
+    class T9_1,T9_2,T9_3,T9_4,T9_5,T9_6,T9_7,T9_8 task
+    class T3_6,T6_2,T6_5,T8_9,T3_5,T6_3 other
+```
+
+- [ ] **T9.1 Memory file hierarchy** (§7, §12) · *Should*
+  - **Needs:** T3.6.
+  - **Done when:** a test workspace with `~/.claude/CLAUDE.md`, a root `CLAUDE.md` and `CLAUDE.local.md`, `.claude/CLAUDE.md` in cwd's parent and a root `AGENTS.md` yields the prefix in §12 order with `AGENTS.md` left out; without any `CLAUDE.md`, `AGENTS.md` loads (existing T3.6 test still passes); a file above the workspace root is not read; over budget, the broadest file is trimmed first with a warning; un-pathed rules load; the prefix test still passes.
+
+- [ ] **T9.2 Memory imports** (§12) · *Should*
+  - **Needs:** T9.1.
+  - **Done when:** `@path` imports expand relative to the importing file to four hops; a fifth hop and a cycle stop; `@x` inside a code span or fenced block stays literal; `@../../outside.md` and a symlink out of the workspace are skipped with a warning (hostile fixture extended).
+
+- [ ] **T9.3 Nested memory** (§7, §12) · *Should*
+  - **Needs:** T9.1.
+  - **Done when:** on the fake server, the first `Read` of `sub/a.rs` appends `sub/AGENTS.md` as a message, a second `Read` in `sub/` doesn't append it again, and consecutive request bodies still share the prefix.
+
+- [ ] **T9.4 Standalone skills and commands** (§12) · *Should*
+  - **Needs:** T6.2.
+  - **Done when:** skills and commands from `~/.claude/`, `~/.config/harness/`, `.claude/` and `.harness/` appear in the index and run as `/<name>` with `$ARGUMENTS`; nested command directories give `a:b` names; every precedence rule in §12 has a test; a project skill with `allowed-tools` and `` !`cmd` `` warns and runs nothing.
+
+- [ ] **T9.5 Standalone agents** (§12) · *Should*
+  - **Needs:** T9.4, T6.5, T8.9.
+  - **Done when:** agents from user and project directories are offered through `Agent` with project beating user; `permissionMode`, `hooks` and `mcpServers` warn and grant nothing; a standalone `general` is a load error naming its path; an unresolved `model` skips the agent as for plugins.
+
+- [ ] **T9.6 Path-scoped rules** (§12) · *Could*
+  - **Needs:** T9.3.
+  - **Done when:** a rule with `paths: ["src/**/*.rs"]` is appended the first time a matching file is touched and never for a non-matching one; comma-string and list forms both parse.
+
+- [ ] **T9.7 Skill frontmatter and substitutions** (§12) · *Should*
+  - **Needs:** T9.4.
+  - **Done when:** table tests cover `$ARGUMENTS[N]`, `$N`, `\$1`, the appended `ARGUMENTS:` line, `${CLAUDE_SKILL_DIR}` and friends, `when_to_use`, `disable-model-invocation` (absent from the index) and `user-invocable: false` (no `/` command), for plugin and standalone skills alike.
+
+- [ ] **T9.8 Claude Code settings** (§8, §9, §12) · *Should*
+  - **Needs:** T3.5, T6.3.
+  - **Done when:** `permissions.allow`/`deny` and `hooks` from `~/.claude/settings.json` apply; those from `.claude/settings.json` and `settings.local.json` are trust-gate items (deny applied at once, allow and hooks only after approval; hostile fixture extended); other keys are ignored silently; a malformed file is a config error naming the file.

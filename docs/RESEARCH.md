@@ -109,6 +109,22 @@ Risk labels are rule-based (paths such as CI, dependencies and auth). They only 
 
 ---
 
+## Claude Code's markdown files
+
+Checked 2026-11-12 against the [memory](https://code.claude.com/docs/en/memory.md), [skills](https://code.claude.com/docs/en/skills.md) and [subagents](https://code.claude.com/docs/en/sub-agents.md) docs. These formats belong to Claude Code and change often; re-check before implementing.
+
+| Area | Claude Code | Harness ([ADR 0007](adr/0007-markdown-sources-like-claude-code.md)) |
+|---|---|---|
+| Memory locations | Managed, `~/.claude/CLAUDE.md`, every ancestor of cwd up to `/`, `CLAUDE.local.md`; subdirectories lazily | Same, except no managed file and nothing above the workspace root |
+| `AGENTS.md` | Read only when no `CLAUDE.md` exists | Same |
+| Imports | `@path`, four hops, skipped in code; outside-cwd imports need approval | Same syntax and depth; outside imports are skipped |
+| Rules | `.claude/rules/**/*.md`, `paths` globs | Same, plus `~/.config/harness/rules/` and `.harness/rules/` |
+| Skills and commands | Merged namespace; enterprise > personal > project; many frontmatter fields, `` !`cmd` `` injection, `context: fork` | Same namespace and order; subset of fields; no injection or fork |
+| Agents | Managed > CLI > project > user > plugin; `permissionMode`, `hooks`, `mcpServers`, `memory`, `isolation` and more | Project > user > plugin; §12 fields only |
+| Settings | `permissions`, `hooks` and many more in `settings.json` | `permissions` and `hooks` only; project ones through the trust gate |
+
+Not confirmed: whether local Claude Code expands `@file` inside skill bodies (docs only mention it for synced skills), so the harness doesn't.
+
 ## Sources
 
 Status is as listed on each paper's page on 2026-11-06.
