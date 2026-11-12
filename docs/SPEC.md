@@ -781,7 +781,7 @@ sequenceDiagram
 
 | Direction | Methods |
 |---|---|
-| Implement | `initialize`, `authenticate` (no-op: no auth methods), `session/new`, `session/load`, `session/prompt`, `session/cancel`, `session/set_mode` |
+| Implement | `initialize`, `authenticate` (no-op: no auth methods), `session/new`, `session/load`, `session/list`, `session/prompt`, `session/cancel`, `session/set_mode` |
 | Send | `session/update`, `session/request_permission` |
 | Use if advertised | `fs/read_text_file` (so `Read` sees unsaved editor buffers) |
 
@@ -808,7 +808,7 @@ Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-k
 
 Handlers run inside the connection's dispatch loop, and awaiting a client response in one deadlocks. The `session/prompt` handler spawns its work and keeps the responder.
 
-So far (T5.1): `session/set_mode` isn't implemented, sessions run in the launch directory whatever `cwd` says, `mcpServers` from the client are ignored, only text prompt blocks reach the model, `notice` always falls back to a message chunk and compaction isn't shown. `session/load` replays user and assistant text only. Turns that end in a provider or log failure, or a detected loop, answer with a JSON-RPC error rather than a stop reason.
+So far (T5.1): `session/set_mode` isn't implemented, sessions run in the launch directory whatever `cwd` says, `mcpServers` from the client are ignored, only text prompt blocks reach the model, `notice` always falls back to a message chunk and compaction isn't shown. `session/load` replays user and assistant text only. `session/list` (T5.11) needs a `cwd` and returns only that workspace's sessions, with the first prompt as `title` and the log's mtime as ISO 8601 `updatedAt`; it advertises `sessionCapabilities.list`, uses the stable v1 schema (no unstable feature), and does no pagination (`nextCursor` is always null). Turns that end in a provider or log failure, or a detected loop, answer with a JSON-RPC error rather than a stop reason.
 
 ### Developer experience requirements
 

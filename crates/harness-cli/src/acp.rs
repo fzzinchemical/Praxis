@@ -6,7 +6,7 @@ use agent_client_protocol::{
 };
 use harness_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome};
 use harness_core::provider::Message;
-use harness_core::session::SessionLog;
+use harness_core::session::{self, SessionLog};
 use harness_core::tools::EditorReader;
 use harness_core::tools::FileDiff;
 use std::collections::HashMap;
@@ -151,7 +151,8 @@ pub fn agent(
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
     });
-    let (for_init, for_new, for_load, for_prompt, for_cancel, for_set) = (
+    let (for_init, for_new, for_load, for_list, for_prompt, for_cancel, for_set) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -165,7 +166,11 @@ pub fn agent(
             async move |req: v1::InitializeRequest, responder, _cx| {
                 let reads = req.client_capabilities.fs.read_text_file;
                 for_init.client_reads.store(reads, Ordering::Relaxed);
-                let capabilities = v1::AgentCapabilities::new().load_session(true);
+                let list = v1::SessionListCapabilities::new();
+                let sessions = v1::SessionCapabilities::new().list(list);
+                let capabilities = v1::AgentCapabilities::new()
+                    .load_session(true)
+                    .session_capabilities(sessions);
                 responder.respond(
                     v1::InitializeResponse::new(req.protocol_version)
                         .agent_capabilities(capabilities),
@@ -209,6 +214,31 @@ pub fn agent(
                 }
                 let options = option.map(|option| vec![option]);
                 responder.respond(v1::LoadSessionResponse::new().config_options(options))
+            },
+            on_receive_request!(),
+        )
+        // shortcut: reads every log's header on the dispatch loop, fine for a few hundred sessions.
+        .on_receive_request(
+            async move |req: v1::ListSessionsRequest, responder, _cx| {
+                let Some(cwd) = req.cwd else {
+                    let error = Error::invalid_params().data("session/list needs a cwd");
+                    return responder.respond_with_error(error);
+                };
+                match session::list(&for_list.sessions_dir, &cwd) {
+                    Ok(infos) => {
+                        let sessions = infos
+                            .into_iter()
+                            .map(|info| {
+                                let title = Some(info.title).filter(|t| !t.is_empty());
+                                v1::SessionInfo::new(info.id, cwd.clone())
+                                    .title(title)
+                                    .updated_at(iso8601(info.last_active))
+                            })
+                            .collect();
+                        responder.respond(v1::ListSessionsResponse::new(sessions))
+                    }
+                    Err(e) => responder.respond_with_internal_error(format!("{e:#}")),
+                }
             },
             on_receive_request!(),
         )
@@ -502,6 +532,27 @@ fn replay(message: Message) -> Option<v1::SessionUpdate> {
 }
 
 /// `None` for a turn that failed rather than stopped: the client gets an error instead.
+/// ISO 8601 UTC for `secs` since the Unix epoch, the format ACP's `updated_at` uses.
+fn iso8601(secs: u64) -> String {
+    // Howard Hinnant's civil_from_days, so no date crate is needed.
+    let days = (secs / 86_400) as i64 + 719_468;
+    let era = days.div_euclid(146_097);
+    let doe = days - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    let rem = secs % 86_400;
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
+}
+
 fn stop_reason(stop: StopReason) -> Option<v1::StopReason> {
     match stop {
         StopReason::EndTurn => Some(v1::StopReason::EndTurn),
@@ -880,6 +931,106 @@ mod tests {
                 "loaded"
             ]
         );
+    }
+
+    /// Writes one log per workspace, each with a first prompt, and returns the sessions dir and
+    /// the id of the log for `ws_a`.
+    fn two_workspaces(dir: &Path) -> (PathBuf, String) {
+        let (ws_a, ws_b) = (dir.join("a"), dir.join("b"));
+        for ws in [&ws_a, &ws_b, &dir.join("empty")] {
+            std::fs::create_dir_all(ws).unwrap();
+        }
+        let sessions = dir.join("sessions");
+        let mut mine = SessionLog::create(&sessions, &ws_a).unwrap();
+        let id = mine.id().to_owned();
+        mine.append(&Message::User {
+            content: "hello a".into(),
+        })
+        .unwrap();
+        let mut theirs = SessionLog::create(&sessions, &ws_b).unwrap();
+        theirs
+            .append(&Message::User {
+                content: "hello b".into(),
+            })
+            .unwrap();
+        (sessions, id)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn session_list_returns_only_the_given_workspaces_sessions() {
+        let dir = temp_dir("list");
+        let (_, mine) = two_workspaces(&dir);
+        let server = fake_server().await;
+        let run = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let list = v1::ListSessionsRequest::new().cwd(dir.join("a"));
+                let listed = cx.send_request(list).block_task().await?;
+                assert_eq!(listed.sessions.len(), 1);
+                let info = &listed.sessions[0];
+                assert_eq!(info.session_id.to_string(), mine);
+                assert_eq!(info.title.as_deref(), Some("hello a"));
+                assert_eq!(
+                    info.updated_at.as_deref().map(|t| t.ends_with('Z')),
+                    Some(true)
+                );
+                let other = v1::ListSessionsRequest::new().cwd(dir.join("empty"));
+                let none = cx.send_request(other).block_task().await?;
+                assert!(none.sessions.is_empty());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loading_a_listed_session_replays_it_into_a_fresh_view() {
+        let dir = temp_dir("list-load");
+        two_workspaces(&dir);
+        let server = fake_server().await;
+        let log = Log::default();
+        let on_update = log.clone();
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    let text = update["content"]["text"].as_str().unwrap_or_default();
+                    push(&on_update, format!("{} {text}", update["sessionUpdate"]));
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let list = v1::ListSessionsRequest::new().cwd(dir.join("a"));
+                let listed = cx.send_request(list).block_task().await?;
+                let id = listed.sessions[0].session_id.clone();
+                cx.send_request(v1::LoadSessionRequest::new(id, &dir))
+                    .block_task()
+                    .await?;
+                push(&log, "loaded".into());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            *log.lock().unwrap(),
+            [r#""user_message_chunk" hello a"#, "loaded"]
+        );
+    }
+
+    #[test]
+    fn updated_at_is_utc_iso_8601() {
+        assert_eq!(iso8601(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso8601(1_700_000_000), "2023-11-14T22:13:20Z");
     }
 
     /// Has the model `Read` `a.txt` while the client holds an unsaved edit to it. Returns the

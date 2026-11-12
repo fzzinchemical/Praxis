@@ -508,7 +508,7 @@ flowchart TB
   - **Do:** record each session's workspace root, start and last-activity time (UTC) and a title (the first user prompt, trimmed) in a first header line of the log; list sessions for one workspace, newest first, reading headers only. Logs without a header still load and list under no workspace.
   - **Done when:** tests confirm listing filters by canonical workspace path, orders by last activity, skips a truncated or headerless log without failing, and `harness --resume` with no ID picks from this workspace's sessions only.
 
-- [ ] **T5.11 ACP `session/list`** (§11) · *Should*
+- [x] **T5.11 ACP `session/list`** (§11) · *Should*
   - **Needs:** T5.10, T5.1.
   - **Do:** implement ACP `session/list` (check the pinned crate for it; if it isn't there, stop and ask before adding an extension method) filtered by the request's `cwd`, and make `session/load` replay into a fresh client view.
   - **Done when:** in-process tests confirm `session/list` returns only the given workspace's sessions with id, title and time, and `session/load` of a listed ID replays its history.
