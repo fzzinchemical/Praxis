@@ -14,6 +14,7 @@ use wasm_bindgen::prelude::*;
 
 const SHELL: &str = include_str!("../../../editors/vscode/webview.html");
 const VIEW_COLUMN_ACTIVE: i32 = -1;
+const VIEW_COLUMN_BESIDE: i32 = -2;
 const RESTART: &str = "Restart";
 
 #[wasm_bindgen]
@@ -46,7 +47,13 @@ extern "C" {
     #[wasm_bindgen(js_namespace = workspace, js_name = openTextDocument)]
     fn open_text_document(options: &Object) -> Promise;
     #[wasm_bindgen(js_namespace = commands, js_name = executeCommand)]
-    fn execute_command(command: &str, left: &Uri, right: &Uri, title: &str) -> Promise;
+    fn execute_command(
+        command: &str,
+        left: &Uri,
+        right: &Uri,
+        title: &str,
+        options: &Object,
+    ) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = createOutputChannel)]
     fn create_output_channel(name: &str) -> OutputChannel;
     #[derive(Clone)]
@@ -238,6 +245,8 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
 fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
     let options = Object::new();
     Reflect::set(&options, &"enableScripts".into(), &true.into())?;
+    // Without it VS Code discards the webview when its tab is hidden, and the conversation with it.
+    Reflect::set(&options, &"retainContextWhenHidden".into(), &true.into())?;
     let roots = Array::of1(root.unchecked_ref());
     Reflect::set(&options, &"localResourceRoots".into(), &roots)?;
     let panel = create_webview_panel("harness.chat", "Harness", VIEW_COLUMN_ACTIVE, &options)?;
@@ -601,7 +610,12 @@ fn open_review(review: &Review, output: &OutputChannel) -> Result<(), JsValue> {
         let opened = Array::from(&opened);
         let left = opened.get(0).unchecked_into::<TextDocument>().uri();
         let right = opened.get(1).unchecked_into::<TextDocument>().uri();
-        let _ = execute_command("vscode.diff", &left, &right, &title)
+        // Beside the chat and without focus: in the chat's own group the diff covers the
+        // Allow/Reject card, and the turn waits on an answer nobody can see.
+        let options = Object::new();
+        let _ = Reflect::set(&options, &"viewColumn".into(), &VIEW_COLUMN_BESIDE.into());
+        let _ = Reflect::set(&options, &"preserveFocus".into(), &true.into());
+        let _ = execute_command("vscode.diff", &left, &right, &title, &options)
             .unchecked_into::<Thenable>()
             .catch_once(&failed_diff);
     });
