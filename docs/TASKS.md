@@ -273,9 +273,10 @@ flowchart LR
   - **Needs:** T2.2, T0.3.
   - **Done when:** if T0.3 confirms support, a malformed call retries under the schema and is still validated; if not, record that in an ADR and close this task.
 
-- [ ] **T2.13 System prompt contract** (§11) · *Should*
+- [x] **T2.13 System prompt contract** (§11) · *Should*
   - **Needs:** T1.9.
   - **Done when:** the prompt stays within budget and covers each point in §11, with eval success no lower than before.
+  - **Result (2026-11-12):** 4b board, 3 runs × 13 tasks, seed 42: success 54% against 46% before (`qwen3.5-4b.m2.json`, 1 run). Mean turns rose 12.3 → 16.1 and wall time 31 → 41 s, mostly from injection-test-data and seeded-bug-duration (`evals/results/qwen3.5-4b.t2-13.json`).
 
 ---
 
