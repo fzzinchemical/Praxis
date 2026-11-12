@@ -776,7 +776,7 @@ flowchart LR
   - **Needs:** T9.4, T6.5, T8.9.
   - **Done when:** agents from user and project directories are offered through `Agent` with project beating user; `permissionMode`, `hooks` and `mcpServers` warn and grant nothing; a standalone `general` is a load error naming its path; an unresolved `model` skips the agent as for plugins.
 
-- [ ] **T9.6 Path-scoped rules** (§12) · *Could*
+- [x] **T9.6 Path-scoped rules** (§12) · *Could*
   - **Needs:** T9.3.
   - **Done when:** a rule with `paths: ["src/**/*.rs"]` is appended the first time a matching file is touched and never for a non-matching one; comma-string and list forms both parse.
 

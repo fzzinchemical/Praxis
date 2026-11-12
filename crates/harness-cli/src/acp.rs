@@ -638,6 +638,7 @@ mod tests {
                 context_size: 100_000,
                 system_prompt: "sys".into(),
                 memory: Vec::new(),
+                scoped_rules: Vec::new(),
                 mask_keep_turns: 10,
                 max_turn_requests: 10,
                 profile: harness_core::agent::profile::ModelProfile::default(),

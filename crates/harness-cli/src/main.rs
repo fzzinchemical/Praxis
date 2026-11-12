@@ -859,6 +859,8 @@ async fn run(
     );
     // Plan mode (SPEC §11) switches back to this mode on `/execute`.
     let configured = config.permissions.mode;
+    let claude_dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"));
+    let harness_dir = xdg_dir("XDG_CONFIG_HOME", ".config");
     let agent_config = AgentConfig {
         model: ready.instance_id,
         context_size: ready.context_length,
@@ -866,10 +868,13 @@ async fn run(
         memory: harness_core::context::prefix::load_memory(
             &workspace,
             &workspace,
-            std::env::var_os("HOME")
-                .map(|home| PathBuf::from(home).join(".claude"))
-                .as_deref(),
-            xdg_dir("XDG_CONFIG_HOME", ".config").as_deref(),
+            claude_dir.as_deref(),
+            harness_dir.as_deref(),
+        ),
+        scoped_rules: harness_core::context::prefix::load_scoped_rules(
+            &workspace,
+            claude_dir.as_deref(),
+            harness_dir.as_deref(),
         ),
         mask_keep_turns: config.context.mask_keep_turns,
         max_turn_requests: config.agent.max_turn_requests,

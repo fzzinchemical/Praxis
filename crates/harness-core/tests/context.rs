@@ -73,6 +73,7 @@ fn config(context_size: u32) -> AgentConfig {
         context_size,
         system_prompt: "sys".into(),
         memory: Vec::new(),
+        scoped_rules: Vec::new(),
         mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
@@ -954,4 +955,38 @@ async fn a_failed_read_does_not_load_subdirectory_memory() {
             .unwrap()
             .contains("SUB-RULES")
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_path_scoped_rule_loads_once_on_the_first_matching_touch() {
+    let workspace = new_workspace();
+    fs::create_dir_all(workspace.join(".claude/rules")).unwrap();
+    fs::write(
+        workspace.join(".claude/rules/rust.md"),
+        "---\npaths: [\"src/**/*.rs\"]\n---\nSCOPED-RULE",
+    )
+    .unwrap();
+    fs::create_dir_all(workspace.join("src")).unwrap();
+    fs::create_dir_all(workspace.join("docs")).unwrap();
+    fs::write(workspace.join("src/a.rs"), "fn a() {}").unwrap();
+    fs::write(workspace.join("src/b.rs"), "fn b() {}").unwrap();
+    fs::write(workspace.join("docs/c.md"), "# c").unwrap();
+    let bodies = vec![
+        tool_reply("a", "Read", json!({"file_path": "src/a.rs"})),
+        tool_reply("c", "Read", json!({"file_path": "docs/c.md"})),
+        tool_reply("b", "Read", json!({"file_path": "src/b.rs"})),
+        text_reply("done", 4000),
+    ];
+    let mut cfg = config(20_000);
+    cfg.scoped_rules = harness_core::context::prefix::load_scoped_rules(&workspace, None, None);
+    let mut h = Harness::in_workspace(workspace, bodies, cfg).await;
+    h.turn("go").await;
+    assert_each_body_extends_the_last(&h).await;
+
+    let sent = h.bodies().await;
+    let count = |body: &Value| body.to_string().matches("SCOPED-RULE").count();
+    assert_eq!(count(&sent[0]), 0, "not loaded before any touch");
+    assert_eq!(count(&sent[1]), 1, "appended after the matching read");
+    assert_eq!(count(&sent[2]), 1, "a non-matching read adds nothing");
+    assert_eq!(count(&sent[3]), 1, "not appended again by a second match");
 }

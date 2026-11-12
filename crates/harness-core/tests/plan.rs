@@ -87,6 +87,7 @@ async fn make_agent(workspace: &Path, mode: Mode, calls: &[(&str, Value)]) -> (M
         context_size: 100_000,
         system_prompt: "sys".into(),
         memory: Vec::new(),
+        scoped_rules: Vec::new(),
         mask_keep_turns: 10,
         max_turn_requests: 5,
         profile: ModelProfile::default(),

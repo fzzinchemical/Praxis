@@ -3,6 +3,7 @@
 
 use crate::plugin::{collect_markdown, split_frontmatter};
 use crate::tools::confine;
+use globset::{GlobBuilder, GlobMatcher};
 use std::env::consts::OS;
 use std::fs;
 use std::io;
@@ -72,12 +73,70 @@ pub fn load_memory(
     memory.extend(claude_dir.and_then(|dir| read_text(dir, &dir.join("CLAUDE.md"))));
     memory.extend(harness_dir.and_then(|dir| read_text(dir, &dir.join("AGENTS.md"))));
     memory.extend(project_memory(root, cwd));
-    for dir in [claude_dir, harness_dir].into_iter().flatten() {
-        memory.extend(rule_texts(dir, &dir.join("rules")));
+    for (base, dir) in rule_dirs(root, claude_dir, harness_dir) {
+        memory.extend(
+            rule_files(&base, &dir)
+                .into_iter()
+                .filter_map(|(text, paths)| paths.is_none().then_some(text)),
+        );
     }
-    memory.extend(rule_texts(root, &root.join(".claude/rules")));
-    memory.extend(rule_texts(root, &root.join(".harness/rules")));
     memory
+}
+
+/// The path-scoped rules, kept out of the prefix. Each is appended the first time a file it
+/// matches is touched (SPEC §12, nested memory).
+pub fn load_scoped_rules(
+    root: &Path,
+    claude_dir: Option<&Path>,
+    harness_dir: Option<&Path>,
+) -> Vec<ScopedRule> {
+    rule_dirs(root, claude_dir, harness_dir)
+        .iter()
+        .flat_map(|(base, dir)| rule_files(base, dir))
+        .filter_map(|(text, paths)| {
+            let globs = paths?
+                .iter()
+                .filter_map(|pattern| {
+                    match GlobBuilder::new(pattern).literal_separator(true).build() {
+                        Ok(glob) => Some(glob.compile_matcher()),
+                        Err(error) => {
+                            tracing::warn!(%error, %pattern, "rule path pattern skipped");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            Some(ScopedRule { globs, text })
+        })
+        .collect()
+}
+
+/// A rule that applies to files matching any of its globs, relative to the workspace root.
+#[derive(Debug, Clone)]
+pub struct ScopedRule {
+    pub globs: Vec<GlobMatcher>,
+    pub text: String,
+}
+
+impl ScopedRule {
+    pub fn matches(&self, relative: &str) -> bool {
+        self.globs.iter().any(|glob| glob.is_match(relative))
+    }
+}
+
+/// The `(base, dir)` pairs of every rule directory, in prompt order: user, then project.
+fn rule_dirs(
+    root: &Path,
+    claude_dir: Option<&Path>,
+    harness_dir: Option<&Path>,
+) -> Vec<(PathBuf, PathBuf)> {
+    let user = [claude_dir, harness_dir]
+        .into_iter()
+        .flatten()
+        .map(|dir| (dir.to_path_buf(), dir.join("rules")));
+    let project =
+        [".claude/rules", ".harness/rules"].map(|rel| (root.to_path_buf(), root.join(rel)));
+    user.chain(project).collect()
 }
 
 /// `CLAUDE.md` (or `.claude/CLAUDE.md`) then `CLAUDE.local.md` in each directory from `root` to
@@ -257,9 +316,9 @@ fn import(base: &Path, file: &Path, target: &str, chain: &mut Vec<PathBuf>) -> O
     Some(expanded)
 }
 
-/// The `.md` files under `dir`, which must stay inside `base`. Rules with `paths` are
-/// path-scoped and wait for T9.6, so they're skipped with a warning.
-fn rule_texts(base: &Path, dir: &Path) -> Vec<String> {
+/// The `.md` files under `dir`, which must stay inside `base`, with each rule's `paths` globs
+/// (`None` for an un-pathed rule).
+fn rule_files(base: &Path, dir: &Path) -> Vec<(String, Option<Vec<String>>)> {
     let (Ok(base), Ok(dir)) = (base.canonicalize(), dir.canonicalize()) else {
         return Vec::new();
     };
@@ -271,13 +330,34 @@ fn rule_texts(base: &Path, dir: &Path) -> Vec<String> {
         .iter()
         .filter_map(|path| {
             let text = read_text(&base, path)?;
-            if split_frontmatter(&text).0.lines().any(|l| l.starts_with("paths:")) {
-                tracing::warn!(path = %path.display(), "path-scoped rule skipped, not supported yet");
-                return None;
-            }
-            Some(text)
+            let globs = rule_paths(split_frontmatter(&text).0)
+                .map(|items| items.into_iter().map(str::to_owned).collect());
+            Some((text, globs))
         })
         .collect()
+}
+
+/// The `paths` field of a rule's frontmatter: an inline list, `- item` lines, or a comma
+/// string. Quotes around items are dropped; `None` when there is no `paths` field.
+fn rule_paths(frontmatter: &str) -> Option<Vec<&str>> {
+    let mut lines = frontmatter.lines();
+    let value = lines.find_map(|line| line.strip_prefix("paths:"))?.trim();
+    let items: Vec<&str> = if let Some(inline) = value.strip_prefix('[') {
+        inline.trim_end_matches(']').split(',').collect()
+    } else if value.is_empty() {
+        lines
+            .map_while(|line| line.trim_start().strip_prefix("- "))
+            .collect()
+    } else {
+        value.split(',').collect()
+    };
+    Some(
+        items
+            .into_iter()
+            .map(|item| item.trim().trim_matches(['"', '\'']))
+            .filter(|item| !item.is_empty())
+            .collect(),
+    )
 }
 
 /// The current branch from `HEAD`. The repository is untrusted and this lands in the prompt, so
@@ -566,5 +646,22 @@ mod tests {
         let text = fs::read_to_string(fixture.join("CLAUDE.md")).unwrap();
         assert_eq!(memory, [text.trim_end()]);
         assert!(text.contains("@../../fixtures/bash/cargo-test-failure.txt"));
+    }
+
+    #[test]
+    fn parses_paths_as_an_inline_list_dash_items_or_a_comma_string() {
+        assert_eq!(
+            rule_paths("paths: [\"src/**/*.rs\", 'docs/*.md']"),
+            Some(vec!["src/**/*.rs", "docs/*.md"])
+        );
+        assert_eq!(
+            rule_paths("name: x\npaths:\n  - src/**/*.rs\n  - docs/*.md\nother: y"),
+            Some(vec!["src/**/*.rs", "docs/*.md"])
+        );
+        assert_eq!(
+            rule_paths("paths: src/**/*.rs, docs/*.md"),
+            Some(vec!["src/**/*.rs", "docs/*.md"])
+        );
+        assert_eq!(rule_paths("name: x"), None);
     }
 }

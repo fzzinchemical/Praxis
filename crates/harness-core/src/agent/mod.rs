@@ -10,7 +10,7 @@ pub mod recovery;
 use crate::config::{Backend, ModelRef};
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
-use crate::context::prefix::{SessionFacts, dir_memory};
+use crate::context::prefix::{ScopedRule, SessionFacts, dir_memory};
 use crate::hooks::{Hook, Outcome, PermissionDecision};
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
@@ -115,6 +115,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// Memory files, broadest first. Part of the prefix and the first thing trimmed to fit it.
     pub memory: Vec<String>,
+    /// Path-scoped rules, appended once when a matching file is first touched (SPEC §12).
+    pub scoped_rules: Vec<ScopedRule>,
     /// How many recent turns keep their tool output when history is masked (SPEC §7).
     pub mask_keep_turns: u32,
     /// Off skips the masking stage, so evals can compare against it (T2.6).
@@ -169,6 +171,8 @@ pub struct Agent {
     nested_dirs: HashSet<PathBuf>,
     /// Memory a file tool reached this round, appended after its results.
     pending_memory: Vec<String>,
+    /// Path-scoped rules not yet loaded; a rule leaves this list when it is queued.
+    scoped_rules: Vec<ScopedRule>,
     /// The server has shown the estimate is wrong, so compact before the next request.
     compact_next: bool,
     /// Messages a summary removed. Generated call ids count these so they never repeat.
@@ -231,7 +235,8 @@ impl Reply {
 }
 
 impl Agent {
-    pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, config: AgentConfig) -> Self {
+    pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, mut config: AgentConfig) -> Self {
+        let scoped_rules = std::mem::take(&mut config.scoped_rules);
         let budget = Budget::new(config.context_size);
         let tool_schemas = tools::schemas();
         let facts = SessionFacts::capture(tools.workspace());
@@ -253,6 +258,7 @@ impl Agent {
             facts,
             nested_dirs: HashSet::new(),
             pending_memory: Vec::new(),
+            scoped_rules,
             compact_next: false,
             summarised_messages: 0,
             refetchable: Vec::new(),
@@ -812,6 +818,7 @@ impl Agent {
         let Ok(path) = confine::resolve(&root, file_path) else {
             return;
         };
+        self.queue_scoped_rules(&root, &path);
         let Some(rel) = path.parent().and_then(|dir| dir.strip_prefix(&root).ok()) else {
             return;
         };
@@ -822,6 +829,22 @@ impl Agent {
                 self.pending_memory.extend(dir_memory(&root, &dir));
             }
         }
+    }
+
+    /// Queues each path-scoped rule whose glob matches `path`, and drops it from the pending list
+    /// so it is never queued again.
+    fn queue_scoped_rules(&mut self, root: &Path, path: &Path) {
+        let Ok(relative) = path.strip_prefix(root) else {
+            return;
+        };
+        let relative = relative.to_string_lossy();
+        let (matched, kept): (Vec<ScopedRule>, Vec<ScopedRule>) =
+            std::mem::take(&mut self.scoped_rules)
+                .into_iter()
+                .partition(|rule| rule.matches(&relative));
+        self.scoped_rules = kept;
+        self.pending_memory
+            .extend(matched.into_iter().map(|rule| rule.text));
     }
 
     /// Only a call that passes this may reach the permission path (SPEC §5.3).

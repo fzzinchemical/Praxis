@@ -313,6 +313,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
             memory: Vec::new(),
+            scoped_rules: Vec::new(),
             mask_keep_turns: keep_turns.unwrap_or(DEFAULT_MASK_KEEP_TURNS),
             masking: keep_turns.is_some(),
             max_turn_requests: u32::try_from(number("max_turns")?)?,
