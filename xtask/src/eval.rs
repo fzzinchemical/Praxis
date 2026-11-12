@@ -339,6 +339,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let (mut turns, mut prompt_tokens, mut tool_calls, mut recoveries) = (0u32, 0u64, 0u32, 0u32);
     let mut stop = StopReason::ProviderError;
     let mut loop_trigger = None;
+    // The detector records a call after running it, so the last one started is what tripped it.
+    let (mut last_call, mut loop_call) = (Value::Null, Value::Null);
     let mut last_error = None;
     let mut rewrites: BTreeMap<String, u32> = BTreeMap::new();
     while let Some(event) = rx.recv().await {
@@ -356,13 +358,17 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 turns += 1;
                 prompt_tokens += u64::from(sent);
             }
-            AgentEvent::ToolStarted { id, .. } => {
+            AgentEvent::ToolStarted {
+                id, name, input, ..
+            } => {
                 tool_calls += 1;
+                last_call = json!({ "name": name, "input": input });
                 // Only calls parsed out of reply text get this id prefix (agent::recovery).
                 recoveries += u32::from(id.starts_with("text-call-"));
             }
             AgentEvent::Notice { title, detail, .. } if title == "Stopped: tool loop detected" => {
                 loop_trigger = detail;
+                loop_call = last_call.clone();
             }
             AgentEvent::Notice {
                 severity: Severity::Error,
@@ -391,6 +397,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "history_rewrites": rewrites,
             "recoveries": recoveries,
             "loop_trigger": loop_trigger,
+            "loop_call": loop_call,
             "prompt_tokens_sent": prompt_tokens,
             // The provider's message names the cause, such as a context overflow.
             "provider_error": matches!(stop, StopReason::ProviderError).then_some(last_error).flatten(),
