@@ -16,8 +16,9 @@
 <div id="context-bar" class="context-bar" role="group" aria-label="Attached context">
 <div id="chips" class="chips"></div>
 <button type="button" id="add-file" class="secondary">Add file</button>
-<label class="toggle"><input type="checkbox" id="problems"> Include problems</label>
+<label class="toggle" title="Also send the errors and warnings VS Code shows for the active file (the Problems panel), so the agent can fix them."><input type="checkbox" id="problems"> Include problems</label>
 </div>
+<div class="composer-row">
 <div id="model-bar" class="model-bar">
 <label for="model">Model</label>
 <select id="model" disabled></select>
@@ -25,6 +26,7 @@
 <div class="composer-actions">
 <button type="button" id="stop" class="secondary">Stop</button>
 <button type="submit">Send</button>
+</div>
 </div>
 </form>
 <p id="status" aria-live="off" aria-label="Status">Idle</p>

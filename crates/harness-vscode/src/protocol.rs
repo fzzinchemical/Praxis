@@ -411,7 +411,8 @@ fn picker(result: &Value) -> Option<Value> {
 /// `path` is absolute, under `root` and free of `..`, so it cannot leave the workspace.
 pub fn inside(root: &str, path: &str) -> bool {
     let path = Path::new(path);
-    path.is_absolute()
+    // Not `is_absolute`: on wasm32-unknown-unknown it is always false, which refused every path.
+    path.has_root()
         && path.starts_with(root)
         && !path.components().any(|part| part == Component::ParentDir)
 }
