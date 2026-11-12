@@ -444,6 +444,12 @@ impl Agent {
         self.budget = Budget::new(context_size);
     }
 
+    /// Switches the permission mode for later calls. Plan mode (SPEC §11) is read-only; only the
+    /// front end calls this, so the model can't leave it.
+    pub fn set_mode(&mut self, mode: crate::permissions::Mode) {
+        self.permissions.set_mode(mode);
+    }
+
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
     pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
         self.history.extend(prior);

@@ -143,6 +143,11 @@ impl Permissions {
         }
     }
 
+    /// Switches the mode for later calls; plan mode (SPEC §11) turns read-only on and off.
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        self.policy.mode = mode;
+    }
+
     /// Closed by default: a tool that isn't listed here never runs.
     pub(crate) fn decide(&self, tool: &str, input: &Value) -> Decision {
         self.decide_inner(tool, input, None)
@@ -378,6 +383,37 @@ mod tests {
         let p = permissions(Mode::Ask, &["mcp__test__echo"], &[]);
         assert_eq!(p.decide(echo.0, &echo.1), Decision::Allow);
         assert_eq!(p.decide("mcp__test__crash", &json!({})), ASK);
+    }
+
+    #[test]
+    fn read_only_mode_refuses_writes_shell_and_mcp_whatever_the_rules_say() {
+        let p = permissions(Mode::ReadOnly, &["Write", "Edit", "Bash", "mcp__test"], &[]);
+        let hook_allow = hooked("allow", None);
+        for call in [
+            file("Write", "src/a.rs"),
+            file("Edit", "src/a.rs"),
+            bash("cargo test"),
+            ("mcp__test__echo", json!({})),
+        ] {
+            assert!(
+                denied(&p.decide(call.0, &call.1)),
+                "{call:?} without a hook"
+            );
+            assert!(
+                denied(&decide_hooked(&p, call.clone(), &hook_allow)),
+                "{call:?} with a hook allow"
+            );
+        }
+    }
+
+    #[test]
+    fn set_mode_switches_later_calls_only() {
+        let mut p = permissions(Mode::ReadOnly, &[], &[]);
+        assert!(denied(&p.decide("Write", &file("Write", "src/a.rs").1)));
+        p.set_mode(Mode::Ask);
+        assert_eq!(p.decide("Write", &file("Write", "src/a.rs").1), ASK);
+        p.set_mode(Mode::ReadOnly);
+        assert!(denied(&p.decide("Write", &file("Write", "src/a.rs").1)));
     }
 
     #[test]

@@ -490,7 +490,7 @@ flowchart TB
   - **Needs:** T5.4, T3.8.
   - **Done when:** the checklist covers overview, file and chunk with free navigation, and revert per file; tests confirm risk labels never read as a safety verdict.
 
-- [ ] **T5.9 Plan-first flow** (§11) · *Should*
+- [x] **T5.9 Plan-first flow** (§11) · *Should*
   - **Needs:** T5.3, T3.2.
   - **Done when:** tests confirm `/plan` can't write or run anything, and carrying out a plan needs a separate action from the developer. It also works in the REPL.
 

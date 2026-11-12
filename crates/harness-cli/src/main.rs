@@ -14,7 +14,7 @@ use harness_core::agent::{
 use harness_core::config::McpServer;
 use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::hooks::Hook;
-use harness_core::permissions::Policy;
+use harness_core::permissions::{Mode, Policy};
 use harness_core::plugin::{AgentDef, Skill, Store, run_command};
 use harness_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
@@ -550,14 +550,45 @@ async fn ready_model(
     }
 }
 
+/// A REPL line that drives plan-first mode (SPEC §11).
+#[derive(Debug, PartialEq, Eq)]
+enum PlanCommand<'a> {
+    /// `/plan <task>`: plan under read-only mode until `/execute`.
+    Plan(&'a str),
+    /// `/execute`: leave plan mode and carry out the plan the developer has seen.
+    Execute,
+}
+
+fn plan_command(line: &str) -> Option<PlanCommand<'_>> {
+    match line.trim() {
+        "/execute" => Some(PlanCommand::Execute),
+        "/plan" => Some(PlanCommand::Plan("")),
+        other => other
+            .strip_prefix("/plan ")
+            .map(|task| PlanCommand::Plan(task.trim())),
+    }
+}
+
+/// Sent with each `/plan` task. The read-only mode is what enforces it; this only asks the
+/// model for the right kind of answer.
+const PLAN_PROMPT: &str = "Plan mode is on: you can read and search, but change nothing and run \
+    no commands. Reply with a plan for the task below and the assumptions it depends on.";
+const EXECUTE_PROMPT: &str = "Carry out the plan above now.";
+
 async fn repl(
     mut agent: Agent,
     commands: &[Skill],
     mut terminal: Option<Terminal>,
     interrupt: &Interrupt,
+    configured: Mode,
 ) -> Result<u8> {
+    let mut planning = false;
     loop {
-        ask("\nharness> ");
+        ask(if planning {
+            "\nharness (plan)> "
+        } else {
+            "\nharness> "
+        });
         let line = match &mut terminal {
             Some(terminal) => terminal.recv().await,
             None => None,
@@ -567,10 +598,26 @@ async fn repl(
             "" => {}
             "/exit" | "/quit" => return Ok(0),
             "/undo" => undo(agent.tools()),
-            prompt => {
-                let prompt = run_command(commands, prompt).unwrap_or_else(|| prompt.to_owned());
-                agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
-            }
+            _ => match plan_command(&line) {
+                Some(PlanCommand::Plan("")) => eprintln!("Usage: /plan <task>"),
+                Some(PlanCommand::Plan(task)) => {
+                    planning = true;
+                    agent.set_mode(Mode::ReadOnly);
+                    let prompt = format!("{PLAN_PROMPT}\n\n{task}");
+                    agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
+                }
+                Some(PlanCommand::Execute) => {
+                    planning = false;
+                    agent.set_mode(configured);
+                    let prompt = EXECUTE_PROMPT.to_owned();
+                    agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
+                }
+                None => {
+                    let prompt = run_command(commands, line.trim())
+                        .unwrap_or_else(|| line.trim().to_owned());
+                    agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
+                }
+            },
         }
     }
 }
@@ -743,6 +790,8 @@ async fn run(
         reported.map(|m| &m.capabilities),
         &user_profiles(&config),
     );
+    // Plan mode (SPEC §11) switches back to this mode on `/execute`.
+    let configured = config.permissions.mode;
     let agent_config = AgentConfig {
         model: ready.instance_id,
         context_size: ready.context_length,
@@ -800,7 +849,7 @@ async fn run(
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;
             Ok(exit_code(stop))
         }
-        None => repl(agent, &plugins.commands, terminal, &interrupt).await,
+        None => repl(agent, &plugins.commands, terminal, &interrupt, configured).await,
     }
 }
 
@@ -876,6 +925,22 @@ mod tests {
         };
         let profiles = [("qwen3*".to_owned(), user)];
         assert_eq!(load_context("qwen3.5-4b", None, &profiles), 2048);
+    }
+
+    #[test]
+    fn plan_lines_are_told_apart_from_prompts() {
+        assert_eq!(
+            plan_command("/plan add a cache"),
+            Some(PlanCommand::Plan("add a cache"))
+        );
+        assert_eq!(
+            plan_command("  /plan   spaced  "),
+            Some(PlanCommand::Plan("spaced"))
+        );
+        assert_eq!(plan_command("/plan"), Some(PlanCommand::Plan("")));
+        assert_eq!(plan_command("/execute"), Some(PlanCommand::Execute));
+        assert_eq!(plan_command("/planning notes"), None);
+        assert_eq!(plan_command("write a plan"), None);
     }
 
     #[test]
