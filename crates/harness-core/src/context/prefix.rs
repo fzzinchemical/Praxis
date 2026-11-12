@@ -11,6 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECONDS_PER_DAY: u64 = 86_400;
 const MAX_BRANCH_CHARS: usize = 100;
+/// An import may be this many files deep below the memory file that names it (SPEC §12).
+const MAX_IMPORT_HOPS: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFacts {
@@ -67,8 +69,8 @@ pub fn load_memory(
     harness_dir: Option<&Path>,
 ) -> Vec<String> {
     let mut memory: Vec<String> = Vec::new();
-    memory.extend(claude_dir.and_then(|dir| read_text(&dir.join("CLAUDE.md"))));
-    memory.extend(harness_dir.and_then(|dir| read_text(&dir.join("AGENTS.md"))));
+    memory.extend(claude_dir.and_then(|dir| read_text(dir, &dir.join("CLAUDE.md"))));
+    memory.extend(harness_dir.and_then(|dir| read_text(dir, &dir.join("AGENTS.md"))));
     memory.extend(project_memory(root, cwd));
     for dir in [claude_dir, harness_dir].into_iter().flatten() {
         memory.extend(rule_texts(dir, &dir.join("rules")));
@@ -115,7 +117,7 @@ fn project_memory(root: &Path, cwd: &Path) -> Vec<String> {
 /// A project file, confined to the workspace. A symlink out of it is skipped with a warning.
 fn read_in(root: &Path, relative: &Path) -> Option<String> {
     match confine::resolve(root, &relative.to_string_lossy()) {
-        Ok(path) => read_text(&path),
+        Ok(path) => read_text(root, &path),
         Err(error) => {
             tracing::warn!(%error, path = %relative.display(), "memory file skipped");
             None
@@ -123,16 +125,119 @@ fn read_in(root: &Path, relative: &Path) -> Option<String> {
     }
 }
 
-/// The non-empty text of a memory file. Missing is normal; other failures warn and skip.
-fn read_text(path: &Path) -> Option<String> {
-    match fs::read_to_string(path) {
-        Ok(text) => (!text.trim().is_empty()).then_some(text),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+/// The non-empty text of a memory file, with comments stripped and imports expanded. `base` is
+/// the directory imports must stay inside: the workspace for project files, the user dir for
+/// user files. Missing is normal; other failures warn and skip.
+fn read_text(base: &Path, path: &Path) -> Option<String> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "memory file skipped");
-            None
+            return None;
         }
+    };
+    let origin = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let expanded = expand(base, &origin, &text, &mut vec![origin.clone()]);
+    (!expanded.trim().is_empty()).then_some(expanded)
+}
+
+/// Drops block-level HTML comments and expands `@path` imports, skipping fenced blocks. `chain`
+/// holds the files being expanded, outermost first, for the hop limit and cycle check.
+fn expand(base: &Path, file: &Path, text: &str, chain: &mut Vec<PathBuf>) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut in_fence = false;
+    let mut in_comment = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let fence = trimmed.starts_with("```") || trimmed.starts_with("~~~");
+        if !in_comment && fence {
+            in_fence = !in_fence;
+        }
+        if in_fence || (!in_comment && fence) {
+            out.push(line.to_owned());
+            continue;
+        }
+        let mut rest = line;
+        if in_comment || trimmed.starts_with("<!--") {
+            let Some(end) = rest.find("-->") else {
+                in_comment = true;
+                continue;
+            };
+            in_comment = false;
+            rest = &rest[end + 3..];
+            if rest.trim().is_empty() {
+                continue;
+            }
+        }
+        out.push(expand_line(base, file, rest, chain));
     }
+    out.join("\n")
+}
+
+/// `line` with each `@path` that is a whole word outside code replaced by the imported text.
+fn expand_line(base: &Path, file: &Path, line: &str, chain: &mut Vec<PathBuf>) -> String {
+    let mut out = String::new();
+    let mut in_code = false;
+    let mut after_space = true;
+    let mut rest = line;
+    while let Some(c) = rest.chars().next() {
+        if c == '`' {
+            in_code = !in_code;
+        }
+        if c == '@' && !in_code && after_space {
+            let len = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            if let Some(text) = import(base, file, &rest[1..len], chain) {
+                out.push_str(&text);
+                rest = &rest[len..];
+                after_space = false;
+                continue;
+            }
+        }
+        after_space = c.is_whitespace();
+        out.push(c);
+        rest = &rest[c.len_utf8()..];
+    }
+    out
+}
+
+/// The expanded text of `@target`, or `None` when it must stay literal: a cycle (silently), or a
+/// path that is too deep, missing or outside `base` (with a warning).
+fn import(base: &Path, file: &Path, target: &str, chain: &mut Vec<PathBuf>) -> Option<String> {
+    if target.is_empty() {
+        return None;
+    }
+    if chain.len() > MAX_IMPORT_HOPS {
+        tracing::warn!(import = target, "memory import skipped, too many hops");
+        return None;
+    }
+    let raw = match target.strip_prefix("~/") {
+        Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+        None => file.parent()?.join(target),
+    };
+    let base = base.canonicalize().ok()?;
+    let resolved = match confine::resolve(&base, &raw.to_string_lossy()) {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%error, import = target, "memory import skipped");
+            return None;
+        }
+    };
+    if chain.contains(&resolved) {
+        return None;
+    }
+    let text = match fs::read_to_string(&resolved) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
+        Err(error) => {
+            tracing::warn!(%error, import = target, "memory import skipped");
+            return None;
+        }
+    };
+    chain.push(resolved.clone());
+    let expanded = expand(&base, &resolved, &text, chain);
+    chain.pop();
+    Some(expanded)
 }
 
 /// The `.md` files under `dir`, which must stay inside `base`. Rules with `paths` are
@@ -148,7 +253,7 @@ fn rule_texts(base: &Path, dir: &Path) -> Vec<String> {
     paths
         .iter()
         .filter_map(|path| {
-            let text = read_text(path)?;
+            let text = read_text(&base, path)?;
             if split_frontmatter(&text).0.lines().any(|l| l.starts_with("paths:")) {
                 tracing::warn!(path = %path.display(), "path-scoped rule skipped, not supported yet");
                 return None;
@@ -330,5 +435,105 @@ mod tests {
         let memory = load_memory(&root, &root, Some(&claude), None);
         assert_eq!(memory, ["user-rule", "project-rule", "harness-rule"]);
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn expands_imports_relative_to_the_importer_up_to_four_hops() {
+        let base = scratch("hops");
+        let root = base.join("w");
+        write(&root.join("CLAUDE.md"), "L0 @h1.md");
+        for hop in 1..=4 {
+            write(
+                &root.join(format!("h{hop}.md")),
+                &format!("L{hop} @h{}.md", hop + 1),
+            );
+        }
+        write(&root.join("h5.md"), "L5");
+        let memory = load_memory(&root, &root, None, None);
+        assert_eq!(memory, ["L0 L1 L2 L3 L4 @h5.md"]);
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn imports_from_a_subdirectory_resolve_against_that_file() {
+        let root = scratch("relative");
+        write(&root.join("CLAUDE.md"), "@docs/a.md");
+        write(&root.join("docs/a.md"), "A @b.md");
+        write(&root.join("docs/b.md"), "B");
+        assert_eq!(load_memory(&root, &root, None, None), ["A B"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_cycle_stops_at_the_repeated_file() {
+        let root = scratch("cycle");
+        write(&root.join("CLAUDE.md"), "@a.md");
+        write(&root.join("a.md"), "A @b.md");
+        write(&root.join("b.md"), "B @a.md");
+        assert_eq!(load_memory(&root, &root, None, None), ["A B @a.md"]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_inside_code_stay_literal() {
+        let root = scratch("code");
+        write(
+            &root.join("CLAUDE.md"),
+            "Use `@a.md` here\n```\n@a.md\n```\n@a.md",
+        );
+        write(&root.join("a.md"), "IMPORTED");
+        assert_eq!(
+            load_memory(&root, &root, None, None),
+            ["Use `@a.md` here\n```\n@a.md\n```\nIMPORTED"]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn strips_block_comments_outside_code() {
+        let root = scratch("comments");
+        write(
+            &root.join("CLAUDE.md"),
+            "keep\n<!-- hidden\nstill hidden -->\nshown\n```\n<!-- kept -->\n```",
+        );
+        assert_eq!(
+            load_memory(&root, &root, None, None),
+            ["keep\nshown\n```\n<!-- kept -->\n```"]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn imports_that_escape_their_base_are_skipped() {
+        let base = scratch("escape");
+        let (claude, root) = (base.join("home/.claude"), base.join("w"));
+        write(&base.join("secret.md"), "SECRET");
+        write(&claude.join("secret.md"), "USER-SECRET");
+        write(
+            &claude.join("CLAUDE.md"),
+            "user @../../secret.md @secret.md",
+        );
+        write(&root.join("CLAUDE.md"), "project @../secret.md");
+        std::os::unix::fs::symlink(base.join("secret.md"), root.join("link.md")).unwrap();
+        write(&root.join("CLAUDE.local.md"), "local @link.md");
+        let memory = load_memory(&root, &root, Some(&claude), None);
+        assert_eq!(
+            memory,
+            [
+                "user @../../secret.md USER-SECRET",
+                "project @../secret.md",
+                "local @link.md",
+            ]
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn the_hostile_fixture_cannot_import_outside_its_workspace() {
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hostile-repo");
+        let memory = load_memory(&fixture, &fixture, None, None);
+        let text = fs::read_to_string(fixture.join("CLAUDE.md")).unwrap();
+        assert_eq!(memory, [text.trim_end()]);
+        assert!(text.contains("@../../fixtures/bash/cargo-test-failure.txt"));
     }
 }
