@@ -209,7 +209,7 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
                 let line = panel
                     .client
                     .as_mut()
-                    .and_then(|client| client.answer(id, option.as_deref()));
+                    .and_then(|client| client.answer(&id, option.as_deref()));
                 panel.send(line);
             }
             None => state

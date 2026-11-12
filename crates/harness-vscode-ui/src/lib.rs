@@ -150,7 +150,10 @@ pub fn start() -> Result<(), JsValue> {
         ) else {
             return;
         };
-        let Ok(id) = id.parse::<u64>() else { return };
+        // The attribute holds the request id as JSON, so number and string ids both round-trip.
+        let Ok(id) = serde_json::from_str::<Value>(&id) else {
+            return;
+        };
         api.post_message(&json!({"type": "permission", "id": id, "option": option}).to_string());
         if let Ok(Some(prompt)) = button.closest("fieldset") {
             prompt.remove();
@@ -306,7 +309,7 @@ impl Ui {
 
     fn permission(&mut self, message: &Value) -> Result<(), JsValue> {
         self.message = None;
-        let id = message["id"].as_u64().unwrap_or_default().to_string();
+        let id = message["id"].to_string();
         let title = message["title"].as_str().unwrap_or("a tool");
         let prompt = self.append("fieldset", "permission", "")?;
         let legend = self.document.create_element("legend")?;

@@ -12,8 +12,8 @@ pub enum FromPanel {
     Prompt(String),
     /// The stop button.
     Cancel,
-    /// A permission request id and the chosen option, `None` meaning dismissed.
-    Permission(u64, Option<String>),
+    /// A permission request id (a JSON-RPC number or string) and the chosen option, `None` meaning dismissed.
+    Permission(Value, Option<String>),
 }
 
 impl FromPanel {
@@ -24,7 +24,7 @@ impl FromPanel {
             "prompt" => Some(Self::Prompt(value["text"].as_str()?.to_owned())),
             "cancel" => Some(Self::Cancel),
             "permission" => Some(Self::Permission(
-                value["id"].as_u64()?,
+                request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
             )),
             _ => None,
@@ -98,7 +98,7 @@ pub struct Client {
     session: Option<String>,
     next_id: u64,
     /// Open permission requests: id and the option ids offered.
-    pending: Vec<(u64, Vec<String>)>,
+    pending: Vec<(Value, Vec<String>)>,
 }
 
 impl Client {
@@ -128,9 +128,9 @@ impl Client {
     }
 
     /// The answer to a pending permission request, or `None` if the panel names one not offered.
-    pub fn answer(&mut self, id: u64, option: Option<&str>) -> Option<String> {
+    pub fn answer(&mut self, id: &Value, option: Option<&str>) -> Option<String> {
         let index = self.pending.iter().position(|(pending, options)| {
-            *pending == id && option.is_none_or(|option| options.iter().any(|o| o == option))
+            pending == id && option.is_none_or(|option| options.iter().any(|o| o == option))
         })?;
         self.pending.remove(index);
         let outcome = match option {
@@ -147,8 +147,8 @@ impl Client {
         };
         let cancel =
             json!({"jsonrpc": "2.0", "method": "session/cancel", "params": {"sessionId": session}});
-        let ids: Vec<u64> = self.pending.iter().map(|(id, _)| *id).collect();
-        let answers = ids.into_iter().filter_map(|id| self.answer(id, None));
+        let ids: Vec<Value> = self.pending.iter().map(|(id, _)| id.clone()).collect();
+        let answers = ids.iter().filter_map(|id| self.answer(id, None));
         std::iter::once(cancel.to_string()).chain(answers).collect()
     }
 
@@ -178,8 +178,8 @@ impl Client {
     }
 
     fn permission(&mut self, id: &Value, params: &Value) -> Reaction {
-        let Some(id) = id.as_u64() else {
-            // The panel can only name numeric ids, so refuse rather than leave the turn hanging.
+        let Some(id) = request_id(id).cloned() else {
+            // JSON-RPC ids are numbers or strings; refuse anything else rather than leave the turn hanging.
             let send = json!({"jsonrpc": "2.0", "id": id, "result": {"outcome": {"outcome": "cancelled"}}});
             return Reaction {
                 show: Some(notice("permission refused: unsupported request id")),
@@ -200,7 +200,7 @@ impl Client {
         let ids = options
             .iter()
             .filter_map(|o| o["id"].as_str().map(str::to_owned));
-        self.pending.push((id, ids.collect()));
+        self.pending.push((id.clone(), ids.collect()));
         let title = params["toolCall"]["title"].as_str().unwrap_or("a tool");
         Reaction {
             review: review_of(&params["toolCall"]),
@@ -294,6 +294,11 @@ fn show(message: Value) -> Reaction {
     }
 }
 
+/// A JSON-RPC request id: a number or a string. `agent-client-protocol` 5 sends strings.
+fn request_id(id: &Value) -> Option<&Value> {
+    (id.is_u64() || id.is_string()).then_some(id)
+}
+
 fn request(id: u64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
 }
@@ -341,16 +346,20 @@ mod tests {
         );
         assert_eq!(
             FromPanel::parse(r#"{"type":"permission","id":7,"option":"allow_once"}"#),
-            Some(FromPanel::Permission(7, Some("allow_once".to_owned())))
+            Some(FromPanel::Permission(
+                json!(7),
+                Some("allow_once".to_owned())
+            ))
         );
         assert_eq!(
             FromPanel::parse(r#"{"type":"permission","id":7,"option":null}"#),
-            Some(FromPanel::Permission(7, None))
+            Some(FromPanel::Permission(json!(7), None))
         );
         for bad in [
             r#"{"type":"prompt"}"#,
             r#"{"type":"exec"}"#,
-            r#"{"type":"permission","id":"7","option":"x"}"#,
+            r#"{"type":"permission","id":null,"option":"x"}"#,
+            r#"{"type":"permission","id":{"n":7},"option":"x"}"#,
             "ready",
             "{",
         ] {
@@ -448,16 +457,41 @@ mod tests {
             )
         );
         // The webview is untrusted: unknown requests and unoffered options are refused.
-        assert_eq!(client.answer(8, Some("allow_once")), None);
-        assert_eq!(client.answer(7, Some("allow_always")), None);
+        assert_eq!(client.answer(&json!(8), Some("allow_once")), None);
+        assert_eq!(client.answer(&json!(7), Some("allow_always")), None);
         let answer: Value =
-            serde_json::from_str(&client.answer(7, Some("allow_once")).unwrap()).unwrap();
+            serde_json::from_str(&client.answer(&json!(7), Some("allow_once")).unwrap()).unwrap();
         assert_eq!(answer["id"], 7);
         assert_eq!(
             answer["result"]["outcome"],
             json!({"outcome": "selected", "optionId": "allow_once"})
         );
-        assert_eq!(client.answer(7, Some("allow_once")), None, "answered once");
+        assert_eq!(
+            client.answer(&json!(7), Some("allow_once")),
+            None,
+            "answered once"
+        );
+    }
+
+    #[test]
+    fn permission_requests_with_string_ids_reach_the_panel_and_are_answered() {
+        // agent-client-protocol 5 numbers its requests with strings.
+        let mut client = session();
+        let reaction = client.on_line(&ASK.replace(r#""id":7"#, r#""id":"r-7""#));
+        assert_eq!(reaction.send, None);
+        assert_eq!(
+            reaction.show.as_ref().map(|s| &s["id"]),
+            Some(&json!("r-7"))
+        );
+        let Some(FromPanel::Permission(id, option)) =
+            FromPanel::parse(r#"{"type":"permission","id":"r-7","option":"reject_once"}"#)
+        else {
+            panic!("the panel's answer must parse");
+        };
+        let answer: Value =
+            serde_json::from_str(&client.answer(&id, option.as_deref()).unwrap()).unwrap();
+        assert_eq!(answer["id"], "r-7");
+        assert_eq!(answer["result"]["outcome"]["optionId"], "reject_once");
     }
 
     #[test]
@@ -503,14 +537,14 @@ mod tests {
         assert_eq!(lines[1]["id"], 7);
         assert_eq!(lines[1]["result"]["outcome"]["outcome"], "cancelled");
         assert_eq!(lines.len(), 2);
-        assert_eq!(client.answer(7, Some("allow_once")), None);
+        assert_eq!(client.answer(&json!(7), Some("allow_once")), None);
     }
 
     #[test]
     fn panel_answers_without_an_option_are_cancelled() {
         let mut client = session();
         client.on_line(ASK);
-        let answer: Value = serde_json::from_str(&client.answer(7, None).unwrap()).unwrap();
+        let answer: Value = serde_json::from_str(&client.answer(&json!(7), None).unwrap()).unwrap();
         assert_eq!(answer["result"]["outcome"]["outcome"], "cancelled");
     }
 
