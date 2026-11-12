@@ -12,12 +12,12 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M2** | [Reliability on local models](#m2-reliability-on-local-models) | 13 | The core of the project: measurably better results on local models. |
 | **M3** | [Config, sessions, safety](#m3-config-sessions-safety) | 8 | A hostile repository can't do anything without approval. |
 | **M4** | [MCP client](#m4-mcp-client) | 6 | Real MCP servers work, even on small context windows. |
-| **M5** | [VS Code](#m5-vs-code) | 9 | Fix, review and accept without leaving the editor. |
+| **M5** | [VS Code](#m5-vs-code) | 12 | Fix, review and accept without leaving the editor. |
 | **M6** | [Plugins](#m6-plugins) | 7 | An unmodified Claude Code plugin works. |
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 
-71 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+74 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -445,13 +445,21 @@ flowchart TB
     T3_8 -.-> T5_8
     T5_3 --> T5_9
     T3_2 -.-> T5_9
+    T5_10["T5.10<br/>Session index"]
+    T5_11["T5.11<br/>ACP session/list"]
+    T5_12["T5.12<br/>Sessions sidebar"]
+    T3_7 -.-> T5_10
+    T5_10 --> T5_11
+    T5_1 --> T5_11
+    T5_11 --> T5_12
+    T5_3 --> T5_12
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
     class T5_1,T5_2,T5_3,T5_4,T5_5,T5_6 task
     class T0_5,T0_6,T3_2,T3_7 other
-    class T5_7,T5_8,T5_9 task
+    class T5_7,T5_8,T5_9,T5_10,T5_11,T5_12 task
     class T3_8 other
 ```
 
@@ -493,6 +501,21 @@ flowchart TB
 - [x] **T5.9 Plan-first flow** (§11) · *Should*
   - **Needs:** T5.3, T3.2.
   - **Done when:** tests confirm `/plan` can't write or run anything, and carrying out a plan needs a separate action from the developer. It also works in the REPL.
+
+- [ ] **T5.10 Session index** (§8) · *Should*
+  - **Needs:** T3.7.
+  - **Do:** record each session's workspace root, start and last-activity time (UTC) and a title (the first user prompt, trimmed) in a first header line of the log; list sessions for one workspace, newest first, reading headers only. Logs without a header still load and list under no workspace.
+  - **Done when:** tests confirm listing filters by canonical workspace path, orders by last activity, skips a truncated or headerless log without failing, and `harness --resume` with no ID picks from this workspace's sessions only.
+
+- [ ] **T5.11 ACP `session/list`** (§11) · *Should*
+  - **Needs:** T5.10, T5.1.
+  - **Do:** implement ACP `session/list` (check the pinned crate for it; if it isn't there, stop and ask before adding an extension method) filtered by the request's `cwd`, and make `session/load` replay into a fresh client view.
+  - **Done when:** in-process tests confirm `session/list` returns only the given workspace's sessions with id, title and time, and `session/load` of a listed ID replays its history.
+
+- [ ] **T5.12 Sessions sidebar** (§11) · *Should*
+  - **Needs:** T5.11, T5.3.
+  - **Do:** an activity-bar icon (view container) with a sessions view for the current workspace: new session, open a previous one in the chat panel, refresh after each turn. Keyboard reachable with labelled items.
+  - **Done when:** native tests cover mapping `session/list` results to view items; the checklist item "click the sidebar icon, pick an earlier session, see its history and continue it" passes; and sessions from another workspace never show.
 
 ---
 
