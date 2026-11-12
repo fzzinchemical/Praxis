@@ -4,7 +4,7 @@ use super::confine::{check_writable, resolve};
 use super::{ToolContext, ToolError, ToolOutput};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
@@ -268,6 +268,62 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
             "replaceAll": replace_all,
         }),
     ))
+}
+
+/// What a `Write` or `Edit` would leave in a file, shown for review before the call runs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FileDiff {
+    pub path: PathBuf,
+    /// `None` for a file that doesn't exist yet.
+    pub old: Option<String>,
+    pub new: String,
+}
+
+/// The change `name` would make to its file, or `None` when the call wouldn't apply, so review
+/// never shows a change that can't happen. Writes nothing; the call still checks everything.
+pub fn proposed_diff(name: &str, input: &Value, workspace: &Path) -> Option<FileDiff> {
+    match name {
+        "Write" => {
+            let input: WriteInput = serde_json::from_value(input.clone()).ok()?;
+            let path = resolve(workspace, &input.file_path).ok()?;
+            check_writable(workspace, &path).ok()?;
+            let old = match fs::metadata(&path) {
+                Ok(meta) if meta.is_file() => Some(current_text(&path)?),
+                Ok(_) => return None,
+                Err(_) => None,
+            };
+            Some(FileDiff {
+                path,
+                old,
+                new: input.content,
+            })
+        }
+        "Edit" => {
+            let input: EditInput = serde_json::from_value(input.clone()).ok()?;
+            let path = resolve(workspace, &input.file_path).ok()?;
+            check_writable(workspace, &path).ok()?;
+            if input.old_string.is_empty() || input.old_string == input.new_string {
+                return None;
+            }
+            let old = current_text(&path)?;
+            let count = old.matches(&input.old_string).count();
+            if count == 0 || (count > 1 && !input.replace_all.unwrap_or(false)) {
+                return None;
+            }
+            let new = old.replace(&input.old_string, &input.new_string);
+            Some(FileDiff {
+                path,
+                old: Some(old),
+                new,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn current_text(path: &Path) -> Option<String> {
+    let bytes = read_bytes(path).ok()?;
+    text_of(&bytes, path).ok().map(str::to_owned)
 }
 
 #[cfg(test)]

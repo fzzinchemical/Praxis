@@ -43,6 +43,30 @@ pub struct Reaction {
     pub show: Option<Value>,
     /// A line for the agent's stdin.
     pub send: Option<String>,
+    /// A proposed file change to open in VS Code's diff editor.
+    pub review: Option<Review>,
+}
+
+/// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
+#[derive(Debug, PartialEq)]
+pub struct Review {
+    pub title: String,
+    pub old_text: String,
+    pub new_text: String,
+}
+
+/// The first `diff` item of a tool call, if it has one (SPEC §11, edit review).
+fn review_of(tool_call: &Value) -> Option<Review> {
+    let diff = tool_call["content"]
+        .as_array()?
+        .iter()
+        .find(|item| item["type"] == "diff")?;
+    let path = diff["path"].as_str()?;
+    Some(Review {
+        title: format!("{}: {path}", tool_call["title"].as_str().unwrap_or("Edit")),
+        old_text: diff["oldText"].as_str().unwrap_or_default().to_owned(),
+        new_text: diff["newText"].as_str()?.to_owned(),
+    })
 }
 
 const INITIALIZE: u64 = 0;
@@ -139,6 +163,7 @@ impl Client {
             return Reaction {
                 show: Some(notice("permission refused: unsupported request id")),
                 send: Some(send.to_string()),
+                review: None,
             };
         };
         let offered = params["options"]
@@ -156,18 +181,21 @@ impl Client {
             .filter_map(|o| o["id"].as_str().map(str::to_owned));
         self.pending.push((id, ids.collect()));
         let title = params["toolCall"]["title"].as_str().unwrap_or("a tool");
-        show(json!({"type": "permission", "id": id, "title": title, "options": options}))
+        Reaction {
+            review: review_of(&params["toolCall"]),
+            ..show(json!({"type": "permission", "id": id, "title": title, "options": options}))
+        }
     }
 
     fn response(&mut self, id: Option<u64>, result: &Value) -> Reaction {
         match id {
             Some(INITIALIZE) => Reaction {
-                show: None,
                 send: Some(request(
                     NEW_SESSION,
                     "session/new",
                     json!({"cwd": self.cwd, "mcpServers": []}),
                 )),
+                ..Reaction::default()
             },
             Some(NEW_SESSION) => {
                 self.session = result["sessionId"].as_str().map(str::to_owned);
@@ -211,7 +239,7 @@ fn update(update: &Value) -> Reaction {
 fn show(message: Value) -> Reaction {
     Reaction {
         show: Some(message),
-        send: None,
+        ..Reaction::default()
     }
 }
 
@@ -375,6 +403,35 @@ mod tests {
             json!({"outcome": "selected", "optionId": "allow_once"})
         );
         assert_eq!(client.answer(7, Some("allow_once")), None, "answered once");
+    }
+
+    #[test]
+    fn a_permission_with_a_diff_also_asks_the_editor_to_review_it() {
+        let mut client = session();
+        let ask = json!({"jsonrpc": "2.0", "id": 7, "method": "session/request_permission",
+            "params": {"sessionId": "s1", "toolCall": {"toolCallId": "t", "title": "Edit",
+                "content": [{"type": "diff", "path": "/work/a.txt", "oldText": "one\n", "newText": "two\n"}]},
+            "options": [{"optionId": "allow_once", "name": "Allow once", "kind": "allow_once"}]}});
+        let reaction = client.on_line(&ask.to_string());
+        assert_eq!(
+            reaction.review,
+            Some(Review {
+                title: "Edit: /work/a.txt".to_owned(),
+                old_text: "one\n".to_owned(),
+                new_text: "two\n".to_owned(),
+            })
+        );
+        assert_eq!(reaction.show.as_ref().unwrap()["type"], "permission");
+        // A request without a diff opens no review, and a new file has an empty old side.
+        assert_eq!(client.on_line(ASK).review, None);
+        let create = json!({"jsonrpc": "2.0", "id": 8, "method": "session/request_permission",
+            "params": {"sessionId": "s1", "toolCall": {"toolCallId": "u", "title": "Write",
+                "content": [{"type": "diff", "path": "/work/b.txt", "newText": "new\n"}]},
+            "options": []}});
+        assert_eq!(
+            client.on_line(&create.to_string()).review.unwrap().old_text,
+            ""
+        );
     }
 
     #[test]

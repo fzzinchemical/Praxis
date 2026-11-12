@@ -141,7 +141,7 @@ pub enum AgentEvent {
     ToolStarted { id: ToolCallId, name: String, input: serde_json::Value, title: String },
     ToolFinished { id: ToolCallId, outcome: ToolOutcome },
     PermissionRequest { id: ToolCallId, name: String, input: serde_json::Value,
-                        can_always: bool, preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
+                        can_always: bool, diff: Option<FileDiff>, preview: Option<Preview>, respond: oneshot::Sender<PermissionReply> },
     Usage { prompt_tokens: u32, used_tokens: u32, context_size: u32, cached_tokens: Option<u32> },
     Compaction(CompactionState),
     Notice { severity: Severity, title: String, detail: Option<String> },
@@ -153,7 +153,7 @@ pub enum StopReason { EndTurn, MaxTokens, MaxTurnRequests, Cancelled, LoopDetect
 pub enum PermissionReply { AllowOnce, AllowAlways, RejectOnce, RejectAlways, Cancelled }
 ```
 
-`ToolOutcome` is `Completed(ToolOutput)` or `Cancelled`. Variants and fields arrive with the task that first produces them: `Compaction` with T2.6, `preview` with T5.8. `can_always` says whether a front end may offer "always" (§9); core treats a disallowed `AllowAlways` as once. A `ToolStarted` precedes its `PermissionRequest`, and a denied call finishes as an error `ToolFinished`.
+`ToolOutcome` is `Completed(ToolOutput)` or `Cancelled`. Variants and fields arrive with the task that first produces them: `Compaction` with T2.6, `diff` with T5.4 (the change a `Write` or `Edit` would make, from `tools::proposed_diff`, computed without writing), `preview` with T5.8. `can_always` says whether a front end may offer "always" (§9); core treats a disallowed `AllowAlways` as once. A `ToolStarted` precedes its `PermissionRequest`, and a denied call finishes as an error `ToolFinished`.
 
 The agent loop runs as one Tokio task per session, sends events on an `mpsc` channel, and observes a `CancellationToken`. Handlers must be `Send`, which ACP also requires.
 
@@ -799,7 +799,7 @@ Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-k
 
 - **Permission option kinds:** `allow_once`, `allow_always`, `reject_once`, `reject_always`. The answer's `outcome` is `selected` with an `optionId`, or `cancelled`. After `session/cancel`, the client must answer pending requests with `cancelled`.
 - **Tool `kind`:** `read`, `edit`, `delete`, `move`, `search`, `execute`, `think`, `fetch`, `switch_mode`, `other`. `other` is the default, and unknown values parse as `other`.
-- **Diff content:** a `content` item on a tool call or its update, `{"type": "diff", "path", "oldText", "newText"}`. `path` is absolute, and `oldText` is omitted or `null` for new files. A permission request can carry it, which edit review needs.
+- **Diff content:** a `content` item on a tool call or its update, `{"type": "diff", "path", "oldText", "newText"}`. `path` is absolute, and `oldText` is omitted or `null` for new files. A permission request can carry it, which edit review needs. `Write` and `Edit` permission requests carry one (T5.4), and the extension opens it in VS Code's diff editor. Both sides are untitled documents, so the review never writes the file; the answer still decides.
 - **`mcpServers`:** required on `session/new` and `session/load`. It may be empty or `null`, but omitting it is a parse error. Agents must support stdio servers; `http` and `sse` servers are only allowed if the agent advertises them in `mcpCapabilities`. If `session/new` passes MCP servers, treat them as user-approved, since they come from the user's editor.
 
 Handlers run inside the connection's dispatch loop, and awaiting a client response in one deadlocks. The `session/prompt` handler spawns its work and keeps the responder.

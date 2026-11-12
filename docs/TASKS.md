@@ -469,7 +469,7 @@ flowchart TB
   - **Do:** streaming, stop button, status line, collapsed tool output, permissions, safe markdown, CSP, accessibility (§11).
   - **Done when:** native tests confirm `<script>` and `javascript:` links in model text render inert; the checklist's keyboard-only pass succeeds; and the status line shows phase, elapsed time and context used.
 
-- [ ] **T5.4 Diff review** (§11)
+- [x] **T5.4 Diff review** (§11)
   - **Needs:** T5.3.
   - **Done when:** checklist confirms a `Write` or `Edit` opens the native diff, accept applies it, reject leaves the file unchanged, and the model is told which.
 

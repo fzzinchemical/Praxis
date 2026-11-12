@@ -6,7 +6,7 @@
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
-use protocol::{Client, FromPanel, Lines, Reaction};
+use protocol::{Client, FromPanel, Lines, Reaction, Review};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
@@ -42,6 +42,14 @@ extern "C" {
     fn show_error_message(message: &str);
     #[wasm_bindgen(js_namespace = window, js_name = showErrorMessage)]
     fn show_error_with_action(message: &str, action: &str) -> Promise;
+
+    #[wasm_bindgen(js_namespace = workspace, js_name = openTextDocument)]
+    fn open_text_document(options: &Object) -> Promise;
+    #[wasm_bindgen(js_namespace = commands, js_name = executeCommand)]
+    fn execute_command(command: &str, left: &Uri, right: &Uri, title: &str) -> Promise;
+    type TextDocument;
+    #[wasm_bindgen(method, getter)]
+    fn uri(this: &TextDocument) -> Uri;
 
     #[wasm_bindgen(js_namespace = window, js_name = createOutputChannel)]
     fn create_output_channel(name: &str) -> OutputChannel;
@@ -316,7 +324,54 @@ fn react(state: &Shared, reaction: Reaction) {
     if let Some(message) = reaction.show {
         panel.webview.post_message(&message.to_string());
     }
+    if let Some(review) = reaction.review
+        && let Err(error) = open_review(&review, &panel.output)
+    {
+        panel
+            .output
+            .append(&format!("could not open the diff: {error:?}\n"));
+    }
     panel.send(reaction.send);
+}
+
+/// Opens VS Code's diff editor on a proposed change. Both sides are untitled documents, so the
+/// file on disk is untouched; the agent writes only if the user allows the call.
+// shortcut: the untitled sides stay open and unsaved after the answer; a text document content
+// provider would let them close cleanly, upgrade if people trip over it.
+fn open_review(review: &Review, output: &OutputChannel) -> Result<(), JsValue> {
+    let old: JsValue = untitled(&review.old_text)?.into();
+    let new: JsValue = untitled(&review.new_text)?.into();
+    let sides = Array::of2(&old, &new);
+    let (failed_open, failed_diff) = (failure_logger(output), failure_logger(output));
+    let title = review.title.clone();
+    let on_sides = Closure::<dyn FnMut(JsValue)>::new(move |opened: JsValue| {
+        let opened = Array::from(&opened);
+        let left = opened.get(0).unchecked_into::<TextDocument>().uri();
+        let right = opened.get(1).unchecked_into::<TextDocument>().uri();
+        let _ = execute_command("vscode.diff", &left, &right, &title).catch(&failed_diff);
+    });
+    let _ = Promise::all(&sides).then(&on_sides).catch(&failed_open);
+    // Each closure runs once and must outlive its promise, so the host keeps it.
+    on_sides.forget();
+    failed_open.forget();
+    Ok(())
+}
+
+/// An untitled document holding `text`, from `workspace.openTextDocument`.
+fn untitled(text: &str) -> Result<Promise, JsValue> {
+    let options = Object::new();
+    Reflect::set(&options, &"content".into(), &text.into())?;
+    // shortcut: every side is plain text, so the diff has no syntax colouring.
+    Reflect::set(&options, &"language".into(), &"plaintext".into())?;
+    Ok(open_text_document(&options))
+}
+
+/// Logs a failed step of opening a diff to the output channel.
+fn failure_logger(output: &OutputChannel) -> Closure<dyn FnMut(JsValue)> {
+    let output = output.clone();
+    Closure::new(move |error: JsValue| {
+        output.append(&format!("diff review failed: {error:?}\n"));
+    })
 }
 
 fn exited(state: &Shared, code: &str) {

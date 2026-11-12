@@ -9,6 +9,7 @@ mod filter;
 mod search;
 
 pub use checkpoint::UNDO_NOTE;
+pub use files::{FileDiff, proposed_diff};
 
 use crate::provider::ToolSchema;
 use schemars::{JsonSchema, generate::SchemaSettings};

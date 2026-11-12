@@ -18,7 +18,7 @@ use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
 };
 use crate::session::SessionLog;
-use crate::tools::{self, ToolContext, ToolOutput};
+use crate::tools::{self, FileDiff, ToolContext, ToolOutput};
 use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
@@ -81,11 +81,13 @@ pub enum AgentEvent {
         outcome: ToolOutcome,
     },
     /// Show the full `input`. Offer "always" only when `can_always`. Dropping `respond` denies.
+    /// `diff` is the change a `Write` or `Edit` would make, for review.
     PermissionRequest {
         id: ToolCallId,
         name: String,
         input: Value,
         can_always: bool,
+        diff: Option<FileDiff>,
         respond: oneshot::Sender<PermissionReply>,
     },
     Usage {
@@ -978,11 +980,13 @@ impl Agent {
             Decision::Ask { can_always } => can_always,
         };
         let (respond, answer) = oneshot::channel();
+        let diff = tools::proposed_diff(&call.name, &input, self.tools.workspace());
         turn.emit(AgentEvent::PermissionRequest {
             id: call.id.clone(),
             name: call.name.clone(),
             input: input.clone(),
             can_always,
+            diff,
             respond,
         })
         .await;

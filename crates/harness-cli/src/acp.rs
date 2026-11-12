@@ -7,6 +7,7 @@ use agent_client_protocol::{
 use harness_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome};
 use harness_core::provider::Message;
 use harness_core::session::SessionLog;
+use harness_core::tools::FileDiff;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -164,18 +165,12 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
                                 name,
                                 input,
                                 can_always,
+                                diff,
                                 respond,
                             } => {
-                                let reply = ask(
-                                    &cx,
-                                    &req.session_id,
-                                    call,
-                                    name,
-                                    input,
-                                    can_always,
-                                    &cancel,
-                                )
-                                .await;
+                                let update = permission_update(call, name, input, diff);
+                                let reply =
+                                    ask(&cx, &req.session_id, update, can_always, &cancel).await;
                                 // A send failure means the turn already ended, so nothing runs.
                                 let _ = respond.send(reply);
                             }
@@ -213,12 +208,30 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
         )
 }
 
-async fn ask(
-    cx: &ConnectionTo<Client>,
-    session: &v1::SessionId,
+/// The tool call a permission request shows. A `Write` or `Edit` also carries its diff, so the
+/// client can review the change before answering (SPEC §11).
+fn permission_update(
     call: String,
     name: String,
     input: serde_json::Value,
+    diff: Option<FileDiff>,
+) -> v1::ToolCallUpdate {
+    let mut fields = v1::ToolCallUpdateFields::new().title(name).raw_input(input);
+    if let Some(diff) = diff {
+        let text = v1::Diff::new(diff.path, diff.new);
+        let text = match diff.old {
+            Some(old) => text.old_text(old),
+            None => text,
+        };
+        fields = fields.content(vec![text.into()]);
+    }
+    v1::ToolCallUpdate::new(call, fields)
+}
+
+async fn ask(
+    cx: &ConnectionTo<Client>,
+    session: &v1::SessionId,
+    update: v1::ToolCallUpdate,
     can_always: bool,
     cancel: &CancellationToken,
 ) -> PermissionReply {
@@ -237,12 +250,7 @@ async fn ask(
         .into_iter()
         .map(|(kind, id, label)| v1::PermissionOption::new(id, label, kind))
         .collect();
-    let fields = v1::ToolCallUpdateFields::new().title(name).raw_input(input);
-    let request = v1::RequestPermissionRequest::new(
-        session.clone(),
-        v1::ToolCallUpdate::new(call, fields),
-        options,
-    );
+    let request = v1::RequestPermissionRequest::new(session.clone(), update, options);
     let answer = tokio::select! {
         answer = cx.send_request(request).block_task() => answer,
         () = cancel.cancelled() => return PermissionReply::Cancelled,
@@ -498,6 +506,70 @@ mod tests {
             ]
         );
         assert_eq!(std::fs::read_to_string(dir.join("ok.txt")).unwrap(), "x");
+    }
+
+    /// Runs one `Write` prompt and answers its permission request with `answer`. Returns the tool
+    /// call the client was asked about, and the requests the model received, in order.
+    async fn review_write(dir: &Path, answer: &'static str) -> (Value, Vec<Value>) {
+        let server = fake_server().await;
+        let asked = Arc::new(Mutex::new(Value::Null));
+        let on_ask = asked.clone();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |req: v1::RequestPermissionRequest, responder, _cx| {
+                    *on_ask.lock().unwrap() = to_value(&req.tool_call).unwrap();
+                    let chosen = v1::SelectedPermissionOutcome::new(answer);
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .connect_with(harness(&server, dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(dir);
+                let session = cx.send_request(session).block_task().await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let bodies = requests
+            .iter()
+            .map(|request| request.body_json::<Value>().unwrap())
+            .collect();
+        let tool_call = asked.lock().unwrap().clone();
+        (tool_call, bodies)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_permission_request_carries_the_proposed_file_content() {
+        let dir = temp_dir("diff");
+        let (tool_call, _) = review_write(&dir, "reject_once").await;
+        assert_eq!(tool_call["title"], "Write");
+        let diff = &tool_call["content"][0];
+        assert_eq!(diff["type"], "diff");
+        assert_eq!(diff["path"], dir.join("ok.txt").to_str().unwrap());
+        assert_eq!(diff["newText"], "x");
+        assert!(diff.get("oldText").is_none_or(Value::is_null), "new file");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rejected_write_leaves_the_file_unchanged_and_the_model_is_told() {
+        let dir = temp_dir("reject");
+        let (_, requests) = review_write(&dir, "reject_once").await;
+        assert!(!dir.join("ok.txt").exists(), "rejected write must not run");
+        // The second model request carries the tool result, which names the rejection.
+        let told = requests[1]["messages"].to_string();
+        assert!(
+            told.contains("The user rejected this `Write` call"),
+            "{told}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

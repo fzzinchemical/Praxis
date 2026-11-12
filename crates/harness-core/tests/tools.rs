@@ -3,7 +3,7 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::tools::{ToolContext, ToolOutput, execute, schemas};
+use harness_core::tools::{ToolContext, ToolOutput, execute, proposed_diff, schemas};
 use serde_json::{Value, json};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -93,6 +93,44 @@ fn ok(output: &ToolOutput, needle: &str) {
 
 fn s(path: &Path) -> &str {
     path.to_str().unwrap()
+}
+
+#[test]
+fn a_proposed_edit_shows_the_file_the_call_would_leave() {
+    let fx = Fixture::new();
+    fx.file("a.txt", "one\ntwo\n");
+    fx.file("twice.txt", "same\nsame\n");
+    let edit = |file: &str, old: &str, new: &str| json!({"file_path": file, "old_string": old, "new_string": new});
+    let diff = proposed_diff("Edit", &edit("a.txt", "two", "2"), &fx.ws()).unwrap();
+    assert_eq!(diff.path, fx.ws().join("a.txt"));
+    assert_eq!(diff.old.as_deref(), Some("one\ntwo\n"));
+    assert_eq!(diff.new, "one\n2\n");
+    assert!(
+        proposed_diff("Edit", &edit("twice.txt", "same", "x"), &fx.ws()).is_none(),
+        "not unique"
+    );
+    assert!(
+        proposed_diff("Edit", &edit("a.txt", "absent", "x"), &fx.ws()).is_none(),
+        "not found"
+    );
+    let outside = json!({"file_path": "../outside.txt", "content": "x"});
+    assert!(
+        proposed_diff("Write", &outside, &fx.ws()).is_none(),
+        "outside the workspace"
+    );
+}
+
+#[test]
+fn a_proposed_write_shows_the_old_file_or_none_for_a_new_one() {
+    let fx = Fixture::new();
+    fx.file("a.txt", "old\n");
+    let write = |file: &str| json!({"file_path": file, "content": "new\n"});
+    let update = proposed_diff("Write", &write("a.txt"), &fx.ws()).unwrap();
+    assert_eq!(update.old.as_deref(), Some("old\n"));
+    let create = proposed_diff("Write", &write("sub/b.txt"), &fx.ws()).unwrap();
+    assert_eq!(create.old, None);
+    assert_eq!(create.new, "new\n");
+    assert!(proposed_diff("Bash", &json!({}), &fx.ws()).is_none());
 }
 
 #[test]
