@@ -126,7 +126,6 @@ Verified latest versions on 2026-11-06. Use the current compatible release at T0
 | `pulldown-cmark` | 0.13 | Markdown in the webview |
 | `zip` | 9.4 | `.vsix` (xtask only) |
 | `wiremock` | 0.6 | Dev: fake provider server |
-| `ratatui` | 0.30 | Only if T7.3 is approved |
 
 No SSE crate: `eventsource-stream` hasn't been updated since 2022, and line parsing is short. No tokenizer crate: see §7.
 

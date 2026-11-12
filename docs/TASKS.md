@@ -571,7 +571,6 @@ flowchart LR
 flowchart LR
     T7_1["T7.1<br/>Docs and threat model"]
     T7_2["T7.2<br/>Performance check"]
-    T7_3["T7.3<br/>Rich TUI decision"]
     T7_4["T7.4<br/>Release"]
     M0_M6(["M0-M6"])
     T5_6(["T5.6"])
@@ -586,7 +585,7 @@ flowchart LR
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
     class T7_1,T7_2 task
-    class T7_3,T7_4 human
+    class T7_4 human
     class M0_M6,T5_6 other
     class T7_5 human
 ```
@@ -600,8 +599,7 @@ flowchart LR
   - **Needs:** T5.6.
   - **Done when:** every target is measured and reported. Investigate misses and update the targets with evidence. Don't use `unsafe` to hit them.
 
-- [ ] **T7.3 Rich TUI decision** `HUMAN` · *Could*
-  - **Done when:** the human decides whether the REPL is enough from real use. Only then add `ratatui`.
+- [x] ~~**T7.3 Rich TUI decision**~~ Cut (2026-11-12): the owner chose the REPL; no `ratatui`.
 
 - [ ] **T7.4 Release** `HUMAN` approves
   - **Needs:** T7.1, T7.2.
@@ -616,6 +614,8 @@ flowchart LR
 ## M8: Anthropic backend and per-agent models
 
 > A Claude model runs the same loop, and each agent can use its own model ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)).
+>
+> **The Anthropic tasks (T8.1, T8.3, T8.4, T8.7) are on hold** by the owner's choice (2026-11-12). T8.6 and T8.8 don't need them.
 
 ```mermaid
 flowchart LR
@@ -653,7 +653,7 @@ flowchart LR
     class T2_1,T2_5,T3_1,T3_5,T6_5 other
 ```
 
-- [ ] **T8.1 Record Anthropic fixtures** `HUMAN` provides a key (paid) (§5.6)
+- [ ] **T8.1 Record Anthropic fixtures** `HUMAN` provides a key (paid) (§5.6) · **On hold** (2026-11-12, owner's call)
   - **Done when:** `crates/harness-core/tests/fixtures/anthropic/` holds recorded streams for a text reply, a reply with two `tool_use` blocks, adaptive thinking, a `max_tokens` stop, an SSE `error` event, a 401 and a 429 or 529, plus one `GET /v1/models/{id}` body. Each `UNVERIFIED` fact in §5.6 is confirmed or corrected.
 
 - [x] **T8.2 Backends and model references** (§5.1, §8)
@@ -676,7 +676,7 @@ flowchart LR
   - **Needs:** T8.2, T6.5.
   - **Done when:** a delegated agent whose `model` resolves to another backend runs on it with its own history, profile and context budget; one with no `model` uses the session model; and the parent's history is unchanged apart from the returned summary.
 
-- [ ] **T8.7 Anthropic scoreboard** `HUMAN` approves the spend · *Could*
+- [ ] **T8.7 Anthropic scoreboard** `HUMAN` approves the spend · *Could* · **On hold** with T8.1
   - **Needs:** T8.4, T2.1.
   - **Done when:** `cargo xtask eval --model anthropic/<id>` writes a scoreboard to `evals/results/` with the cost of the run, the task sandbox's only network path is to the Anthropic endpoint, and it is compared with the local models as a reference ceiling.
 

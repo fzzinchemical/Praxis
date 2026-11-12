@@ -235,7 +235,6 @@ flowchart TB
 
 - Installer and packaged binaries, docs, config reference, a tested-models table from the scoreboard
 - Threat model written down
-- Rich TUI (ratatui), only if the REPL proves insufficient in daily use
 
 ### M8: Anthropic backend and per-agent models
 

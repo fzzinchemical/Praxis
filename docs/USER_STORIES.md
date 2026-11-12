@@ -153,7 +153,7 @@ The first things to cut.
 
 | ID | Story | Tasks |
 |---|---|---|
-| **US-38** | As a developer, I want a rich terminal UI, so that long sessions are easier to follow. | T7.3, a decision based on real use |
+| **US-38** | As a developer, I want a rich terminal UI, so that long sessions are easier to follow. | Cut (2026-11-12): the REPL stays |
 | **US-39** | As a developer, I want MCP resources and prompts, so that servers can offer more than tools. | Part of T4.5 |
 | **US-40** | As a developer, I want to use the harness from Zed or another ACP editor, so that I'm not tied to VS Code. | Part of T5.6 |
 | **US-41** | As a VS Code user, I want editor diagnostics available as context, so that the agent can see current errors. | Part of T5.5 |
