@@ -664,8 +664,13 @@ async fn repl(
                     agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
                 }
                 None => {
-                    let prompt = run_command(commands, line.trim())
-                        .unwrap_or_else(|| line.trim().to_owned());
+                    let prompt = run_command(
+                        commands,
+                        line.trim(),
+                        agent.tools().workspace(),
+                        agent.session_id(),
+                    )
+                    .unwrap_or_else(|| line.trim().to_owned());
                     agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
                 }
             },
@@ -916,7 +921,13 @@ async fn run(
     let agent = with_session(new_agent()?, resume, &session_workspace)?;
     match prompt {
         Some(prompt) => {
-            let prompt = run_command(&plugins.commands, &prompt).unwrap_or(prompt);
+            let prompt = run_command(
+                &plugins.commands,
+                &prompt,
+                agent.tools().workspace(),
+                agent.session_id(),
+            )
+            .unwrap_or(prompt);
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;
             Ok(exit_code(stop))
         }

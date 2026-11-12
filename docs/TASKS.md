@@ -780,7 +780,7 @@ flowchart LR
   - **Needs:** T9.3.
   - **Done when:** a rule with `paths: ["src/**/*.rs"]` is appended the first time a matching file is touched and never for a non-matching one; comma-string and list forms both parse.
 
-- [ ] **T9.7 Skill frontmatter and substitutions** (§12) · *Should*
+- [x] **T9.7 Skill frontmatter and substitutions** (§12) · *Should*
   - **Needs:** T9.4.
   - **Done when:** table tests cover `$ARGUMENTS[N]`, `$N`, `\$1`, the appended `ARGUMENTS:` line, `${CLAUDE_SKILL_DIR}` and friends, `when_to_use`, `disable-model-invocation` (absent from the index) and `user-invocable: false` (no `/` command), for plugin and standalone skills alike.
 

@@ -185,6 +185,12 @@ pub struct Skill {
     pub description: String,
     /// With `${CLAUDE_PLUGIN_ROOT}` already expanded.
     pub body: String,
+    /// `disable-model-invocation: true` keeps it out of the index and the `Skill` tool.
+    pub model_invocable: bool,
+    /// `user-invocable: false` gives it no `/` command.
+    pub user_invocable: bool,
+    /// The directory holding the file, for `${CLAUDE_SKILL_DIR}`.
+    pub dir: PathBuf,
 }
 
 impl Plugin {
@@ -277,10 +283,17 @@ fn parse_markdown(path: &Path, stem: String) -> Option<(Skill, impl Fn(&str) -> 
             .trim()
             .to_owned()
     });
+    let description = match field("when_to_use").filter(|w| !w.is_empty()) {
+        Some(when) => format!("{description} {when}").trim().to_owned(),
+        None => description,
+    };
     let skill = Skill {
         name,
         description,
         body: body.to_owned(),
+        model_invocable: field("disable-model-invocation").as_deref() != Some("true"),
+        user_invocable: field("user-invocable").as_deref() != Some("false"),
+        dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
     };
     Some((skill, field))
 }
@@ -596,20 +609,100 @@ pub(crate) fn split_frontmatter(text: &str) -> (&str, &str) {
         .unwrap_or(("", text))
 }
 
-/// Expands `/<plugin>:<name> args` into the command's prompt, or `None` if `input` names no
-/// command. Like Claude Code, arguments are appended when the body has no `$ARGUMENTS`.
-pub fn run_command(commands: &[Skill], input: &str) -> Option<String> {
+/// Expands `/<name> args` into the command's prompt, or `None` if `input` names no
+/// user-invocable command. `project_dir` and `session_id` fill `${CLAUDE_PROJECT_DIR}` and
+/// `${CLAUDE_SESSION_ID}`.
+pub fn run_command(
+    commands: &[Skill],
+    input: &str,
+    project_dir: &Path,
+    session_id: &str,
+) -> Option<String> {
     let rest = input.strip_prefix('/')?;
     let (name, args) = rest.split_once(' ').unwrap_or((rest, ""));
-    let args = args.trim();
-    let command = commands.iter().find(|c| c.name == name)?;
-    Some(if command.body.contains("$ARGUMENTS") {
-        command.body.replace("$ARGUMENTS", args)
-    } else if args.is_empty() {
-        command.body.clone()
-    } else {
-        format!("{}\nARGUMENTS: {args}", command.body)
-    })
+    let command = commands
+        .iter()
+        .find(|c| c.name == name && c.user_invocable)?;
+    Some(render(command, args.trim(), project_dir, session_id))
+}
+
+/// Expands a skill or command body for one run (SPEC §12) in a single pass, so argument text
+/// is never expanded again. With no argument placeholder, a non-empty `args` is appended as
+/// `ARGUMENTS: <args>`.
+pub fn render(skill: &Skill, args: &str, project_dir: &Path, session_id: &str) -> String {
+    let argv = split_args(args);
+    let arg = |n: usize| argv.get(n).map_or("", String::as_str);
+    let vars = [
+        ("${CLAUDE_SKILL_DIR}", skill.dir.display().to_string()),
+        ("${CLAUDE_PROJECT_DIR}", project_dir.display().to_string()),
+        ("${CLAUDE_SESSION_ID}", session_id.to_owned()),
+    ];
+    let mut out = String::new();
+    let mut placed = false;
+    let mut rest = skill.body.as_str();
+    while let Some(at) = rest.find(['$', '\\']) {
+        out.push_str(&rest[..at]);
+        rest = &rest[at..];
+        let (piece, len) = if rest.starts_with("\\$") {
+            ("$".to_owned(), 2)
+        } else if let Some(tail) = rest.strip_prefix("$ARGUMENTS") {
+            placed = true;
+            match bracketed_index(tail) {
+                Some((n, used)) => (arg(n).to_owned(), 10 + used),
+                None => (args.to_owned(), 10),
+            }
+        } else if let Some((n, used)) = rest.strip_prefix('$').and_then(leading_digits) {
+            placed = true;
+            (arg(n).to_owned(), 1 + used)
+        } else if let Some((key, value)) = vars.iter().find(|(k, _)| rest.starts_with(k)) {
+            (value.clone(), key.len())
+        } else {
+            (rest[..1].to_owned(), 1)
+        };
+        out.push_str(&piece);
+        rest = &rest[len..];
+    }
+    out.push_str(rest);
+    if !placed && !args.is_empty() {
+        out.push_str("\nARGUMENTS: ");
+        out.push_str(args);
+    }
+    out
+}
+
+/// `[N]` at the start of `s`: the index and the bytes it spans, brackets included.
+fn bracketed_index(s: &str) -> Option<(usize, usize)> {
+    let inner = s.strip_prefix('[')?;
+    let (n, used) = leading_digits(inner)?;
+    inner[used..].starts_with(']').then_some((n, used + 2))
+}
+
+/// The number at the start of `s` and the bytes it spans.
+fn leading_digits(s: &str) -> Option<(usize, usize)> {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    Some((s[..end].parse().ok()?, end))
+}
+
+/// Splits arguments like a shell: whitespace separates, and quotes group.
+// shortcut: quotes only, no backslash escapes or other shell syntax; add shell-words if skills need them.
+fn split_args(args: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    let mut quote: Option<char> = None;
+    for c in args.chars() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), c) => current.get_or_insert_default().push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                current.get_or_insert_default();
+            }
+            (None, c) if c.is_whitespace() => out.extend(current.take()),
+            (None, c) => current.get_or_insert_default().push(c),
+        }
+    }
+    out.extend(current);
+    out
 }
 
 /// A manifest value that may be one entry or an array of them.

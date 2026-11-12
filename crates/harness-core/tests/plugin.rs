@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use harness_core::config::McpServer;
-use harness_core::plugin::{Source, load, run_command, standalone};
+use harness_core::plugin::{Skill, Source, load, run_command, standalone};
 use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
@@ -191,19 +191,19 @@ fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
     let commands = plugin.commands();
     assert_eq!(commands[0].description, "Fix it");
     assert_eq!(
-        run_command(&commands, "/kit:fix 42 and 43").as_deref(),
+        run(&commands, "/kit:fix 42 and 43").as_deref(),
         Some("Fix issue 42 and 43 now.\n")
     );
     assert_eq!(
-        run_command(&commands, "/kit:plain fast").as_deref(),
+        run(&commands, "/kit:plain fast").as_deref(),
         Some("Just do it.\n\nARGUMENTS: fast")
     );
     assert_eq!(
-        run_command(&commands, "/kit:plain").as_deref(),
+        run(&commands, "/kit:plain").as_deref(),
         Some("Just do it.\n")
     );
-    assert_eq!(run_command(&commands, "/kit:missing"), None);
-    assert_eq!(run_command(&commands, "kit:fix"), None);
+    assert_eq!(run(&commands, "/kit:missing"), None);
+    assert_eq!(run(&commands, "kit:fix"), None);
 }
 
 #[test]
@@ -386,6 +386,131 @@ fn names(list: &[harness_core::plugin::Skill]) -> Vec<&str> {
     list.iter().map(|s| s.name.as_str()).collect()
 }
 
+fn run(commands: &[Skill], input: &str) -> Option<String> {
+    run_command(commands, input, Path::new("/work"), "sess-1")
+}
+
+fn command(body: &str) -> Skill {
+    Skill {
+        name: "t:c".into(),
+        description: String::new(),
+        body: body.into(),
+        model_invocable: true,
+        user_invocable: true,
+        dir: PathBuf::from("/skills/c"),
+    }
+}
+
+#[test]
+fn bodies_expand_arguments_variables_and_escapes() {
+    // (body, arguments as typed, expected prompt)
+    let cases = [
+        ("Fix $ARGUMENTS", "the bug", "Fix the bug"),
+        ("$ARGUMENTS[1] then $0", "a 'b c' d", "b c then a"),
+        ("$2 and $9 end", "a b c", "c and  end"),
+        ("$ARGUMENTS[+1]", "a", "a[+1]"),
+        ("$ARGUMENTSX $ARGUMENTS", "a", "aX a"),
+        ("\\$1 costs", "x", "$1 costs\nARGUMENTS: x"),
+        ("\\${CLAUDE_SKILL_DIR}", "", "${CLAUDE_SKILL_DIR}"),
+        ("$0", "\"x y\" z", "x y"),
+        ("$ARGUMENTS", "$1", "$1"),
+        ("cost $", "a", "cost $\nARGUMENTS: a"),
+        ("\\1 stays", "a", "\\1 stays\nARGUMENTS: a"),
+        ("no placeholder", "", "no placeholder"),
+        (
+            "${CLAUDE_SKILL_DIR}/run.sh in ${CLAUDE_PROJECT_DIR}",
+            "",
+            "/skills/c/run.sh in /work",
+        ),
+        ("session ${CLAUDE_SESSION_ID}", "", "session sess-1"),
+    ];
+    for (body, args, expected) in cases {
+        let input = format!("/t:c {args}");
+        assert_eq!(
+            run(&[command(body)], &input).as_deref(),
+            Some(expected),
+            "{body:?} with {args:?}"
+        );
+    }
+}
+
+#[test]
+fn frontmatter_shapes_the_index_and_commands_for_plugins_and_standalone_skills_alike() {
+    let write_skills = |base: &Path| {
+        write(
+            &base.join("skills/guide/SKILL.md"),
+            "---\ndescription: Explain code\nwhen_to_use: When asked how code works\n---\nGuide.\n",
+        );
+        write(
+            &base.join("skills/hidden/SKILL.md"),
+            "---\ndescription: Internal\ndisable-model-invocation: true\n---\nHidden.\n",
+        );
+        write(
+            &base.join("skills/quiet/SKILL.md"),
+            "---\ndescription: Background\nuser-invocable: false\n---\nQuiet.\n",
+        );
+    };
+    // (short name, description, model-invocable, user-invocable) for each skill.
+    let expected = [
+        (
+            "guide",
+            "Explain code When asked how code works",
+            true,
+            true,
+        ),
+        ("hidden", "Internal", false, true),
+        ("quiet", "Background", true, false),
+    ];
+    let short = |s: &Skill| s.name.rsplit(':').next().unwrap().to_owned();
+    let summary = |list: &[Skill]| {
+        let mut rows: Vec<_> = list
+            .iter()
+            .map(|s| {
+                (
+                    short(s),
+                    s.description.clone(),
+                    s.model_invocable,
+                    s.user_invocable,
+                )
+            })
+            .collect();
+        rows.sort();
+        rows
+    };
+    let expected: Vec<_> = expected
+        .iter()
+        .map(|(n, d, m, u)| (n.to_string(), d.to_string(), *m, *u))
+        .collect();
+
+    let plugin = plugin_dir("frontmatter-plugin");
+    manifest(&plugin, r#"{"name":"kit"}"#);
+    write_skills(&plugin);
+    assert_eq!(summary(&load(&plugin).unwrap().skills()), expected);
+
+    let layer_root = layer("frontmatter");
+    write_skills(&layer_root);
+    let found = standalone(std::slice::from_ref(&layer_root));
+    assert_eq!(summary(&found.skills), expected);
+    let guide = found.skills.iter().find(|s| short(s) == "guide").unwrap();
+    assert_eq!(guide.dir, layer_root.join("skills/guide"));
+    assert_eq!(run(&found.skills, "/quiet"), None, "no `/` command");
+    assert!(run(&found.skills, "/hidden").is_some(), "still a command");
+}
+
+#[test]
+fn bodies_expand_skill_directory_for_standalone_skills() {
+    let layer_root = layer("skill-dir");
+    write(
+        &layer_root.join("skills/run/SKILL.md"),
+        "Script: ${CLAUDE_SKILL_DIR}/run.sh $ARGUMENTS\n",
+    );
+    let found = standalone(std::slice::from_ref(&layer_root));
+    assert_eq!(
+        run(&found.skills, "/run fast").as_deref(),
+        Some(format!("Script: {}/skills/run/run.sh fast\n", layer_root.display()).as_str())
+    );
+}
+
 #[test]
 fn standalone_skills_and_commands_run_with_arguments() {
     let user = layer("run");
@@ -409,12 +534,12 @@ fn standalone_skills_and_commands_run_with_arguments() {
         .cloned()
         .collect();
     assert_eq!(
-        run_command(&all, "/frontend:component the form").as_deref(),
+        run(&all, "/frontend:component the form").as_deref(),
         Some("Build the form\n")
     );
-    assert_eq!(run_command(&all, "/review").as_deref(), Some("Review .\n"));
+    assert_eq!(run(&all, "/review").as_deref(), Some("Review .\n"));
     assert_eq!(
-        run_command(&all, "/plain fast").as_deref(),
+        run(&all, "/plain fast").as_deref(),
         Some("Just do it.\n\nARGUMENTS: fast")
     );
 }

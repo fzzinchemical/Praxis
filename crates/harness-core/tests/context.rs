@@ -851,6 +851,9 @@ async fn the_skill_index_is_frozen_in_the_prefix_and_skill_appends_the_body() {
         name: "kit:review".into(),
         description: "Review a diff".into(),
         body: "Step one: read the diff.".into(),
+        model_invocable: true,
+        user_invocable: true,
+        dir: Default::default(),
     };
     let bodies = vec![
         tool_reply("s", "Skill", json!({"skill": "kit:review"})),
@@ -871,4 +874,37 @@ async fn the_skill_index_is_frozen_in_the_prefix_and_skill_appends_the_body() {
     assert!(tools.contains("\"Skill\""), "{tools}");
     let shown = bodies[1]["messages"].to_string();
     assert!(shown.contains("Step one: read the diff."), "{shown}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_skill_with_disable_model_invocation_is_left_out_of_the_index_and_the_skill_tool() {
+    let skill = |name: &str, body: &str, model_invocable: bool| harness_core::plugin::Skill {
+        name: name.into(),
+        description: format!("{name} does things"),
+        body: body.into(),
+        model_invocable,
+        user_invocable: true,
+        dir: Default::default(),
+    };
+    let skills = vec![
+        skill("kit:review", "Review it.", true),
+        skill("kit:secret", "Secret steps.", false),
+    ];
+    let bodies = vec![
+        tool_reply("s", "Skill", json!({"skill": "kit:secret"})),
+        text_reply("done", 4000),
+    ];
+    let mut h = Harness::new(bodies, config(20_000)).await;
+    h.agent = Some(h.agent.take().unwrap().with_skills(skills));
+    h.turn("try the secret").await;
+
+    let bodies = h.bodies().await;
+    let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
+    assert!(
+        system.contains("- kit:review: kit:review does things"),
+        "{system}"
+    );
+    assert!(!system.contains("kit:secret"), "{system}");
+    let shown = bodies[1]["messages"].to_string();
+    assert!(!shown.contains("Secret steps."), "{shown}");
 }

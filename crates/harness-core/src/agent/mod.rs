@@ -14,7 +14,7 @@ use crate::context::prefix::SessionFacts;
 use crate::hooks::{Hook, Outcome, PermissionDecision};
 use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
-use crate::plugin::{AgentDef, Skill};
+use crate::plugin::{AgentDef, Skill, render};
 use crate::provider::{
     ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, ReadyModel,
     ToolCall, ToolSchema,
@@ -293,6 +293,7 @@ impl Agent {
 
     /// Adds the `Skill` tool and the skills' index to the prefix. Call before the first turn.
     pub fn with_skills(mut self, skills: Vec<Skill>) -> Self {
+        let skills: Vec<Skill> = skills.into_iter().filter(|s| s.model_invocable).collect();
         if skills.is_empty() {
             return self;
         }
@@ -462,7 +463,7 @@ impl Agent {
             .unwrap_or_default();
         match self.skills.iter().find(|s| s.name == wanted) {
             Some(skill) => ToolOutput {
-                content: skill.body.clone(),
+                content: render(skill, "", self.tools.workspace(), self.session_id()),
                 is_error: false,
                 structured: Value::Null,
             },
@@ -490,6 +491,11 @@ impl Agent {
     }
 
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
+    /// The session log's id, or empty before one is attached.
+    pub fn session_id(&self) -> &str {
+        self.session.as_ref().map_or("", |s| s.id())
+    }
+
     pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
         self.history.extend(prior);
         self.session = Some(log);
@@ -1012,7 +1018,7 @@ impl Agent {
         let workspace = self.tools.workspace();
         // shortcut: no `transcript_path` or `permission_mode` yet; add them if plugins need them.
         let mut stdin = json!({
-            "session_id": self.session.as_ref().map_or("", |s| s.id()),
+            "session_id": self.session_id(),
             "cwd": workspace,
             "hook_event_name": "PreToolUse",
             "tool_name": call.name,
@@ -1251,6 +1257,9 @@ fn general_agent() -> AgentDef {
             description: "General-purpose agent for a self-contained task.".to_owned(),
             body: "Do the task alone. End with a short report of what you found or changed."
                 .to_owned(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: PathBuf::new(),
         },
         tools: None,
         disallowed_tools: vec!["Agent".to_owned()],
