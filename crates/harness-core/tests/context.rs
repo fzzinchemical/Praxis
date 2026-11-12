@@ -529,6 +529,41 @@ async fn masks_once_in_a_batch_and_keeps_the_prefix_and_recent_turns() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_repeat_read_whose_first_output_was_masked_returns_the_content_again() {
+    let mut cfg = config(10_000);
+    cfg.mask_keep_turns = 3;
+    let mut bodies = vec![tool_reply(
+        "first",
+        "Read",
+        json!({"file_path": "f.txt", "limit": 1000}),
+    )];
+    bodies.extend((0..8).map(|n| {
+        tool_reply(
+            &format!("c{n}"),
+            "Read",
+            json!({"file_path": "f.txt", "limit": 1001 + n}),
+        )
+    }));
+    bodies.push(tool_reply(
+        "again",
+        "Read",
+        json!({"file_path": "f.txt", "limit": 1000}),
+    ));
+    bodies.push(text_reply("done", 7000));
+    let mut h = Harness::new(bodies, cfg).await;
+    fs::write(h.workspace.join("f.txt"), big_file_lines(150)).unwrap();
+    let events = h.turn("go").await;
+    assert!(!compactions(&events).is_empty(), "masking must run");
+
+    let bodies = h.bodies().await;
+    let last = bodies.last().unwrap()["messages"].as_array().unwrap();
+    let again = last.iter().find(|m| m["tool_call_id"] == "again").unwrap()["content"]
+        .as_str()
+        .unwrap();
+    assert!(again.starts_with("     1\tline number 1\n"), "{again}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn counts_calls_that_fetch_masked_output_again() {
     let mut cfg = config(10_000);
     cfg.mask_keep_turns = 3;

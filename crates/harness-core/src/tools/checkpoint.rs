@@ -6,6 +6,7 @@ use std::io;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
+use std::sync::atomic::Ordering;
 
 /// Shown with every undo: only file tools are checkpointed.
 pub const UNDO_NOTE: &str = "Only Write and Edit changes are undone; Bash effects are not.";
@@ -27,6 +28,7 @@ impl ToolContext {
 
     /// Starts a new undo step. Turns that changed nothing don't count as one.
     pub fn begin_turn(&self) {
+        self.turn.fetch_add(1, Ordering::Relaxed);
         let mut cp = self.checkpoints();
         if cp.turns.last().is_none_or(|turn| !turn.is_empty()) {
             cp.turns.push(Vec::new());
