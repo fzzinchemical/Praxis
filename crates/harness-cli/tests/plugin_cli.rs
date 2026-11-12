@@ -75,6 +75,7 @@ fn harness(home: &Path, args: &[&str]) -> Output {
         .current_dir(home)
         .env("XDG_CONFIG_HOME", home.join("xdg"))
         .env("XDG_DATA_HOME", home.join("xdg-data"))
+        .env("HOME", home)
         .stdin(Stdio::null())
         .output()
         .unwrap()

@@ -191,22 +191,11 @@ impl Plugin {
     /// `<dir>/<name>/SKILL.md` under each skills directory, sorted. Unreadable files are
     /// skipped with a warning.
     pub fn skills(&self) -> Vec<Skill> {
-        let mut files = Vec::new();
-        for dir in &self.skills {
-            let mut found: Vec<PathBuf> = fs::read_dir(dir)
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.path().join("SKILL.md"))
-                // The same containment rule as the scan: no symlink out of the plugin.
-                .filter(|p| {
-                    p.canonicalize()
-                        .is_ok_and(|real| real.starts_with(&self.root))
-                })
-                .collect();
-            found.sort();
-            files.extend(found);
-        }
+        let files: Vec<PathBuf> = self
+            .skills
+            .iter()
+            .flat_map(|dir| skill_files(dir, &self.root))
+            .collect();
         files.iter().filter_map(|f| self.read_skill(f)).collect()
     }
 
@@ -261,48 +250,166 @@ impl Plugin {
 
     /// The file as a skill, plus a reader for any other frontmatter field.
     fn read_markdown(&self, path: &Path) -> Option<(Skill, impl Fn(&str) -> Option<String>)> {
-        let text = fs::read_to_string(path)
-            .inspect_err(|error| tracing::warn!(%error, path = %path.display(), "skipped"))
-            .ok()?;
-        let (front, body) = split_frontmatter(&text);
-        let front = front.to_owned();
-        let field = move |key: &str| {
-            let mut lines = front.lines();
-            let value = lines
-                .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
-                .trim();
-            // A `>` or `|` block scalar continues on indented lines; the index wants one line.
-            if value.starts_with(['>', '|']) {
-                let folded: Vec<&str> = lines
-                    .take_while(|l| l.trim().is_empty() || l.starts_with([' ', '\t']))
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .collect();
-                return Some(folded.join(" "));
-            }
-            Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
-        };
-        // A SKILL.md is named by its directory, a command by its file.
-        let stem = if path.file_name().is_some_and(|n| n == "SKILL.md") {
-            path.parent()?.file_name()?
-        } else {
-            path.file_stem()?
-        };
-        let name = field("name").unwrap_or_else(|| stem.to_string_lossy().into_owned());
-        let description = field("description").unwrap_or_else(|| {
-            body.lines()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or_default()
-                .trim()
-                .to_owned()
-        });
-        let skill = Skill {
-            name: format!("{}:{name}", self.name),
-            description,
-            body: body.replace("${CLAUDE_PLUGIN_ROOT}", &self.root.to_string_lossy()),
-        };
+        let (mut skill, field) = parse_markdown(path, default_stem(path)?)?;
+        skill.name = format!("{}:{}", self.name, skill.name);
+        skill.body = skill
+            .body
+            .replace("${CLAUDE_PLUGIN_ROOT}", &self.root.to_string_lossy());
         Some((skill, field))
     }
+}
+
+/// Frontmatter that would grant permissions or start processes. Markdown can't grant
+/// anything, so these are ignored with a warning (SPEC §12).
+const IGNORED_KEYS: &[&str] = &["allowed-tools", "permissionMode", "hooks", "mcpServers"];
+
+/// Parses a skill, command or agent file. `stem` names it when it has no `name` field. The
+/// body is returned as written; substitutions are the caller's business.
+fn parse_markdown(path: &Path, stem: String) -> Option<(Skill, impl Fn(&str) -> Option<String>)> {
+    let text = fs::read_to_string(path)
+        .inspect_err(|error| tracing::warn!(%error, path = %path.display(), "skipped"))
+        .ok()?;
+    let (front, body) = split_frontmatter(&text);
+    let front = front.to_owned();
+    let field = move |key: &str| {
+        let mut lines = front.lines();
+        let value = lines
+            .find_map(|l| l.strip_prefix(key)?.strip_prefix(':'))?
+            .trim();
+        // A `>` or `|` block scalar continues on indented lines; the index wants one line.
+        if value.starts_with(['>', '|']) {
+            let folded: Vec<&str> = lines
+                .take_while(|l| l.trim().is_empty() || l.starts_with([' ', '\t']))
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .collect();
+            return Some(folded.join(" "));
+        }
+        Some(value.trim_matches(|c| c == '"' || c == '\'').to_owned())
+    };
+    for key in IGNORED_KEYS.iter().filter(|key| field(key).is_some()) {
+        tracing::warn!(key, path = %path.display(), "ignored: markdown can't grant permissions");
+    }
+    // shortcut: any `!` backtick pair warns, even in prose; not parsed as injection because it never runs.
+    if body.contains("!`") {
+        tracing::warn!(path = %path.display(), "ignored: shell injection never runs from markdown");
+    }
+    let name = field("name").unwrap_or(stem);
+    let description = field("description").unwrap_or_else(|| {
+        body.lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    });
+    let skill = Skill {
+        name,
+        description,
+        body: body.to_owned(),
+    };
+    Some((skill, field))
+}
+
+/// A SKILL.md is named by its directory, a command by its file.
+fn default_stem(path: &Path) -> Option<String> {
+    let stem = if path.file_name().is_some_and(|n| n == "SKILL.md") {
+        path.parent()?.file_name()?
+    } else {
+        path.file_stem()?
+    };
+    Some(stem.to_string_lossy().into_owned())
+}
+
+/// `<dir>/<name>/SKILL.md` for each subdirectory, sorted. A file that resolves outside `root`
+/// is not read: no symlink may lead out of its plugin or layer.
+fn skill_files(dir: &Path, root: &Path) -> Vec<PathBuf> {
+    let mut found: Vec<PathBuf> = fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path().join("SKILL.md"))
+        .filter(|p| p.canonicalize().is_ok_and(|real| real.starts_with(root)))
+        .collect();
+    found.sort();
+    found
+}
+
+/// The `.md` files under `dir`, sorted. Unlike the plugin scan, a file that resolves outside
+/// `root` is skipped with a warning rather than failing the whole directory.
+fn command_files(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let mut children: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+    children.sort();
+    for child in children {
+        if !child
+            .canonicalize()
+            .is_ok_and(|real| real.starts_with(root))
+        {
+            tracing::warn!(path = %child.display(), "skipped: resolves outside its layer");
+        } else if child.is_dir() {
+            command_files(&child, root, out);
+        } else if child.extension().is_some_and(|ext| ext == "md") {
+            out.push(child);
+        }
+    }
+}
+
+/// Standalone skills and commands (SPEC §12), from `skills/` and `commands/` under each layer
+/// root, highest precedence first.
+#[derive(Debug, Default, PartialEq)]
+pub struct Standalone {
+    pub skills: Vec<Skill>,
+    /// Subdirectories join with `:`, so `frontend/component.md` is `frontend:component`.
+    pub commands: Vec<Skill>,
+}
+
+/// Reads every layer. A skill beats a command of the same name; within each kind the first
+/// layer wins. A file that resolves outside its layer is skipped.
+pub fn standalone(layers: &[PathBuf]) -> Standalone {
+    let roots: Vec<(PathBuf, &PathBuf)> = layers
+        .iter()
+        .filter_map(|layer| Some((layer.canonicalize().ok()?, layer)))
+        .collect();
+    let mut out = Standalone::default();
+    for (root, layer) in &roots {
+        for file in skill_files(&layer.join("skills"), root) {
+            let stem = default_stem(&file).unwrap_or_default();
+            if let Some((skill, _)) = parse_markdown(&file, stem)
+                && !out.skills.iter().any(|s| s.name == skill.name)
+            {
+                out.skills.push(skill);
+            }
+        }
+    }
+    for (root, layer) in &roots {
+        let dir = layer.join("commands");
+        let mut files = Vec::new();
+        command_files(&dir, root, &mut files);
+        for file in files {
+            let Ok(rel) = file.strip_prefix(&dir) else {
+                continue;
+            };
+            let stem = rel
+                .with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join(":");
+            if let Some((command, _)) = parse_markdown(&file, stem) {
+                let taken = out
+                    .skills
+                    .iter()
+                    .chain(&out.commands)
+                    .any(|s| s.name == command.name);
+                if !taken {
+                    out.commands.push(command);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// A plugin agent; its body is the subagent's system prompt (SPEC §12).

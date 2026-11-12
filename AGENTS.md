@@ -93,7 +93,7 @@ Known before implementation. Details are in SPEC.
 - `reqwest` with rustls fails to build a client when no CA roots exist, even for plain HTTP to loopback, so sandboxes must mount `/etc/ssl` and `/etc/ca-certificates`.
 - Grep defaults to `content`, unlike Claude Code. With file names only, small models re-grep in loops (SPEC §6).
 - The spool directory is deleted when its `ToolContext` drops, so a test that reads a spooled path must keep the context alive (`tests/tools.rs`).
-- CLI tests set `XDG_CONFIG_HOME` to their temp dir, or the developer's own `~/.config/harness/config.toml` changes their results.
+- CLI tests set `XDG_CONFIG_HOME` and `HOME` to their temp dir, or the developer's own `~/.config/harness/config.toml` and `~/.claude/skills` change their results.
 - Any binary that runs `Bash` must handle `sandbox-exec` before starting tokio, as `harness` and `xtask` do, and pass itself as the sandbox helper.
 - Two `cargo xtask eval` runs on one LM Studio can race on model load and unload ("Model does not exist"), so run them one at a time.
 - LM Studio keys contain a publisher slash (`google/gemma-4-12b-qat`), so only `lmstudio/` and `anthropic/` prefixes pick a backend; anything else is a bare LM Studio name (`Config::resolve_model`).

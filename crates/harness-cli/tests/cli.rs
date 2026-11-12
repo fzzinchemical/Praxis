@@ -112,6 +112,8 @@ fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {
         // Keeps the developer's own user config out of the tests.
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        // Standalone skills read ~/.claude, so the developer's own home must not leak in.
+        .env("HOME", dir)
         .args([
             "--config-override",
             &format!("lmstudio.base_url={server_url}"),
@@ -388,6 +390,8 @@ async fn in_terminal(url: &str, dir: &Path, args: &str, typed: &str) -> Output {
         .current_dir(dir)
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
+        // Standalone skills read ~/.claude, so the developer's own home must not leak in.
+        .env("HOME", dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

@@ -15,7 +15,7 @@ use harness_core::config::McpServer;
 use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::hooks::Hook;
 use harness_core::permissions::{Mode, Policy};
-use harness_core::plugin::{AgentDef, Skill, Store, run_command};
+use harness_core::plugin::{AgentDef, Skill, Store, run_command, standalone};
 use harness_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::session::{self, SessionLog};
@@ -178,6 +178,11 @@ struct Plugins {
 /// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
 fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     let mut out = Plugins::default();
+    let found = standalone(&markdown_layers(workspace));
+    // A standalone skill also runs as `/<name>`, as Claude Code does.
+    out.commands.extend(found.skills.iter().cloned());
+    out.skills.extend(found.skills);
+    out.commands.extend(found.commands);
     let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
         return out;
     };
@@ -213,6 +218,24 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
         out.mcp.extend(mcp);
     }
     out
+}
+
+/// Roots of the standalone skill and command layers, highest precedence first (SPEC §12).
+fn markdown_layers(workspace: &Path) -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let config = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
+        _ => home.as_ref().map(|h| h.join(".config")),
+    };
+    [
+        config.map(|c| c.join("harness")),
+        home.map(|h| h.join(".claude")),
+        Some(workspace.join(".harness")),
+        Some(workspace.join(".claude")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.

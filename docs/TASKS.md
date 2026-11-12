@@ -768,7 +768,7 @@ flowchart LR
   - **Needs:** T9.1.
   - **Done when:** on the fake server, the first `Read` of `sub/a.rs` appends `sub/AGENTS.md` as a message, a second `Read` in `sub/` doesn't append it again, and consecutive request bodies still share the prefix.
 
-- [ ] **T9.4 Standalone skills and commands** (§12) · *Should*
+- [x] **T9.4 Standalone skills and commands** (§12) · *Should*
   - **Needs:** T6.2.
   - **Done when:** skills and commands from `~/.claude/`, `~/.config/harness/`, `.claude/` and `.harness/` appear in the index and run as `/<name>` with `$ARGUMENTS`; nested command directories give `a:b` names; every precedence rule in §12 has a test; a project skill with `allowed-tools` and `` !`cmd` `` warns and runs nothing.
 
