@@ -772,7 +772,7 @@ flowchart LR
   - **Needs:** T6.2.
   - **Done when:** skills and commands from `~/.claude/`, `~/.config/harness/`, `.claude/` and `.harness/` appear in the index and run as `/<name>` with `$ARGUMENTS`; nested command directories give `a:b` names; every precedence rule in §12 has a test; a project skill with `allowed-tools` and `` !`cmd` `` warns and runs nothing.
 
-- [ ] **T9.5 Standalone agents** (§12) · *Should*
+- [x] **T9.5 Standalone agents** (§12) · *Should*
   - **Needs:** T9.4, T6.5, T8.9.
   - **Done when:** agents from user and project directories are offered through `Agent` with project beating user; `permissionMode`, `hooks` and `mcpServers` warn and grant nothing; a standalone `general` is a load error naming its path; an unresolved `model` skips the agent as for plugins.
 

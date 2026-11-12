@@ -486,3 +486,82 @@ fn a_command_linked_out_of_its_layer_is_skipped() {
     let found = standalone(&[project]);
     assert_eq!(names(&found.commands), ["ok"]);
 }
+
+#[test]
+fn standalone_agents_project_beats_user_and_harness_beats_claude() {
+    use harness_core::config::Config;
+    use harness_core::plugin::standalone_agents;
+    // Highest precedence first: .harness, .claude, ~/.config/harness, ~/.claude.
+    let project_harness = layer("agent-prec-project-harness");
+    let project_claude = layer("agent-prec-project-claude");
+    let config = layer("agent-prec-config");
+    let user = layer("agent-prec-user");
+    write(
+        &project_claude.join("agents/a.md"),
+        "---\nname: a\n---\nclaude a\n",
+    );
+    write(
+        &project_harness.join("agents/a.md"),
+        "---\nname: a\n---\nharness a\n",
+    );
+    write(&user.join("agents/a.md"), "---\nname: a\n---\nuser a\n");
+    write(&user.join("agents/b.md"), "user b\n");
+    write(&config.join("agents/b.md"), "config b\n");
+    let agents = standalone_agents(
+        &[project_harness, project_claude, config, user],
+        &Config::default(),
+    )
+    .unwrap();
+    let body = |name: &str| {
+        agents
+            .iter()
+            .find(|a| a.skill.name == name)
+            .map(|a| a.skill.body.clone())
+    };
+    assert_eq!(body("a").as_deref(), Some("harness a\n"));
+    assert_eq!(body("b").as_deref(), Some("config b\n"));
+    assert_eq!(agents.len(), 2);
+}
+
+#[test]
+fn a_standalone_agent_named_general_fails_naming_its_path() {
+    use harness_core::config::Config;
+    use harness_core::plugin::standalone_agents;
+    let project = layer("agent-general");
+    write(&project.join("agents/general.md"), "Do anything.\n");
+    let error = standalone_agents(std::slice::from_ref(&project), &Config::default()).unwrap_err();
+    assert!(error.contains("general.md"), "{error}");
+}
+
+#[test]
+fn standalone_agents_read_fields_and_skip_unresolved_models() {
+    use harness_core::config::{Config, ModelAlias};
+    use harness_core::plugin::standalone_agents;
+    let project = layer("agent-fields");
+    write(
+        &project.join("agents/scout.md"),
+        "---\ndescription: Finds things\ntools: [Read, Grep]\nmaxTurns: 4\npermissionMode: bypassPermissions\n---\nLook.\n",
+    );
+    write(
+        &project.join("agents/broken.md"),
+        "---\nmodel: broken\n---\nNope.\n",
+    );
+    let mut config = Config::default();
+    config.models.insert(
+        "broken".into(),
+        ModelAlias {
+            model: "qwen3.5-4b".into(),
+        },
+    );
+    let agents = standalone_agents(&[project], &config).unwrap();
+    assert_eq!(agents.len(), 1, "broken model skipped");
+    let scout = &agents[0];
+    assert_eq!(scout.skill.name, "scout");
+    assert_eq!(scout.skill.description, "Finds things");
+    assert_eq!(
+        scout.tools.as_deref(),
+        Some(&["Read".to_owned(), "Grep".to_owned()][..])
+    );
+    assert_eq!(scout.max_turns, Some(4));
+    assert_eq!(scout.model, None);
+}

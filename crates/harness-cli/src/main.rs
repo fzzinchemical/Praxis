@@ -15,7 +15,7 @@ use harness_core::config::McpServer;
 use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::hooks::Hook;
 use harness_core::permissions::{Mode, Policy};
-use harness_core::plugin::{AgentDef, Skill, Store, run_command, standalone};
+use harness_core::plugin::{AgentDef, Skill, Store, run_command, standalone, standalone_agents};
 use harness_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::session::{self, SessionLog};
@@ -183,6 +183,10 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     out.commands.extend(found.skills.iter().cloned());
     out.skills.extend(found.skills);
     out.commands.extend(found.commands);
+    match standalone_agents(&agent_layers(workspace), config) {
+        Ok(agents) => out.agents.extend(agents),
+        Err(e) => eprintln!("Standalone agents skipped: {}", sanitize(&e)),
+    }
     let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
         return out;
     };
@@ -222,6 +226,21 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
 
 /// Roots of the standalone skill and command layers, highest precedence first (SPEC §12).
 fn markdown_layers(workspace: &Path) -> Vec<PathBuf> {
+    let mut layers = user_layers();
+    layers.extend(project_layers(workspace));
+    layers
+}
+
+/// Roots of the standalone agent layers. Agents rank project above user (SPEC §12), unlike
+/// skills and commands.
+fn agent_layers(workspace: &Path) -> Vec<PathBuf> {
+    let mut layers = project_layers(workspace);
+    layers.extend(user_layers());
+    layers
+}
+
+/// `~/.config/harness` then `~/.claude`, highest precedence first.
+fn user_layers() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let config = match std::env::var_os("XDG_CONFIG_HOME") {
         Some(dir) if !dir.is_empty() => Some(PathBuf::from(dir)),
@@ -230,12 +249,15 @@ fn markdown_layers(workspace: &Path) -> Vec<PathBuf> {
     [
         config.map(|c| c.join("harness")),
         home.map(|h| h.join(".claude")),
-        Some(workspace.join(".harness")),
-        Some(workspace.join(".claude")),
     ]
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// `.harness` then `.claude` in the workspace, highest precedence first.
+fn project_layers(workspace: &Path) -> Vec<PathBuf> {
+    vec![workspace.join(".harness"), workspace.join(".claude")]
 }
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.

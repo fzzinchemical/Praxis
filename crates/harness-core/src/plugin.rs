@@ -214,32 +214,7 @@ impl Plugin {
             .iter()
             .filter_map(|f| {
                 let (skill, field) = self.read_markdown(f)?;
-                let list = |key: &str| {
-                    field(key).map(|v| {
-                        v.trim_matches(|c| c == '[' || c == ']')
-                            .split(',')
-                            .map(|t| t.trim().trim_matches(|c| c == '"' || c == '\'').to_owned())
-                            .filter(|t| !t.is_empty())
-                            .collect::<Vec<_>>()
-                    })
-                };
-                let model = match field("model") {
-                    None => None,
-                    Some(reference) => match config.resolve_enabled_model(&reference) {
-                        Ok(model) => Some(model),
-                        Err(error) => {
-                            tracing::warn!(%error, path = %f.display(), "agent skipped");
-                            return None;
-                        }
-                    },
-                };
-                Some(AgentDef {
-                    tools: list("tools"),
-                    disallowed_tools: list("disallowedTools").unwrap_or_default(),
-                    max_turns: field("maxTurns").and_then(|v| v.parse().ok()),
-                    model,
-                    skill,
-                })
+                agent_def(skill, field, f, config)
             })
             .collect()
     }
@@ -422,6 +397,75 @@ pub struct AgentDef {
     pub disallowed_tools: Vec<String>,
     pub max_turns: Option<u32>,
     pub model: Option<ModelRef>,
+}
+
+/// Builds an agent from its parsed file, shared by plugins and standalone agents. An agent
+/// whose `model` doesn't resolve is skipped with a warning (`None`).
+fn agent_def(
+    skill: Skill,
+    field: impl Fn(&str) -> Option<String>,
+    path: &Path,
+    config: &Config,
+) -> Option<AgentDef> {
+    let list = |key: &str| {
+        field(key).map(|v| {
+            v.trim_matches(|c| c == '[' || c == ']')
+                .split(',')
+                .map(|t| t.trim().trim_matches(|c| c == '"' || c == '\'').to_owned())
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>()
+        })
+    };
+    let model = match field("model") {
+        None => None,
+        Some(reference) => match config.resolve_enabled_model(&reference) {
+            Ok(model) => Some(model),
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "agent skipped");
+                return None;
+            }
+        },
+    };
+    Some(AgentDef {
+        tools: list("tools"),
+        disallowed_tools: list("disallowedTools").unwrap_or_default(),
+        max_turns: field("maxTurns").and_then(|v| v.parse().ok()),
+        model,
+        skill,
+    })
+}
+
+/// Standalone agents (SPEC §12) from `agents/**/*.md` under each layer root, highest
+/// precedence first. The first layer to name an agent wins, even if its model is unusable.
+/// An agent named `general` is an error naming its file.
+pub fn standalone_agents(layers: &[PathBuf], config: &Config) -> Result<Vec<AgentDef>, String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    for layer in layers {
+        let Ok(root) = layer.canonicalize() else {
+            continue;
+        };
+        let mut files = Vec::new();
+        command_files(&layer.join("agents"), &root, &mut files);
+        for file in files {
+            let stem = default_stem(&file).unwrap_or_default();
+            let Some((skill, field)) = parse_markdown(&file, stem) else {
+                continue;
+            };
+            if skill.name == "general" {
+                return Err(format!(
+                    "{}: agent `general` is reserved for the built-in agent",
+                    file.display()
+                ));
+            }
+            if seen.contains(&skill.name) {
+                continue;
+            }
+            seen.push(skill.name.clone());
+            out.extend(agent_def(skill, field, &file, config));
+        }
+    }
+    Ok(out)
 }
 
 impl Plugin {
