@@ -16,9 +16,10 @@ use harness_core::config::{self, Config, SandboxMode, Sources};
 use harness_core::hooks::Hook;
 use harness_core::permissions::Policy;
 use harness_core::plugin::{AgentDef, Skill, Store, run_command};
-use harness_core::provider::{LoadPolicy, ModelInfo, Provider, ProviderError, ReadyModel};
+use harness_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
 use harness_core::sandbox::Sandbox;
 use harness_core::session::SessionLog;
+use harness_core::summary::summarize;
 use harness_core::tools::ToolContext;
 use harness_core::trust::TrustStore;
 use serde_json::Value;
@@ -406,6 +407,7 @@ async fn run_turn(
     let cancel = interrupt.begin_turn();
     let (tx, mut rx) = mpsc::channel(64);
     let turn_cancel = cancel.clone();
+    let start = agent.history().len();
     let task = tokio::spawn(async move {
         agent.run_turn(prompt, &tx, turn_cancel).await;
         agent
@@ -466,6 +468,11 @@ async fn run_turn(
         writeln!(stdout)?;
     }
     let agent = task.await?;
+    // shortcut: compaction can rewrite history mid-turn, so this may summarise the wrong messages; the summary only ever reads the tool log.
+    let turn = agent.history().get(start..).unwrap_or_default();
+    if turn.iter().any(|m| matches!(m, Message::Tool { .. })) {
+        eprintln!("{}", summarize(turn).render());
+    }
     cancel.cancel();
     Ok((agent, stop))
 }

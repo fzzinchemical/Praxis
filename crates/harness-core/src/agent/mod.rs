@@ -478,6 +478,11 @@ impl Agent {
         &self.first_token_ms
     }
 
+    /// The conversation so far, for the turn summary (T5.7).
+    pub fn history(&self) -> &[Message] {
+        &self.history
+    }
+
     /// The tools this agent runs, for `/undo` and checkpoint setup.
     pub fn tools(&self) -> &ToolContext {
         &self.tools

@@ -482,7 +482,7 @@ flowchart TB
   - **Needs:** T5.4.
   - **Done when:** `cargo xtask vsix` output installs on a clean profile with no network; a full fix-review-accept cycle passes offline; and `harness acp` works in Zed with no code changes, if Zed is available. Say so if it wasn't tested.
 
-- [ ] **T5.7 Turn summary** (§11) · *Should*
+- [x] **T5.7 Turn summary** (§11) · *Should*
   - **Needs:** T5.3.
   - **Done when:** summaries come from the tool log alone; a test confirms they say so plainly when no tests ran, even if the model claimed otherwise.
 

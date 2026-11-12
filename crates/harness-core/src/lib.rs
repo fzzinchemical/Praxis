@@ -10,5 +10,6 @@ pub mod plugin;
 pub mod provider;
 pub mod sandbox;
 pub mod session;
+pub mod summary;
 pub mod tools;
 pub mod trust;
