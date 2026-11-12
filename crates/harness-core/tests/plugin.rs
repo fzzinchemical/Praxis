@@ -511,7 +511,7 @@ fn standalone_agents_project_beats_user_and_harness_beats_claude() {
         &[project_harness, project_claude, config, user],
         &Config::default(),
     )
-    .unwrap();
+    .0;
     let body = |name: &str| {
         agents
             .iter()
@@ -524,13 +524,17 @@ fn standalone_agents_project_beats_user_and_harness_beats_claude() {
 }
 
 #[test]
-fn a_standalone_agent_named_general_fails_naming_its_path() {
+fn a_standalone_agent_named_general_is_skipped_naming_its_path_and_others_still_load() {
     use harness_core::config::Config;
     use harness_core::plugin::standalone_agents;
     let project = layer("agent-general");
     write(&project.join("agents/general.md"), "Do anything.\n");
-    let error = standalone_agents(std::slice::from_ref(&project), &Config::default()).unwrap_err();
-    assert!(error.contains("general.md"), "{error}");
+    write(&project.join("agents/reviewer.md"), "Review.\n");
+    let (agents, errors) = standalone_agents(std::slice::from_ref(&project), &Config::default());
+    assert_eq!(errors.len(), 1);
+    assert!(errors[0].contains("general.md"), "{}", errors[0]);
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].skill.name, "reviewer");
 }
 
 #[test]
@@ -553,7 +557,7 @@ fn standalone_agents_read_fields_and_skip_unresolved_models() {
             model: "qwen3.5-4b".into(),
         },
     );
-    let agents = standalone_agents(&[project], &config).unwrap();
+    let agents = standalone_agents(&[project], &config).0;
     assert_eq!(agents.len(), 1, "broken model skipped");
     let scout = &agents[0];
     assert_eq!(scout.skill.name, "scout");

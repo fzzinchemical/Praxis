@@ -183,9 +183,10 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     out.commands.extend(found.skills.iter().cloned());
     out.skills.extend(found.skills);
     out.commands.extend(found.commands);
-    match standalone_agents(&agent_layers(workspace), config) {
-        Ok(agents) => out.agents.extend(agents),
-        Err(e) => eprintln!("Standalone agents skipped: {}", sanitize(&e)),
+    let (agents, errors) = standalone_agents(&agent_layers(workspace), config);
+    out.agents.extend(agents);
+    for e in errors {
+        eprintln!("Agent skipped: {}", sanitize(&e));
     }
     let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
         return out;

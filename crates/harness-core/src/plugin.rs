@@ -437,8 +437,10 @@ fn agent_def(
 
 /// Standalone agents (SPEC §12) from `agents/**/*.md` under each layer root, highest
 /// precedence first. The first layer to name an agent wins, even if its model is unusable.
-/// An agent named `general` is an error naming its file.
-pub fn standalone_agents(layers: &[PathBuf], config: &Config) -> Result<Vec<AgentDef>, String> {
+/// An agent named `general` is skipped with an error naming its file; the others still load,
+/// so one project file can't switch off the user's agents.
+pub fn standalone_agents(layers: &[PathBuf], config: &Config) -> (Vec<AgentDef>, Vec<String>) {
+    let mut errors = Vec::new();
     let mut seen: Vec<String> = Vec::new();
     let mut out = Vec::new();
     for layer in layers {
@@ -453,10 +455,11 @@ pub fn standalone_agents(layers: &[PathBuf], config: &Config) -> Result<Vec<Agen
                 continue;
             };
             if skill.name == "general" {
-                return Err(format!(
+                errors.push(format!(
                     "{}: agent `general` is reserved for the built-in agent",
                     file.display()
                 ));
+                continue;
             }
             if seen.contains(&skill.name) {
                 continue;
@@ -465,7 +468,7 @@ pub fn standalone_agents(layers: &[PathBuf], config: &Config) -> Result<Vec<Agen
             out.extend(agent_def(skill, field, &file, config));
         }
     }
-    Ok(out)
+    (out, errors)
 }
 
 impl Plugin {
