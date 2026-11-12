@@ -602,6 +602,7 @@ flowchart LR
 - [x] ~~**T7.3 Rich TUI decision**~~ Cut (2026-11-12): the owner chose the REPL; no `ratatui`.
 
 - [ ] **T7.4 Release** `HUMAN` approves
+  - **Working name:** `praxis` (owner, 2026-11-12; Marx's unity of thought and action). Not final; the rename happens in this task.
   - **Needs:** T7.1, T7.2.
   - **Done when:** the final name is chosen (rename from `harness`), binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval.
 
