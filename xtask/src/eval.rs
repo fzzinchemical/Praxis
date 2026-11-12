@@ -48,6 +48,8 @@ struct Options {
     out: Option<PathBuf>,
     /// `None` turns masking off, for the T2.6 comparison.
     mask_keep_turns: Option<u32>,
+    /// Bash output filters (T2.11), on by default like the CLI.
+    filter_output: bool,
     /// A private copy of this binary for the sandboxes, so a rebuild mid-run can't remove it.
     agent_exe: PathBuf,
 }
@@ -69,6 +71,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         evals_dir: root.join("evals"),
         out: None,
         mask_keep_turns: Some(DEFAULT_MASK_KEEP_TURNS),
+        filter_output: true,
         agent_exe: PathBuf::new(),
     };
     let mut args = args.iter();
@@ -88,6 +91,13 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
                     .parse()
                     .context("--mask-keep-turns needs a number or off")?;
                 options.mask_keep_turns = Some(turns);
+            }
+            "--filter-output" => {
+                options.filter_output = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => bail!("--filter-output needs on or off"),
+                }
             }
             other => bail!("unknown flag {other}"),
         }
@@ -290,10 +300,14 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let mut agent = Agent::new(
         Arc::new(provider),
         // Same sandbox as the CLI, applied inside the eval's own bwrap container.
-        Arc::new(ToolContext::new(Path::new(WORK))?.with_sandbox(Sandbox {
-            helper: std::env::current_exe()?,
-            ..Sandbox::default()
-        })),
+        Arc::new(
+            ToolContext::new(Path::new(WORK))?
+                .with_sandbox(Sandbox {
+                    helper: std::env::current_exe()?,
+                    ..Sandbox::default()
+                })
+                .with_output_filter(spec["filter_output"] == true),
+        ),
         AgentConfig {
             model: instance,
             context_size: u32::try_from(number("context")?)?,
@@ -404,6 +418,7 @@ async fn try_run_agent(
         "max_turns": task.max_turns,
         "wall_secs": task.wall_secs,
         "mask_keep_turns": options.mask_keep_turns,
+        "filter_output": options.filter_output,
     });
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
@@ -652,6 +667,7 @@ async fn run_all(
             let mut board = scoreboard(&options.model, &date, &runs);
             board["mask_keep_turns"] =
                 json!(options.mask_keep_turns.map_or(json!("off"), |n| json!(n)));
+            board["filter_output"] = json!(options.filter_output);
             fs::write(out, serde_json::to_string_pretty(&board)? + "\n")?;
         }
     }
@@ -823,5 +839,21 @@ mod tests {
         assert_eq!(parse("5").unwrap(), Some(5));
         assert_eq!(parse("off").unwrap(), None);
         assert!(parse("lots").is_err());
+    }
+
+    #[test]
+    fn output_filters_default_on_and_take_on_or_off() {
+        let parse = |extra: &[&str]| {
+            let args: Vec<String> = ["--model", "m"]
+                .iter()
+                .chain(extra)
+                .map(|s| (*s).to_owned())
+                .collect();
+            parse_options(&args, Path::new("/")).map(|o| o.filter_output)
+        };
+        assert!(parse(&[]).unwrap());
+        assert!(parse(&["--filter-output", "on"]).unwrap());
+        assert!(!parse(&["--filter-output", "off"]).unwrap());
+        assert!(parse(&["--filter-output", "yes"]).is_err());
     }
 }
