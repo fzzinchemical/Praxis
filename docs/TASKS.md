@@ -477,6 +477,7 @@ flowchart TB
   - **Needs:** T5.3.
   - **Do:** active file and selection, diagnostics, model picker, `fs/read_text_file` for unsaved buffers.
   - **Done when:** a test or checklist item shows `Read` returns unsaved buffer contents.
+  - **Known issue (blocks ticking T5.2–T5.5):** `harness-vscode/src/lib.rs` leaks every event closure with `Closure::forget`. Per panel: `onDidReceiveMessage`, `onDidDispose` and the `onDidChangeActiveTextEditor` listener, which also stays registered and keeps the panel state alive after close. Per process start or restart: the stdout, stderr, error and close listeners. Per action: "Add file" picks, each diff review and each exit prompt. Fix: dispose each VS Code `Disposable` when the panel closes, and keep closures in the panel state (or use `Closure::once_into_js` for one-shot promise callbacks) so they drop with it.
 
 - [ ] **T5.6 Packaging and Zed check**
   - **Needs:** T5.4.
