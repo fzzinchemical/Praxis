@@ -712,4 +712,4 @@ flowchart LR
 
 - [x] **T8.9 Built-in general agent** (§12) · *Should*
   - **Needs:** T6.5.
-  - **Done when:** a session with no plugins offers the `Agent` tool listing `general`; on the fake server a `general` call runs in a fresh history with every session tool except `Agent` and returns its last reply; session deny rules still apply to its calls; and a plugin agent named `general` fails to load with an error naming the plugin.
+  - **Done when:** a session with no plugins offers the `Agent` tool listing `general`; on the fake server a `general` call runs in a fresh history with every session tool except `Agent` and `Skill` and returns its last reply; session deny rules still apply to its calls; and a plugin agent named `general` fails to load with an error naming the plugin.
