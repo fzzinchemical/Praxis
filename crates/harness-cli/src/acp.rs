@@ -10,6 +10,7 @@ use harness_core::session::SessionLog;
 use harness_core::tools::EditorReader;
 use harness_core::tools::FileDiff;
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -18,21 +19,55 @@ use tokio_util::sync::CancellationToken;
 
 pub type NewAgent = Box<dyn Fn() -> anyhow::Result<Agent> + Send + Sync>;
 
+/// What a session needs from the CLI to switch models: the picker's keys and loading (SPEC §5.2).
+pub trait Models: Send + Sync + 'static {
+    /// The keys the picker offers.
+    fn keys(&self) -> Vec<String>;
+    /// The key a new session starts on.
+    fn default_key(&self) -> String;
+    /// Loads `key` and returns what its turns need.
+    fn load(&self, key: &str) -> impl Future<Output = anyhow::Result<Loaded>> + Send;
+}
+
+/// A loaded model, as `Agent::set_model` takes it.
+pub struct Loaded {
+    pub instance_id: String,
+    pub context_size: u32,
+    pub profile: harness_core::agent::profile::ModelProfile,
+}
+
 /// A session's agent is taken out while a turn runs, so a second prompt meanwhile is refused.
 struct Slot {
     agent: Option<Agent>,
     cancel: CancellationToken,
+    /// The picker key of the model the session's turns use.
+    model: String,
 }
 
-struct Server {
+struct Server<M> {
     new_agent: NewAgent,
+    models: M,
     sessions_dir: PathBuf,
     sessions: Mutex<HashMap<String, Slot>>,
     /// Whether the client advertised `fs.readTextFile` at `initialize`.
     client_reads: AtomicBool,
 }
 
-impl Server {
+/// The session config option the client shows as the model picker (ACP "model" category).
+const MODEL_OPTION: &str = "model";
+
+fn model_option(current: &str, keys: &[String]) -> v1::SessionConfigOption {
+    let options = keys
+        .iter()
+        .map(|key| v1::SessionConfigSelectOption::new(key.clone(), key.clone()))
+        .collect::<Vec<_>>();
+    let mut option =
+        v1::SessionConfigOption::select(MODEL_OPTION, "Model", current.to_owned(), options);
+    option.category = Some(v1::SessionConfigOptionCategory::Model);
+    option
+}
+
+impl<M: Models> Server<M> {
     fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, Slot>> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -42,7 +77,7 @@ impl Server {
         &self,
         resume: Option<&str>,
         cx: &ConnectionTo<Client>,
-    ) -> anyhow::Result<(String, Vec<Message>)> {
+    ) -> anyhow::Result<(String, Vec<Message>, String)> {
         let (log, prior) = match resume {
             Some(id) => SessionLog::resume(&self.sessions_dir, id)?,
             None => (SessionLog::create(&self.sessions_dir)?, Vec::new()),
@@ -59,8 +94,14 @@ impl Server {
         }
         let agent = Some(agent.with_session(log, prior.clone()));
         let cancel = CancellationToken::new();
-        self.sessions().insert(id.clone(), Slot { agent, cancel });
-        Ok((id, prior))
+        let model = self.models.default_key();
+        let slot = Slot {
+            agent,
+            cancel,
+            model: model.clone(),
+        };
+        self.sessions().insert(id.clone(), slot);
+        Ok((id, prior, model))
     }
 
     fn begin_turn(&self, id: &str) -> Result<(Agent, CancellationToken), Error> {
@@ -82,6 +123,12 @@ impl Server {
         }
     }
 
+    /// The model option as session `id` currently has it.
+    fn model_option(&self, id: &str) -> Option<v1::SessionConfigOption> {
+        let current = self.sessions().get(id)?.model.clone();
+        Some(model_option(&current, &self.models.keys()))
+    }
+
     fn cancel(&self, id: &str) {
         if let Some(slot) = self.sessions().get(id) {
             slot.cancel.cancel();
@@ -89,14 +136,20 @@ impl Server {
     }
 }
 
-pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Client> {
+pub fn agent(
+    new_agent: NewAgent,
+    sessions_dir: PathBuf,
+    models: impl Models,
+) -> impl ConnectTo<Client> {
     let server = Arc::new(Server {
         new_agent,
+        models,
         sessions_dir,
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
     });
-    let (for_init, for_new, for_load, for_prompt, for_cancel) = (
+    let (for_init, for_new, for_load, for_prompt, for_cancel, for_set) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -127,15 +180,18 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
         // T5.2 decides whether the extension can ever pass a different folder.
         .on_receive_request(
             async move |_req: v1::NewSessionRequest, responder, cx| match for_new.open(None, &cx) {
-                Ok((id, _)) => responder.respond(v1::NewSessionResponse::new(id)),
+                Ok((id, _, _)) => {
+                    let options = for_new.model_option(&id).map(|option| vec![option]);
+                    responder.respond(v1::NewSessionResponse::new(id).config_options(options))
+                }
                 Err(e) => responder.respond_with_internal_error(format!("{e:#}")),
             },
             on_receive_request!(),
         )
         .on_receive_request(
             async move |req: v1::LoadSessionRequest, responder, cx| {
-                let prior = match for_load.open(Some(&req.session_id.to_string()), &cx) {
-                    Ok((_, prior)) => prior,
+                let (prior, option) = match for_load.open(Some(&req.session_id.to_string()), &cx) {
+                    Ok((id, prior, _)) => (prior, for_load.model_option(&id)),
                     Err(e) => {
                         return responder
                             .respond_with_error(Error::invalid_params().data(e.to_string()));
@@ -148,7 +204,8 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
                         update,
                     ))?;
                 }
-                responder.respond(v1::LoadSessionResponse::new())
+                let options = option.map(|option| vec![option]);
+                responder.respond(v1::LoadSessionResponse::new().config_options(options))
             },
             on_receive_request!(),
         )
@@ -205,6 +262,50 @@ pub fn agent(new_agent: NewAgent, sessions_dir: PathBuf) -> impl ConnectTo<Clien
                         Some(reason) => responder.respond(v1::PromptResponse::new(reason)),
                         None => {
                             responder.respond_with_internal_error(format!("turn failed: {stop:?}"))
+                        }
+                    }
+                })
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: v1::SetSessionConfigOptionRequest, responder, cx| {
+                let id = req.session_id.to_string();
+                let v1::SessionConfigOptionValue::ValueId { value } = &req.value else {
+                    return responder
+                        .respond_with_error(Error::invalid_params().data("not a choice"));
+                };
+                let key = value.to_string();
+                if req.config_id.to_string() != MODEL_OPTION
+                    || !for_set.models.keys().contains(&key)
+                {
+                    let message = format!("no model `{key}`");
+                    return responder.respond_with_error(Error::invalid_params().data(message));
+                }
+                let (mut agent, _) = match for_set.begin_turn(&id) {
+                    Ok(turn) => turn,
+                    Err(e) => return responder.respond_with_error(e),
+                };
+                let server = for_set.clone();
+                // Loading can take minutes, so it runs off the dispatch loop, as prompts do.
+                cx.clone().spawn(async move {
+                    match server.models.load(&key).await {
+                        Ok(loaded) => {
+                            agent.set_model(
+                                loaded.instance_id,
+                                loaded.context_size,
+                                loaded.profile,
+                            );
+                            if let Some(slot) = server.sessions().get_mut(&id) {
+                                slot.model = key;
+                            }
+                            server.end_turn(&id, agent);
+                            let options = server.model_option(&id).into_iter().collect();
+                            responder.respond(v1::SetSessionConfigOptionResponse::new(options))
+                        }
+                        Err(e) => {
+                            server.end_turn(&id, agent);
+                            responder.respond_with_internal_error(format!("{e:#}"))
                         }
                     }
                 })
@@ -454,6 +555,27 @@ mod tests {
         server
     }
 
+    /// Two models; loading one just names its instance after its key.
+    struct FakeModels;
+
+    impl Models for FakeModels {
+        fn keys(&self) -> Vec<String> {
+            vec!["m".into(), "other".into()]
+        }
+
+        fn default_key(&self) -> String {
+            "m".into()
+        }
+
+        async fn load(&self, key: &str) -> anyhow::Result<Loaded> {
+            Ok(Loaded {
+                instance_id: key.into(),
+                context_size: 100_000,
+                profile: harness_core::agent::profile::ModelProfile::default(),
+            })
+        }
+    }
+
     fn harness(server: &MockServer, dir: &Path) -> impl ConnectTo<Client> {
         let (url, workspace) = (server.uri(), dir.to_owned());
         let new_agent: NewAgent = Box::new(move || {
@@ -473,7 +595,7 @@ mod tests {
             let provider = Arc::new(Provider::new(&url, None)?);
             Ok(Agent::new(provider, tools, config))
         });
-        agent(new_agent, dir.join("sessions"))
+        agent(new_agent, dir.join("sessions"), FakeModels)
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -561,6 +683,84 @@ mod tests {
             ]
         );
         assert_eq!(std::fs::read_to_string(dir.join("ok.txt")).unwrap(), "x");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_session_offers_its_models_and_starts_on_the_default() {
+        let dir = temp_dir("models-list");
+        let server = fake_server().await;
+        let option = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(&dir);
+                let session = cx.send_request(session).block_task().await?;
+                Ok(to_value(&session.config_options).unwrap())
+            })
+            .await
+            .unwrap();
+        assert_eq!(option[0]["id"], "model");
+        assert_eq!(option[0]["category"], "model");
+        assert_eq!(option[0]["currentValue"], "m");
+        assert_eq!(option[0]["options"][1]["value"], "other");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_the_model_sends_the_next_turn_to_it() {
+        let dir = temp_dir("models-switch");
+        let server = MockServer::start().await;
+        let done = sse(&[
+            json!({"choices": [{"delta": {"content": "done"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+        ]);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(done, "text/event-stream"))
+            .mount(&server)
+            .await;
+        let switched = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(&dir);
+                let session = cx.send_request(session).block_task().await?;
+                let set = v1::SetSessionConfigOptionRequest::new(
+                    session.session_id.clone(),
+                    "model",
+                    "other",
+                );
+                let reply = cx.send_request(set).block_task().await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(to_value(&reply.config_options).unwrap())
+            })
+            .await
+            .unwrap();
+        assert_eq!(switched[0]["currentValue"], "other");
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = requests[0].body_json().unwrap();
+        assert_eq!(body["model"], "other");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn an_unknown_model_is_refused() {
+        let dir = temp_dir("models-fail");
+        let server = fake_server().await;
+        let refused = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(&dir);
+                let session = cx.send_request(session).block_task().await?;
+                let set =
+                    v1::SetSessionConfigOptionRequest::new(session.session_id, "model", "nope");
+                Ok(cx.send_request(set).block_task().await.is_err())
+            })
+            .await
+            .unwrap();
+        assert!(refused, "an unknown model is refused");
     }
 
     /// Runs one `Write` prompt and answers its permission request with `answer`. Returns the tool

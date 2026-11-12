@@ -226,6 +226,14 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
                 let lines = panel.client.as_mut().map(Client::cancel);
                 panel.send(lines.unwrap_or_default());
             }
+            Some(FromPanel::Model(key)) => {
+                let mut panel = state.borrow_mut();
+                let line = panel
+                    .client
+                    .as_mut()
+                    .and_then(|client| client.set_model(&key));
+                panel.send(line);
+            }
             Some(FromPanel::Permission(id, option)) => {
                 let mut panel = state.borrow_mut();
                 let line = panel
@@ -495,6 +503,9 @@ fn react(state: &Shared, reaction: Reaction) {
     let panel = state.borrow();
     if let Some(message) = reaction.show {
         panel.webview.post_message(&message.to_string());
+    }
+    if let Some(models) = reaction.models {
+        panel.webview.post_message(&models.to_string());
     }
     if let Some(review) = reaction.review
         && let Err(error) = open_review(&review, &panel.output)

@@ -218,6 +218,19 @@ main {
   font-size: 0.9em;
 }
 
+.model-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.model-bar select {
+  background: var(--vscode-dropdown-background);
+  border: 1px solid var(--vscode-dropdown-border);
+  color: var(--vscode-dropdown-foreground);
+  max-width: 100%;
+}
+
 .composer-actions {
   display: flex;
   gap: 6px;

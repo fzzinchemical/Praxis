@@ -433,6 +433,17 @@ impl Agent {
         }
     }
 
+    /// Points later turns at another model and keeps the history. The system prompt keeps the
+    /// budget it was built with.
+    // shortcut: the prefix isn't rebuilt for the new model's context, so a switch loses the
+    // server's prompt cache; rebuild it if switching models mid-session proves common.
+    pub fn set_model(&mut self, model: String, context_size: u32, profile: profile::ModelProfile) {
+        self.config.model = model;
+        self.config.context_size = context_size;
+        self.config.profile = profile;
+        self.budget = Budget::new(context_size);
+    }
+
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
     pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
         self.history.extend(prior);

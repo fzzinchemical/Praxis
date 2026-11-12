@@ -615,12 +615,52 @@ fn with_session(agent: Agent, resume: Option<&str>) -> Result<Agent> {
     Ok(agent.with_session(log, prior))
 }
 
-async fn serve_acp(new_agent: acp::NewAgent) -> Result<u8> {
+/// The ACP model picker: the models `list_models` reported at startup, loaded on demand.
+struct Picker {
+    provider: Arc<Provider>,
+    config: Config,
+    models: Vec<ModelInfo>,
+    default: String,
+}
+
+impl acp::Models for Picker {
+    fn keys(&self) -> Vec<String> {
+        self.models.iter().map(|model| model.key.clone()).collect()
+    }
+
+    fn default_key(&self) -> String {
+        self.default.clone()
+    }
+
+    async fn load(&self, key: &str) -> Result<acp::Loaded> {
+        let ready = ready_model(
+            &self.provider,
+            Some(key.to_owned()),
+            &self.config,
+            &mut None,
+        )
+        .await?;
+        let capabilities = self
+            .models
+            .iter()
+            .find(|model| model.key == key)
+            .map(|model| &model.capabilities);
+        let profile =
+            harness_core::agent::profile::resolve(key, capabilities, &user_profiles(&self.config));
+        Ok(acp::Loaded {
+            instance_id: ready.instance_id,
+            context_size: ready.context_length,
+            profile,
+        })
+    }
+}
+
+async fn serve_acp(new_agent: acp::NewAgent, models: impl acp::Models) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
         return Ok(EXIT_USAGE);
     };
-    acp::agent(new_agent, dir)
+    acp::agent(new_agent, dir, models)
         .connect_to(agent_client_protocol::Stdio::new())
         .await?;
     Ok(0)
@@ -673,7 +713,13 @@ async fn run(
         // Stay up so the editor shows the problem on session/new instead of a dead process.
         Err(error) if acp => {
             let message = error.to_string();
-            return serve_acp(Box::new(move || Err(anyhow::anyhow!("{message}")))).await;
+            let picker = Picker {
+                provider: Arc::new(provider),
+                config,
+                models: Vec::new(),
+                default: String::new(),
+            };
+            return serve_acp(Box::new(move || Err(anyhow::anyhow!("{message}"))), picker).await;
         }
         Err(error) => return Err(error.into()),
     };
@@ -684,6 +730,7 @@ async fn run(
             .any(|instance| instance.id == ready.instance_id)
     });
     let key = reported.map_or(ready.instance_id.as_str(), |m| m.key.as_str());
+    let default = key.to_owned();
     let profile = harness_core::agent::profile::resolve(
         key,
         reported.map(|m| &m.capabilities),
@@ -719,6 +766,12 @@ async fn run(
         Some(Arc::new(mcp))
     };
     let provider = Arc::new(provider);
+    let picker = Picker {
+        provider: provider.clone(),
+        config: config.clone(),
+        models: models.clone(),
+        default,
+    };
     let new_agent = move || {
         let tools = Arc::new(tool_context(&workspace, &config)?);
         let agent = Agent::new(provider.clone(), tools, agent_config.clone())
@@ -731,7 +784,7 @@ async fn run(
         })
     };
     if acp {
-        return serve_acp(Box::new(new_agent)).await;
+        return serve_acp(Box::new(new_agent), picker).await;
     }
     let agent = with_session(new_agent()?, cli.resume.as_deref())?;
     match prompt {

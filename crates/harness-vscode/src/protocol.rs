@@ -23,6 +23,8 @@ pub enum FromPanel {
     AddFile,
     /// A permission request id (a JSON-RPC number or string) and the chosen option, `None` meaning dismissed.
     Permission(Value, Option<String>),
+    /// The model picker's choice, as the agent's model key.
+    Model(String),
 }
 
 impl FromPanel {
@@ -44,6 +46,7 @@ impl FromPanel {
             }),
             "cancel" => Some(Self::Cancel),
             "add_file" => Some(Self::AddFile),
+            "model" => Some(Self::Model(value["key"].as_str()?.to_owned())),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -153,6 +156,8 @@ pub struct Reaction {
     pub review: Option<Review>,
     /// A file the agent asked for, which the host answers with `file_reply` (SPEC §11).
     pub read: Option<FileRead>,
+    /// The model picker's state, sent after `show`.
+    pub models: Option<Value>,
 }
 
 /// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
@@ -196,6 +201,7 @@ pub fn file_reply(id: Value, text: Option<&str>) -> String {
 
 const INITIALIZE: u64 = 0;
 const NEW_SESSION: u64 = 1;
+const SET_MODEL: u64 = 2;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -204,6 +210,8 @@ pub struct Client {
     next_id: u64,
     /// Open permission requests: id and the option ids offered.
     pending: Vec<(Value, Vec<String>)>,
+    /// The model picker as last shown, re-sent when a switch fails.
+    picker: Option<Value>,
 }
 
 impl Client {
@@ -217,8 +225,9 @@ impl Client {
         let client = Self {
             cwd: cwd.to_owned(),
             session: None,
-            next_id: NEW_SESSION + 1,
+            next_id: SET_MODEL + 1,
             pending: Vec::new(),
+            picker: None,
         };
         (client, line)
     }
@@ -231,6 +240,13 @@ impl Client {
         let line = request(self.next_id, "session/prompt", params);
         self.next_id += 1;
         Some(line)
+    }
+
+    /// `session/set_config_option` for the model picker, or `None` while no session is open yet.
+    pub fn set_model(&mut self, key: &str) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "configId": "model", "value": key});
+        Some(request(SET_MODEL, "session/set_config_option", params))
     }
 
     /// The answer to a pending permission request, or `None` if the panel names one not offered.
@@ -271,6 +287,11 @@ impl Client {
                 Some(INITIALIZE | NEW_SESSION) => {
                     show(notice(&format!("Harness could not start: {text}")))
                 }
+                Some(SET_MODEL) => Reaction {
+                    show: Some(notice(&format!("Could not switch model: {text}"))),
+                    models: self.picker.clone(),
+                    ..Reaction::default()
+                },
                 _ => show(json!({"type": "done", "reason": format!("error: {text}")})),
             };
         }
@@ -348,14 +369,43 @@ impl Client {
             },
             Some(NEW_SESSION) => {
                 self.session = result["sessionId"].as_str().map(str::to_owned);
-                show(notice("ready"))
+                self.picker = picker(result);
+                Reaction {
+                    show: Some(notice("ready")),
+                    models: self.picker.clone(),
+                    ..Reaction::default()
+                }
             }
+            Some(SET_MODEL) => match picker(result) {
+                Some(models) => {
+                    self.picker = Some(models.clone());
+                    Reaction {
+                        models: Some(models),
+                        ..Reaction::default()
+                    }
+                }
+                None => Reaction::default(),
+            },
             _ => match result["stopReason"].as_str() {
                 Some(reason) => show(json!({"type": "done", "reason": reason})),
                 None => Reaction::default(),
             },
         }
     }
+}
+
+/// The `model` option of a `session/new` or `session/set_config_option` answer, as the panel shows it.
+fn picker(result: &Value) -> Option<Value> {
+    let option = result["configOptions"]
+        .as_array()?
+        .iter()
+        .find(|option| option["id"] == "model")?;
+    let options: Vec<Value> = option["options"]
+        .as_array()?
+        .iter()
+        .filter_map(|o| Some(json!({"value": o["value"].as_str()?, "name": o["name"].as_str()?})))
+        .collect();
+    Some(json!({"type": "models", "current": option["currentValue"].as_str()?, "options": options}))
 }
 
 /// `path` is absolute, under `root` and free of `..`, so it cannot leave the workspace.
@@ -495,6 +545,50 @@ mod tests {
     }
 
     #[test]
+    fn the_model_picker_comes_from_the_session_options_and_follows_a_switch() {
+        let mut client = Client::start("/work").0;
+        client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#);
+        let opened = client.on_line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1","configOptions":[
+                {"id":"model","name":"Model","category":"model","type":"select","currentValue":"m",
+                 "options":[{"value":"m","name":"m"},{"value":"other","name":"Other"}]}]}}"#,
+        );
+        let picker = json!({"type": "models", "current": "m", "options": [
+            {"value": "m", "name": "m"}, {"value": "other", "name": "Other"}]});
+        assert_eq!(opened.models, Some(picker.clone()));
+
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"model","key":"other"}"#),
+            Some(FromPanel::Model("other".into()))
+        );
+        let switch: Value = serde_json::from_str(&client.set_model("other").unwrap()).unwrap();
+        assert_eq!(switch["method"], "session/set_config_option");
+        assert_eq!(switch["params"]["sessionId"], "s1");
+        assert_eq!(switch["params"]["configId"], "model");
+        assert_eq!(switch["params"]["value"], "other");
+
+        let switched = r#"{"jsonrpc":"2.0","id":2,"result":{"configOptions":[
+            {"id":"model","name":"Model","type":"select","currentValue":"other",
+             "options":[{"value":"m","name":"m"},{"value":"other","name":"Other"}]}]}}"#;
+        let picker = json!({"type": "models", "current": "other", "options": [
+            {"value": "m", "name": "m"}, {"value": "other", "name": "Other"}]});
+        assert_eq!(client.on_line(switched).models, Some(picker.clone()));
+
+        let refused = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid params","data":"no model `x`"}}"#;
+        let reaction = client.on_line(refused);
+        assert_eq!(
+            reaction.show,
+            Some(notice("Could not switch model: no model `x`"))
+        );
+        assert_eq!(reaction.models, Some(picker));
+    }
+
+    #[test]
+    fn a_model_message_without_a_key_is_dropped() {
+        assert_eq!(FromPanel::parse(r#"{"type":"model"}"#), None);
+    }
+
+    #[test]
     fn handshake_opens_a_session_before_prompts_are_sent() {
         let (mut client, init) = Client::start("/work");
         let init: Value = serde_json::from_str(&init).unwrap();
@@ -551,7 +645,7 @@ mod tests {
             on(usage),
             Some(json!({"type": "usage", "used": 5, "size": 9}))
         );
-        let done = r#"{"jsonrpc":"2.0","id":2,"result":{"stopReason":"end_turn"}}"#;
+        let done = r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#;
         assert_eq!(
             client.on_line(done).show,
             Some(json!({"type": "done", "reason": "end_turn"}))

@@ -13,8 +13,8 @@ use view::{Phase, Status};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
-    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement, HtmlTextAreaElement,
-    KeyboardEvent, MessageEvent,
+    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement, HtmlOptionElement,
+    HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent,
 };
 
 #[wasm_bindgen]
@@ -50,6 +50,8 @@ struct Ui {
     added: Vec<String>,
     chips: Element,
     problems: HtmlInputElement,
+    /// The model picker; enabled only while the session is idle and has models.
+    model: HtmlSelectElement,
 }
 
 /// A disabled control carries the attribute, which browsers and screen readers both honour.
@@ -85,6 +87,7 @@ pub fn start() -> Result<(), JsValue> {
     let input: HtmlTextAreaElement = by_id(&document, "prompt")?.dyn_into()?;
     let problems: HtmlInputElement = by_id(&document, "problems")?.dyn_into()?;
     let chips = by_id(&document, "chips")?;
+    let model: HtmlSelectElement = by_id(&document, "model")?.dyn_into()?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         status_line: by_id(&document, "status")?,
@@ -106,6 +109,7 @@ pub fn start() -> Result<(), JsValue> {
         added: Vec::new(),
         chips: chips.clone(),
         problems: problems.clone(),
+        model: model.clone(),
     }));
 
     let state = ui.clone();
@@ -149,6 +153,15 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     form.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref())?;
+
+    let (api, picker) = (vscode.clone(), model.clone());
+    let on_model = Closure::<dyn FnMut()>::new(move || {
+        // Disabled until the extension answers with the picker, so a second pick can't race the first.
+        let _ = set_enabled(&picker, false);
+        api.post_message(&json!({"type": "model", "key": picker.value()}).to_string());
+    });
+    model.add_event_listener_with_callback("change", on_model.as_ref().unchecked_ref())?;
+    on_model.forget();
 
     let api = vscode.clone();
     let on_stop = Closure::<dyn FnMut()>::new(move || {
@@ -246,6 +259,7 @@ impl Ui {
         self.status.phase = Phase::ProcessingPrompt;
         self.output.set_attribute("aria-busy", "true")?;
         set_enabled(&self.stop, true)?;
+        self.sync_model()?;
         self.show_status();
         Ok(())
     }
@@ -256,7 +270,8 @@ impl Ui {
         self.status.phase = Phase::Idle;
         self.ended = Some(js_sys::Date::now());
         self.output.remove_attribute("aria-busy")?;
-        set_enabled(&self.stop, false)
+        set_enabled(&self.stop, false)?;
+        self.sync_model()
     }
 
     fn attached_file(&self) -> Option<String> {
@@ -298,7 +313,31 @@ impl Ui {
     fn set_ready(&mut self, ready: bool) -> Result<(), JsValue> {
         self.ready = ready;
         set_enabled(&self.send, ready)?;
-        if ready { Ok(()) } else { self.idle() }
+        if ready {
+            self.sync_model()
+        } else {
+            self.idle()
+        }
+    }
+
+    /// The picker can change only between turns, once the session is ready and has models.
+    fn sync_model(&self) -> Result<(), JsValue> {
+        let idle = self.status.phase == Phase::Idle;
+        set_enabled(&self.model, self.ready && idle && self.model.length() > 0)
+    }
+
+    /// Fills the picker from the extension's `models` message and selects the current model.
+    fn models(&mut self, message: &Value) -> Result<(), JsValue> {
+        self.model.set_inner_html("");
+        for option in message["options"].as_array().into_iter().flatten() {
+            let element: HtmlOptionElement = self.document.create_element("option")?.dyn_into()?;
+            element.set_value(option["value"].as_str().unwrap_or_default());
+            element.set_text_content(option["name"].as_str());
+            self.model.append_child(&element)?;
+        }
+        self.model
+            .set_value(message["current"].as_str().unwrap_or_default());
+        self.sync_model()
     }
 
     fn show_status(&self) {
@@ -357,6 +396,7 @@ impl Ui {
                 }
                 self.render_chips()?;
             }
+            "models" => self.models(message)?,
             "tool" => self.tool(message)?,
             "permission" => self.permission(message)?,
             "usage" => {
