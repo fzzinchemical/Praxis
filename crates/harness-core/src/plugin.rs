@@ -1,7 +1,7 @@
 //! Plugin discovery and manifest (SPEC §12). Reads where each component lives; the
 //! components themselves are parsed by later tasks.
 
-use crate::config::McpServer;
+use crate::config::{Config, McpServer, ModelRef};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
@@ -164,7 +164,12 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
     };
     // `general` is the built-in agent's name (SPEC §12); an agent file named so is an error.
     let reserved = format!("{}:general", plugin.name);
-    if plugin.agents().iter().any(|a| a.skill.name == reserved) {
+    if plugin
+        .agents
+        .iter()
+        .filter_map(|f| plugin.read_markdown(f))
+        .any(|(skill, _)| skill.name == reserved)
+    {
         return Err(format!(
             "{}: agent `general` is reserved for the built-in agent",
             plugin.name
@@ -213,7 +218,9 @@ impl Plugin {
     }
 
     /// `agents/**/*.md` (or the manifest's `agents` paths), run as sequential subagents.
-    pub fn agents(&self) -> Vec<AgentDef> {
+    /// An agent whose `model` doesn't resolve is skipped with a warning, so it never runs on
+    /// a model the user didn't enable.
+    pub fn agents(&self, config: &Config) -> Vec<AgentDef> {
         self.agents
             .iter()
             .filter_map(|f| {
@@ -227,10 +234,21 @@ impl Plugin {
                             .collect::<Vec<_>>()
                     })
                 };
+                let model = match field("model") {
+                    None => None,
+                    Some(reference) => match config.resolve_enabled_model(&reference) {
+                        Ok(model) => Some(model),
+                        Err(error) => {
+                            tracing::warn!(%error, path = %f.display(), "agent skipped");
+                            return None;
+                        }
+                    },
+                };
                 Some(AgentDef {
                     tools: list("tools"),
                     disallowed_tools: list("disallowedTools").unwrap_or_default(),
                     max_turns: field("maxTurns").and_then(|v| v.parse().ok()),
+                    model,
                     skill,
                 })
             })
@@ -288,8 +306,7 @@ impl Plugin {
 }
 
 /// A plugin agent; its body is the subagent's system prompt (SPEC §12).
-/// shortcut: `model` is ignored and the session model runs it; T8.6 resolves it through
-/// `Config::resolve_enabled_model`.
+/// `model` is resolved by `Config::resolve_enabled_model`; `None` runs on the session model.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDef {
     pub skill: Skill,
@@ -297,6 +314,7 @@ pub struct AgentDef {
     pub tools: Option<Vec<String>>,
     pub disallowed_tools: Vec<String>,
     pub max_turns: Option<u32>,
+    pub model: Option<ModelRef>,
 }
 
 impl Plugin {

@@ -595,6 +595,7 @@ async fn subagent_calls_echo(
         tools: tools.map(own),
         disallowed_tools: own(denied),
         max_turns: None,
+        model: None,
     };
     let mut agent = Agent::new(
         Arc::new(Provider::new(&model.uri(), None).unwrap()),

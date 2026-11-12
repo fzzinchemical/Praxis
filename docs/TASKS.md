@@ -698,7 +698,7 @@ flowchart LR
   - **Needs:** T8.2, T3.5.
   - **Done when:** `tests/security.rs` covers invariant 12. A hostile repo's `anthropic.*`, alias or agent `model` can't enable the backend or change its URL or key variable, and an agent naming a disabled backend fails with a notice instead of switching.
 
-- [ ] **T8.6 Per-agent models** (§12) · *Should*
+- [x] **T8.6 Per-agent models** (§12) · *Should*
   - **Needs:** T8.2, T6.5.
   - **Done when:** a delegated agent whose `model` resolves to another backend runs on it with its own history, profile and context budget; one with no `model` uses the session model; and the parent's history is unchanged apart from the returned summary.
 

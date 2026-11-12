@@ -150,7 +150,7 @@ fn agents_read_tool_restrictions_and_turn_limits() {
     write(&root.join("agents/free.md"), "Do anything.\n");
     let plugin = load(&root).unwrap();
 
-    let agents = plugin.agents();
+    let agents = plugin.agents(&harness_core::config::Config::default());
     let scout = agents.iter().find(|a| a.skill.name == "kit:scout").unwrap();
     assert_eq!(scout.skill.description, "Finds things");
     assert_eq!(scout.skill.body, "You scout.\n");
@@ -227,7 +227,7 @@ fn block_scalar_descriptions_are_folded_into_one_line() {
     let skills = plugin.skills();
     assert_eq!(skills[0].description, "Quick reference. Use for help.");
     assert_eq!(skills[1].description, "Line one line two");
-    let agents = plugin.agents();
+    let agents = plugin.agents(&harness_core::config::Config::default());
     assert_eq!(agents[0].skill.description, "Finds things");
     assert_eq!(agents[0].tools.as_deref(), Some(&["Read".to_owned()][..]));
 }
@@ -317,4 +317,62 @@ fn a_plugin_agent_named_general_fails_to_load_naming_the_plugin() {
 
     assert!(error.contains("kit"), "{error}");
     assert!(error.contains("general"), "{error}");
+}
+
+#[test]
+fn agent_models_resolve_through_config_and_unusable_ones_are_skipped() {
+    use harness_core::config::{Backend, Config, ModelAlias, ModelRef};
+    let root = plugin_dir("agent-models");
+    manifest(&root, r#"{"name":"kit"}"#);
+    for (name, model) in [
+        ("local", "local"),
+        ("bare", "qwen3.5-4b"),
+        ("cloud", "sonnet"),
+        ("broken", "broken"),
+    ] {
+        write(
+            &root.join(format!("agents/{name}.md")),
+            &format!("---\nname: {name}\ndescription: d\nmodel: {model}\n---\nYou.\n"),
+        );
+    }
+    let plugin = load(&root).unwrap();
+    let mut config = Config::default();
+    config.models.insert(
+        "local".into(),
+        ModelAlias {
+            model: "lmstudio/qwen3.5-4b".into(),
+        },
+    );
+    config.models.insert(
+        "sonnet".into(),
+        ModelAlias {
+            model: "anthropic/claude-sonnet-5-5".into(),
+        },
+    );
+
+    config.models.insert(
+        "broken".into(),
+        ModelAlias {
+            model: "qwen3.5-4b".into(),
+        },
+    );
+    let agents = plugin.agents(&config);
+
+    let model = |name: &str| {
+        agents
+            .iter()
+            .find(|a| a.skill.name == name)
+            .map(|a| a.model.clone())
+    };
+    let lmstudio = |m: &str| {
+        Some(ModelRef {
+            backend: Backend::LmStudio,
+            model: m.into(),
+        })
+    };
+    assert_eq!(model("kit:local"), Some(lmstudio("qwen3.5-4b")));
+    assert_eq!(model("kit:bare"), Some(lmstudio("qwen3.5-4b")));
+    // Anthropic is off by default, and an alias without a backend is an error: neither loads.
+    assert_eq!(model("kit:cloud"), None);
+    assert_eq!(model("kit:broken"), None);
 }

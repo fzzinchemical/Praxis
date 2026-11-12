@@ -7,6 +7,7 @@ use self::loop_detection::LoopDetector;
 pub mod profile;
 pub mod recovery;
 
+use crate::config::{Backend, ModelRef};
 use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::SessionFacts;
@@ -15,7 +16,8 @@ use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::plugin::{AgentDef, Skill};
 use crate::provider::{
-    ChatChunk, ChatRequest, FinishReason, Message, Provider, ProviderError, ToolCall, ToolSchema,
+    ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, ReadyModel,
+    ToolCall, ToolSchema,
 };
 use crate::session::SessionLog;
 use crate::tools::{self, FileDiff, ToolContext, ToolOutput};
@@ -324,6 +326,17 @@ impl Agent {
             config.system_prompt = format!("{}\n\n{}", config.system_prompt, def.skill.body);
             config.max_turn_requests = def.max_turns.unwrap_or(config.max_turn_requests);
             config.profile.warning = None;
+            if let Some(model) = &def.model {
+                match self.load_for(model).await {
+                    Ok(ready) => {
+                        config.model = ready.instance_id;
+                        config.context_size = ready.context_length;
+                        // shortcut: built-in profile layers only, no user profiles or capabilities; upgrade when a subagent needs them.
+                        config.profile = crate::agent::profile::resolve(&model.model, None, &[]);
+                    }
+                    Err(message) => return ToolOutput::error(message),
+                }
+            }
             let mut child = Agent::new(Arc::clone(&self.provider), Arc::clone(&self.tools), config);
             child.limits = Some((def.tools.clone(), def.disallowed_tools.clone()));
             child.tool_schemas = self
@@ -389,6 +402,22 @@ impl Agent {
                 )),
             }
         })
+    }
+
+    /// Finds a loaded instance for a subagent's model. Loading needs consent, which this
+    /// turn can't ask for, so an unloaded model is an error the model can see.
+    // shortcut: the Anthropic client is missing until T8.3, so such agents fail here.
+    async fn load_for(&self, model: &ModelRef) -> Result<ReadyModel, String> {
+        if model.backend == Backend::Anthropic {
+            return Err(format!(
+                "Agent model `anthropic/{}` can't run yet: the Anthropic client isn't built.",
+                model.model
+            ));
+        }
+        self.provider
+            .ensure_ready(&model.model, self.config.context_size, LoadPolicy::AskFirst)
+            .await
+            .map_err(|e| format!("Agent model `{}` isn't ready: {e}", model.model))
     }
 
     /// Whether a subagent's `tools` and `disallowedTools` let it run `name`. Indexed mode's
@@ -1197,6 +1226,7 @@ fn general_agent() -> AgentDef {
         tools: None,
         disallowed_tools: vec!["Agent".to_owned()],
         max_turns: None,
+        model: None,
     }
 }
 

@@ -176,7 +176,7 @@ struct Plugins {
 }
 
 /// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
-fn load_plugins(workspace: &Path) -> Plugins {
+fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     let mut out = Plugins::default();
     let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
         return out;
@@ -207,7 +207,7 @@ fn load_plugins(workspace: &Path) -> Plugins {
         }
         out.skills.extend(plugin.skills());
         out.commands.extend(plugin.commands());
-        out.agents.extend(plugin.agents());
+        out.agents.extend(plugin.agents(config));
         out.hooks
             .extend(hooks.into_iter().map(|h| (h, plugin.root.clone())));
         out.mcp.extend(mcp);
@@ -804,7 +804,7 @@ async fn run(
         policy,
         masking: true,
     };
-    let plugins = load_plugins(&workspace);
+    let plugins = load_plugins(&workspace, &config);
     let mut servers = config.mcp.clone();
     servers.extend(plugins.mcp);
     let mcp = if servers.is_empty() {

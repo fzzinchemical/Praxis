@@ -248,6 +248,7 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
         tools: Some(vec!["Read".into(), "Write".into()]),
         disallowed_tools: vec!["Write".into()],
         max_turns: Some(5),
+        model: None,
     };
     h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
 
@@ -275,6 +276,91 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_delegated_agent_with_a_model_runs_on_it_and_the_parent_keeps_its_own() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it"}),
+        )]),
+        text_reply("found it in a.rs"),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [{
+            "key": "worker",
+            "loaded_instances": [{"id": "worker-1", "config": {"context_length": 100_000}}]
+        }]})))
+        .mount(&h.server)
+        .await;
+    let scout = harness_core::plugin::AgentDef {
+        skill: harness_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+        },
+        tools: Some(vec!["Read".into()]),
+        disallowed_tools: vec![],
+        max_turns: Some(5),
+        model: Some(harness_core::config::ModelRef {
+            backend: harness_core::config::Backend::LmStudio,
+            model: "worker".into(),
+        }),
+    };
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let models: Vec<Value> = requests
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST)
+        .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
+        .collect();
+    assert_eq!(models, ["m", "worker-1", "m"]);
+    // Index 1 is the model list; the parent resumes at index 3 with the subagent's summary.
+    let parent = h.request_messages(3).await;
+    assert_eq!(parent.len(), 4);
+    assert_eq!(parent[3]["content"], "found it in a.rs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_delegated_agent_on_anthropic_fails_before_sending_a_request() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it"}),
+        )]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    let scout = harness_core::plugin::AgentDef {
+        skill: harness_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+        },
+        tools: None,
+        disallowed_tools: vec![],
+        max_turns: None,
+        model: Some(harness_core::config::ModelRef {
+            backend: harness_core::config::Backend::Anthropic,
+            model: "claude-sonnet-5-5".into(),
+        }),
+    };
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert!(events.contains(&"error:p1".to_owned()), "{events:?}");
+    let requests = h.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2, "only the parent's two requests");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_subagent_reads_a_range_the_parent_read_in_full() {
     let script = vec![
         tool_reply(&[("c0", "Read", json!({"file_path": "a.txt"}))]),
@@ -298,6 +384,7 @@ async fn a_subagent_reads_a_range_the_parent_read_in_full() {
         tools: Some(vec!["Read".into()]),
         disallowed_tools: vec![],
         max_turns: Some(5),
+        model: None,
     };
     h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
 
