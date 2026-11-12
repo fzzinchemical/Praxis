@@ -62,6 +62,7 @@ fn vsix() -> Result<()> {
     // `deno` is the only target that fetches and starts the wasm on import: `web` needs an init call the
     // CSP bars, and Electron rejects the `import source` syntax of `module` (ADR 0001).
     build_wasm(root, "harness-vscode-ui", "deno", &out.join("ui"))?;
+    fs::copy(root.join("editors/vscode/ui.css"), out.join("ui/ui.css"))?;
 
     let package = fs::read_to_string(root.join("editors/vscode/package.json"))?;
     let manifest = vsix_manifest(&serde_json::from_str(&package)?)?;

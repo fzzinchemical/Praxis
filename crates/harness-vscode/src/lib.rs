@@ -212,10 +212,12 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
     on_dispose.forget();
 
     let script = webview.as_webview_uri(&Uri::join_path(root, "ui/harness_vscode_ui.js"));
+    let style = webview.as_webview_uri(&Uri::join_path(root, "ui/ui.css"));
     webview.set_html(
         &SHELL
             .replace("{{cspSource}}", &webview.csp_source())
-            .replace("{{uiScript}}", &script.to_uri_string()),
+            .replace("{{uiScript}}", &script.to_uri_string())
+            .replace("{{uiStyle}}", &style.to_uri_string()),
     );
     Ok(())
 }

@@ -4,19 +4,21 @@
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{cspSource}} 'wasm-unsafe-eval'; style-src {{cspSource}}; connect-src {{cspSource}}">
 <title>Harness</title>
+<link rel="stylesheet" href="{{uiStyle}}">
 <script type="module" src="{{uiScript}}"></script>
 </head>
 <body>
 <main>
-<h1>Harness</h1>
 <div id="output" role="log" tabindex="0" aria-live="polite" aria-label="Conversation"></div>
-<p id="status" aria-live="off" aria-label="Status">Idle</p>
 <form id="prompt-form">
-<label for="prompt">Prompt</label>
-<textarea id="prompt" rows="3"></textarea>
+<label for="prompt" class="visually-hidden">Message</label>
+<textarea id="prompt" rows="2" placeholder="Ask Harness. Enter sends, Shift+Enter adds a line."></textarea>
+<div class="composer-actions">
+<button type="button" id="stop" class="secondary">Stop</button>
 <button type="submit">Send</button>
-<button type="button" id="stop">Stop</button>
+</div>
 </form>
+<p id="status" aria-live="off" aria-label="Status">Idle</p>
 </main>
 </body>
 </html>

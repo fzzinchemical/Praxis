@@ -12,7 +12,7 @@ crate-type = ["cdylib"]
 # Must equal the installed wasm-bindgen CLI exactly (AGENTS.md gotcha).
 wasm-bindgen = "=0.2.128"
 serde_json = "1"
-web-sys = { version = "=0.3.105", features = ["Document", "Element", "Event", "EventTarget", "HtmlElement", "HtmlTextAreaElement", "MessageEvent", "NodeList", "Window"] }
+web-sys = { version = "=0.3.105", features = ["Document", "Element", "Event", "EventTarget", "HtmlElement", "HtmlFormElement", "HtmlTextAreaElement", "KeyboardEvent", "MessageEvent", "NodeList", "Window"] }
 # Markdown in the webview (SPEC §3); `html` only, no CLI.
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 js-sys = "=0.3.105"

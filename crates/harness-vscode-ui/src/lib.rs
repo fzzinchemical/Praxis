@@ -12,7 +12,10 @@ use std::rc::Rc;
 use view::{Phase, Status};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
-use web_sys::{Document, Element, Event, HtmlElement, HtmlTextAreaElement, MessageEvent};
+use web_sys::{
+    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlTextAreaElement, KeyboardEvent,
+    MessageEvent,
+};
 
 #[wasm_bindgen]
 extern "C" {
@@ -64,7 +67,7 @@ pub fn start() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
     let output = by_id(&document, "output")?;
-    let form = by_id(&document, "prompt-form")?;
+    let form: HtmlFormElement = by_id(&document, "prompt-form")?.dyn_into()?;
     let stop = by_id(&document, "stop")?;
     // The Send button has no id; it is the form's submit button.
     let send = form
@@ -103,6 +106,18 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())?;
+
+    // Enter goes through the form's submit path, so the Send handler stays the only send logic.
+    let submit_form = form.clone();
+    let on_key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        if view::enter_sends(&event.key(), event.shift_key(), event.is_composing()) {
+            event.prevent_default();
+            // A failed submit leaves the prompt in place, which is the right outcome.
+            let _ = submit_form.request_submit();
+        }
+    });
+    input.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref())?;
+    on_key.forget();
 
     let (state, api) = (ui.clone(), vscode.clone());
     let on_submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
@@ -282,6 +297,7 @@ impl Ui {
         }
         let title = summary.get_attribute("data-title").unwrap_or_default();
         summary.set_text_content(Some(&format!("{title} ({status})")));
+        summary.set_attribute("data-status", status)?;
         if let Some(output) = message["output"].as_str() {
             pre.set_text_content(Some(output));
         }

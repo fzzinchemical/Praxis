@@ -39,6 +39,11 @@ fn safe_url(url: &str) -> bool {
         .any(|scheme| url.starts_with(scheme))
 }
 
+/// Enter sends the prompt; Shift+Enter adds a newline and IME composition keeps its own Enter.
+pub fn enter_sends(key: &str, shift: bool, composing: bool) -> bool {
+    key == "Enter" && !shift && !composing
+}
+
 /// What the agent is doing, for the status line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -116,6 +121,14 @@ mod tests {
         assert!(out.contains(r#"href="https://example.com""#), "{out}");
         assert!(out.contains(r#"href="vscode:extension/x""#), "{out}");
         assert!(out.contains("<code>c</code>"), "{out}");
+    }
+
+    #[test]
+    fn enter_sends_but_shift_enter_and_composition_do_not() {
+        assert!(enter_sends("Enter", false, false));
+        assert!(!enter_sends("Enter", true, false));
+        assert!(!enter_sends("Enter", false, true));
+        assert!(!enter_sends("a", false, false));
     }
 
     #[test]
