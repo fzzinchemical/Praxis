@@ -240,11 +240,16 @@ fn markdown_layers(workspace: &Path) -> Vec<PathBuf> {
 
 /// `$<xdg_var>/harness/<file>`, else `~/<fallback>/harness/<file>`.
 fn xdg_path(xdg_var: &str, fallback: &str, file: &str) -> Option<PathBuf> {
+    xdg_dir(xdg_var, fallback).map(|dir| dir.join(file))
+}
+
+/// `$<xdg_var>/harness`, else `~/<fallback>/harness`.
+fn xdg_dir(xdg_var: &str, fallback: &str) -> Option<PathBuf> {
     let base = match std::env::var_os(xdg_var) {
         Some(dir) if !dir.is_empty() => PathBuf::from(dir),
         _ => PathBuf::from(std::env::var_os("HOME")?).join(fallback),
     };
-    Some(base.join("harness").join(file))
+    Some(base.join("harness"))
 }
 
 /// Only a person at a terminal can approve; anything else leaves the items inactive (SPEC §8).
@@ -830,7 +835,14 @@ async fn run(
         model: ready.instance_id,
         context_size: ready.context_length,
         system_prompt: system_prompt(&workspace),
-        agents_md: harness_core::context::prefix::load_agents_md(&workspace),
+        memory: harness_core::context::prefix::load_memory(
+            &workspace,
+            &workspace,
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".claude"))
+                .as_deref(),
+            xdg_dir("XDG_CONFIG_HOME", ".config").as_deref(),
+        ),
         mask_keep_turns: config.context.mask_keep_turns,
         max_turn_requests: config.agent.max_turn_requests,
         profile,

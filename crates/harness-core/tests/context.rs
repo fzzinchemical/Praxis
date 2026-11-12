@@ -72,7 +72,7 @@ fn config(context_size: u32) -> AgentConfig {
         model: "m".into(),
         context_size,
         system_prompt: "sys".into(),
-        agents_md: None,
+        memory: Vec::new(),
         mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
         max_turn_requests: 50,
         profile: harness_core::agent::profile::ModelProfile::default(),
@@ -250,10 +250,10 @@ async fn a_tool_call_id_cannot_steer_the_spool_path() {
 #[tokio::test(flavor = "multi_thread")]
 async fn trims_agents_md_and_warns_when_the_prefix_is_over_budget() {
     let mut cfg = config(8000);
-    cfg.agents_md = Some(format!("KEEP-THE-START {}", "x".repeat(30_000)));
+    cfg.memory = vec![format!("KEEP-THE-START {}", "x".repeat(30_000))];
     let mut h = Harness::new(vec![text_reply("ok", 2000)], cfg).await;
     let events = h.turn("hi").await;
-    assert!(warnings(&events).iter().any(|w| w.contains("AGENTS.md")));
+    assert!(warnings(&events).iter().any(|w| w.contains("Memory files")));
 
     let bodies = h.bodies().await;
     let system = bodies[0]["messages"][0]["content"].as_str().unwrap();
@@ -272,7 +272,7 @@ async fn agents_md_cannot_widen_permissions() {
     )
     .unwrap();
     let mut cfg = config(100_000);
-    cfg.agents_md = harness_core::context::prefix::load_agents_md(&workspace);
+    cfg.memory = harness_core::context::prefix::load_memory(&workspace, &workspace, None, None);
     cfg.policy =
         harness_core::permissions::Policy::new(harness_core::permissions::Mode::ReadOnly, &[], &[])
             .unwrap();
@@ -291,7 +291,7 @@ async fn agents_md_cannot_widen_permissions() {
 #[tokio::test(flavor = "multi_thread")]
 async fn keeps_a_small_agents_md_whole_without_a_warning() {
     let mut cfg = config(100_000);
-    cfg.agents_md = Some("Use tabs.".into());
+    cfg.memory = vec!["Use tabs.".into()];
     let mut h = Harness::new(vec![text_reply("ok", 3000)], cfg).await;
     let events = h.turn("hi").await;
     assert!(warnings(&events).is_empty(), "{:?}", warnings(&events));

@@ -543,7 +543,7 @@ impl Plugin {
 
 // shortcut: reads flat `key: value` lines and `>`/`|` block scalars (folded to one line), not
 // full YAML; add a YAML parser if plugins need lists or nested maps.
-fn split_frontmatter(text: &str) -> (&str, &str) {
+pub(crate) fn split_frontmatter(text: &str) -> (&str, &str) {
     text.strip_prefix("---\n")
         .and_then(|rest| rest.split_once("\n---\n"))
         .unwrap_or(("", text))
@@ -603,7 +603,11 @@ fn component_path(root: &Path, rel: &str, allow_root: bool) -> Result<PathBuf, S
     Ok(path)
 }
 
-fn collect_markdown(root: &Path, path: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+pub(crate) fn collect_markdown(
+    root: &Path,
+    path: &Path,
+    out: &mut Vec<PathBuf>,
+) -> Result<(), String> {
     // A symlink inside a scanned directory must not lead out of the plugin either.
     if !path.canonicalize().is_ok_and(|real| real.starts_with(root)) {
         return Err(format!(

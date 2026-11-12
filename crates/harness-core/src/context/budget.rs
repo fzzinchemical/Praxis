@@ -125,16 +125,30 @@ impl Budget {
         format!("{head}{notice}{tail}")
     }
 
-    /// Fits AGENTS.md into what the prefix limit leaves after `other_chars`. Returns the kept
-    /// part, cut from the end, and whether anything was cut.
-    pub fn fit_agents_md(&self, agents_md: &str, other_chars: usize) -> (String, bool) {
-        let room = self
+    /// Fits memory files, broadest first, into what the prefix limit leaves after `other_chars`.
+    /// The nearest files are kept first. The first one that doesn't fit is cut from its end, and
+    /// every broader one is dropped. Returns the kept files in order and whether anything was cut.
+    pub fn fit_memory(&self, memory: &[String], other_chars: usize) -> (Vec<String>, bool) {
+        let mut room = self
             .chars_for(self.prefix_limit())
             .saturating_sub(other_chars);
-        if agents_md.chars().count() <= room {
-            return (agents_md.to_owned(), false);
+        let mut kept = Vec::new();
+        for file in memory.iter().rev() {
+            let len = file.chars().count();
+            if len <= room {
+                room -= len;
+                kept.push(file.clone());
+                continue;
+            }
+            let piece: String = file.chars().take(room).collect();
+            if !piece.is_empty() {
+                kept.push(piece);
+            }
+            kept.reverse();
+            return (kept, true);
         }
-        (agents_md.chars().take(room).collect(), true)
+        kept.reverse();
+        (kept, false)
     }
 }
 
@@ -249,13 +263,24 @@ mod tests {
     }
 
     #[test]
-    fn agents_md_is_cut_only_when_over_what_is_left() {
+    fn memory_is_cut_only_when_over_what_is_left() {
         let budget = Budget::new(1000);
         assert_eq!(
-            budget.fit_agents_md("short", 0),
-            ("short".to_owned(), false)
+            budget.fit_memory(&["short".to_owned()], 0),
+            (vec!["short".to_owned()], false)
         );
-        let (kept, cut) = budget.fit_agents_md(&"é".repeat(2000), 500);
-        assert_eq!((kept.chars().count(), cut), (375, true));
+        let (kept, cut) = budget.fit_memory(&["é".repeat(2000)], 500);
+        assert_eq!((kept[0].chars().count(), cut), (375, true));
+    }
+
+    #[test]
+    fn the_broadest_memory_is_trimmed_first() {
+        let budget = Budget::new(1000);
+        let (kept, cut) = budget.fit_memory(&["B".repeat(700), "N".repeat(300)], 0);
+        assert_eq!(kept, ["B".repeat(575), "N".repeat(300)]);
+        assert!(cut);
+        let (kept, cut) = budget.fit_memory(&["B".repeat(100), "N".repeat(900)], 0);
+        assert_eq!(kept, ["N".repeat(875)]);
+        assert!(cut);
     }
 }

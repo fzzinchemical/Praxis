@@ -113,8 +113,8 @@ pub struct AgentConfig {
     pub model: String,
     pub context_size: u32,
     pub system_prompt: String,
-    /// Project instructions, part of the prefix and the first thing trimmed to fit it.
-    pub agents_md: Option<String>,
+    /// Memory files, broadest first. Part of the prefix and the first thing trimmed to fit it.
+    pub memory: Vec<String>,
     /// How many recent turns keep their tool output when history is masked (SPEC §7).
     pub mask_keep_turns: u32,
     /// Off skips the masking stage, so evals can compare against it (T2.6).
@@ -1170,15 +1170,13 @@ fn assemble_prefix(
         response_format: None,
     }
     .chars();
-    let (system, trimmed) = match &config.agents_md {
-        Some(agents_md) => {
-            let (kept, cut) = budget.fit_agents_md(agents_md, other_chars);
-            (format!("{base}\n\n{kept}\n\n{facts}"), cut)
-        }
-        None => (format!("{base}\n\n{facts}"), false),
-    };
+    let (memory, trimmed) = budget.fit_memory(&config.memory, other_chars);
+    let mut parts = vec![base];
+    parts.extend(memory);
+    parts.push(facts);
+    let system = parts.join("\n\n");
     let warning = if trimmed {
-        Some("AGENTS.md is too long for the prompt budget, so it was trimmed.".to_owned())
+        Some("Memory files are too long for the prompt budget, so some were trimmed.".to_owned())
     } else if budget.estimate(other_chars) > budget.prefix_limit() {
         Some("The system prompt and tools are over their share of the context.".to_owned())
     } else {

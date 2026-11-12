@@ -756,7 +756,7 @@ flowchart LR
     class T3_6,T6_2,T6_5,T8_9,T3_5,T6_3 other
 ```
 
-- [ ] **T9.1 Memory file hierarchy** (§7, §12) · *Should*
+- [x] **T9.1 Memory file hierarchy** (§7, §12) · *Should*
   - **Needs:** T3.6.
   - **Done when:** a test workspace with `~/.claude/CLAUDE.md`, a root `CLAUDE.md` and `CLAUDE.local.md`, `.claude/CLAUDE.md` in cwd's parent and a root `AGENTS.md` yields the prefix in §12 order with `AGENTS.md` left out; without any `CLAUDE.md`, `AGENTS.md` loads (existing T3.6 test still passes); a file above the workspace root is not read; over budget, the broadest file is trimmed first with a warning; un-pathed rules load; the prefix test still passes.
 

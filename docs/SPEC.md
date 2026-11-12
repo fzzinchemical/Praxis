@@ -398,7 +398,7 @@ flowchart TB
 
     subgraph prefix["Prefix: byte-identical all session"]
         direction LR
-        system["System prompt"] --> agents["AGENTS.md"] --> skills["Skill index"] --> facts["Frozen session facts"]
+        system["System prompt"] --> agents["Memory files"] --> skills["Skill index"] --> facts["Frozen session facts"]
     end
 
     subgraph growing["Append-only"]
@@ -428,7 +428,7 @@ Default allocation of the context window `C`:
 | Category | Limit |
 |---|---|
 | Reserved for output | 15% of `C` |
-| System prompt, tools, AGENTS.md, skill index | 25% of `C`; warn and trim AGENTS.md first when over |
+| System prompt, tools, memory files, skill index | 25% of `C`; warn and trim memory files, broadest first, when over |
 | One tool result | 10% of `C` |
 | History | Whatever remains; compact when the whole prompt passes 80% of `C` |
 

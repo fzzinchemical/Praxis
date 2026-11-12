@@ -1,9 +1,12 @@
 //! Session facts for the stable prompt prefix (SPEC §7). Captured once: anything that changes
 //! later is announced by appending, because rewriting the prefix discards the server's cache.
 
+use crate::plugin::{collect_markdown, split_frontmatter};
+use crate::tools::confine;
 use std::env::consts::OS;
 use std::fs;
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const SECONDS_PER_DAY: u64 = 86_400;
@@ -53,11 +56,106 @@ impl SessionFacts {
     }
 }
 
-/// The workspace's `AGENTS.md`, or `None` if it is missing, unreadable or a symlink leading
-/// outside. It is only prompt text: the budget trims it and it never touches the policy.
-pub fn load_agents_md(workspace: &Path) -> Option<String> {
-    let path = crate::tools::confine::resolve(workspace, "AGENTS.md").ok()?;
-    fs::read_to_string(path).ok()
+/// Memory files in prompt order, broadest first (SPEC §12): the user's `CLAUDE.md` and harness
+/// `AGENTS.md`, the project files from `root` down to `cwd`, then un-pathed rules. Nothing above
+/// `root` is read. The user dirs are parameters so tests never touch the real home. They are only
+/// prompt text: the budget trims them and they never touch the policy.
+pub fn load_memory(
+    root: &Path,
+    cwd: &Path,
+    claude_dir: Option<&Path>,
+    harness_dir: Option<&Path>,
+) -> Vec<String> {
+    let mut memory: Vec<String> = Vec::new();
+    memory.extend(claude_dir.and_then(|dir| read_text(&dir.join("CLAUDE.md"))));
+    memory.extend(harness_dir.and_then(|dir| read_text(&dir.join("AGENTS.md"))));
+    memory.extend(project_memory(root, cwd));
+    for dir in [claude_dir, harness_dir].into_iter().flatten() {
+        memory.extend(rule_texts(dir, &dir.join("rules")));
+    }
+    memory.extend(rule_texts(root, &root.join(".claude/rules")));
+    memory.extend(rule_texts(root, &root.join(".harness/rules")));
+    memory
+}
+
+/// `CLAUDE.md` (or `.claude/CLAUDE.md`) then `CLAUDE.local.md` in each directory from `root` to
+/// `cwd`. `AGENTS.md` takes the `CLAUDE.md` slot only when no `CLAUDE.md` exists on the way.
+fn project_memory(root: &Path, cwd: &Path) -> Vec<String> {
+    let (Ok(root), Ok(cwd)) = (root.canonicalize(), cwd.canonicalize()) else {
+        return Vec::new();
+    };
+    let Ok(below) = cwd.strip_prefix(&root) else {
+        return Vec::new();
+    };
+    // `ancestors` yields `a/b`, `a`, `""`; reversed, that is root first.
+    let mut dirs: Vec<PathBuf> = below.ancestors().map(Path::to_path_buf).collect();
+    dirs.reverse();
+    let claude: Vec<Option<String>> = dirs
+        .iter()
+        .map(|dir| {
+            read_in(&root, &dir.join("CLAUDE.md"))
+                .or_else(|| read_in(&root, &dir.join(".claude/CLAUDE.md")))
+        })
+        .collect();
+    let agents_only = claude.iter().all(Option::is_none);
+    dirs.iter()
+        .zip(claude)
+        .flat_map(|(dir, main)| {
+            let main = if agents_only {
+                read_in(&root, &dir.join("AGENTS.md"))
+            } else {
+                main
+            };
+            [main, read_in(&root, &dir.join("CLAUDE.local.md"))]
+        })
+        .flatten()
+        .collect()
+}
+
+/// A project file, confined to the workspace. A symlink out of it is skipped with a warning.
+fn read_in(root: &Path, relative: &Path) -> Option<String> {
+    match confine::resolve(root, &relative.to_string_lossy()) {
+        Ok(path) => read_text(&path),
+        Err(error) => {
+            tracing::warn!(%error, path = %relative.display(), "memory file skipped");
+            None
+        }
+    }
+}
+
+/// The non-empty text of a memory file. Missing is normal; other failures warn and skip.
+fn read_text(path: &Path) -> Option<String> {
+    match fs::read_to_string(path) {
+        Ok(text) => (!text.trim().is_empty()).then_some(text),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "memory file skipped");
+            None
+        }
+    }
+}
+
+/// The `.md` files under `dir`, which must stay inside `base`. Rules with `paths` are
+/// path-scoped and wait for T9.6, so they're skipped with a warning.
+fn rule_texts(base: &Path, dir: &Path) -> Vec<String> {
+    let (Ok(base), Ok(dir)) = (base.canonicalize(), dir.canonicalize()) else {
+        return Vec::new();
+    };
+    let mut paths = Vec::new();
+    if let Err(error) = collect_markdown(&base, &dir, &mut paths) {
+        tracing::warn!(%error, "rule files skipped");
+    }
+    paths
+        .iter()
+        .filter_map(|path| {
+            let text = read_text(path)?;
+            if split_frontmatter(&text).0.lines().any(|l| l.starts_with("paths:")) {
+                tracing::warn!(path = %path.display(), "path-scoped rule skipped, not supported yet");
+                return None;
+            }
+            Some(text)
+        })
+        .collect()
 }
 
 /// The current branch from `HEAD`. The repository is untrusted and this lands in the prompt, so
@@ -157,19 +255,80 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("harness-memory-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn write(path: &Path, text: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+
+    #[test]
+    fn orders_memory_broadest_first_and_skips_agents_md_when_claude_md_exists() {
+        let base = scratch("order");
+        let (claude, harness) = (base.join("home/.claude"), base.join("home/.config/harness"));
+        let root = base.join("w");
+        write(&claude.join("CLAUDE.md"), "user-claude");
+        write(&harness.join("AGENTS.md"), "user-agents");
+        write(&root.join("CLAUDE.md"), "root");
+        write(&root.join("CLAUDE.local.md"), "root-local");
+        write(&root.join("AGENTS.md"), "root-agents");
+        write(&root.join("sub/.claude/CLAUDE.md"), "sub");
+        let memory = load_memory(&root, &root.join("sub"), Some(&claude), Some(&harness));
+        assert_eq!(
+            memory,
+            ["user-claude", "user-agents", "root", "root-local", "sub"]
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
+
     #[test]
     fn loads_agents_md_only_from_inside_the_workspace() {
-        let dir = std::env::temp_dir().join(format!("harness-agents-{}", std::process::id()));
+        let dir = scratch("agents");
         let workspace = dir.join("w");
         fs::create_dir_all(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
-        assert_eq!(load_agents_md(&workspace), None);
+        assert!(load_memory(&workspace, &workspace, None, None).is_empty());
         fs::write(workspace.join("AGENTS.md"), "Use tabs.").unwrap();
-        assert_eq!(load_agents_md(&workspace).as_deref(), Some("Use tabs."));
+        assert_eq!(
+            load_memory(&workspace, &workspace, None, None),
+            ["Use tabs."]
+        );
         fs::remove_file(workspace.join("AGENTS.md")).unwrap();
         fs::write(dir.join("secret"), "token").unwrap();
         std::os::unix::fs::symlink(dir.join("secret"), workspace.join("AGENTS.md")).unwrap();
-        assert_eq!(load_agents_md(&workspace), None);
+        assert!(load_memory(&workspace, &workspace, None, None).is_empty());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn reads_nothing_above_the_workspace_root() {
+        let base = scratch("above");
+        write(&base.join("CLAUDE.md"), "above");
+        let root = base.join("w");
+        fs::create_dir_all(&root).unwrap();
+        assert!(load_memory(&root, &root, None, None).is_empty());
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn loads_unpathed_rules_and_skips_path_scoped_ones() {
+        let base = scratch("rules");
+        let (claude, root) = (base.join("home/.claude"), base.join("w"));
+        write(&claude.join("rules/a.md"), "user-rule");
+        write(&root.join(".claude/rules/nested/b.md"), "project-rule");
+        write(
+            &root.join(".claude/rules/scoped.md"),
+            "---\npaths: \"src/**\"\n---\nscoped",
+        );
+        write(&root.join(".harness/rules/c.md"), "harness-rule");
+        let memory = load_memory(&root, &root, Some(&claude), None);
+        assert_eq!(memory, ["user-rule", "project-rule", "harness-rule"]);
+        fs::remove_dir_all(base).unwrap();
     }
 }

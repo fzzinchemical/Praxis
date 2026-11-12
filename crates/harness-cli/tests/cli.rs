@@ -109,7 +109,8 @@ fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(BIN);
     command
         .current_dir(dir)
-        // Keeps the developer's own user config out of the tests.
+        // Keeps the developer's own user config and ~/.claude memory out of the tests.
+        .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
         // Standalone skills read ~/.claude, so the developer's own home must not leak in.
@@ -388,6 +389,7 @@ async fn in_terminal(url: &str, dir: &Path, args: &str, typed: &str) -> Output {
     let mut child = Command::new("script")
         .args(["-qec", &cmd, "/dev/null"])
         .current_dir(dir)
+        .env("HOME", dir.join("home"))
         .env("XDG_CONFIG_HOME", dir.join("xdg"))
         .env("XDG_DATA_HOME", dir.join("xdg-data"))
         // Standalone skills read ~/.claude, so the developer's own home must not leak in.
