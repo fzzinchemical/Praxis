@@ -276,7 +276,7 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
 }
 
 fn tool_context(workspace: &Path, config: &Config) -> Result<ToolContext> {
-    let tools = ToolContext::new(workspace)?;
+    let tools = ToolContext::new(workspace)?.with_output_filter(config.context.filter_output);
     let settings = &config.sandbox;
     if settings.mode == SandboxMode::Off {
         eprintln!("The sandbox is off: commands run with your full access.");

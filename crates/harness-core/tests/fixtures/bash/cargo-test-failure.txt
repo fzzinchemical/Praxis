@@ -1,0 +1,35 @@
+   Compiling parser v0.1.0 (/work/parser)
+[32m    Finished[0m test profile
+make[1]: Entering directory '/work/parser'
+    Blocking waiting for file lock on build directory
+    Blocking waiting for file lock on build directory
+    Blocking waiting for file lock on build directory
+    Blocking waiting for file lock on build directory
+Progress 10%Progress 100%
+running 5 tests
+test parser::ok_one ... ok
+test parser::ok_two ... ok
+test parser::ok_three ... ok
+test parser::bad_utf8 ... FAILED
+test parser::bad_len ... FAILED
+
+failures:
+
+---- parser::bad_utf8 stdout ----
+thread 'parser::bad_utf8' panicked at src/lib.rs:42:9:
+index out of bounds
+stack backtrace:
+   0: std::panicking::begin_panic
+   1: parser::decode
+             at ./src/lib.rs:42:9
+
+---- parser::bad_len stdout ----
+thread 'parser::bad_len' panicked at src/lib.rs:17:5:
+assertion failed: len == 4
+
+failures:
+    parser::bad_utf8
+    parser::bad_len
+
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out
+make[1]: Leaving directory '/work/parser'

@@ -547,7 +547,7 @@ auto_load = false
 
 [context]
 mask_keep_turns = 10
-filter_output = true
+filter_output = false                # off until evals show no drop in success (T2.11)
 
 [permissions]
 mode = "ask"                      # read-only | ask | auto-edit

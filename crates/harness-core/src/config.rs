@@ -266,12 +266,15 @@ impl Default for AgentSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct ContextSettings {
     pub mask_keep_turns: u32,
+    /// Off until evals show no drop in success (SPEC §7, T2.11).
+    pub filter_output: bool,
 }
 
 impl Default for ContextSettings {
     fn default() -> Self {
         Self {
             mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
+            filter_output: false,
         }
     }
 }

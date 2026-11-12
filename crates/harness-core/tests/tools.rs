@@ -649,3 +649,107 @@ async fn bash_keeps_the_end_of_an_oversized_output() {
     ok(&output, "first");
     ok(&output, "error: the last line");
 }
+
+/// A failing `cargo test` run with ANSI codes, a progress overwrite, repeated lines and stack traces.
+fn cargo_failure_output() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/bash/cargo-test-failure.txt")
+}
+
+/// Runs the fixture through `Bash` as a failing command, with output filtering on or off.
+async fn run_cargo_failure(filter: bool) -> (ToolOutput, Arc<ToolContext>) {
+    let f = Fixture::new();
+    let ctx = Arc::new(
+        ToolContext::new(&f.ws())
+            .unwrap()
+            .with_output_filter(filter),
+    );
+    let command = format!("cat '{}'; exit 101", cargo_failure_output().display());
+    let output = execute(
+        "Bash",
+        bash(&command, 10_000),
+        ctx.clone(),
+        CancellationToken::new(),
+    )
+    .await;
+    (output, ctx)
+}
+
+#[tokio::test]
+async fn filtered_bash_output_keeps_exit_code_failures_and_stack_traces() {
+    let (output, _ctx) = run_cargo_failure(true).await;
+    assert!(output.is_error, "{}", output.content);
+    for kept in [
+        "[exit code 101]",
+        "test parser::bad_utf8 ... FAILED",
+        "test parser::bad_len ... FAILED",
+        "test result: FAILED. 3 passed; 2 failed",
+        "---- parser::bad_utf8 stdout ----",
+        "panicked at src/lib.rs:42:9",
+        "assertion failed: len == 4",
+        "   0: std::panicking::begin_panic",
+        "   1: parser::decode",
+        "             at ./src/lib.rs:42:9",
+    ] {
+        assert!(
+            output.content.contains(kept),
+            "missing {kept:?}:\n{}",
+            output.content
+        );
+    }
+}
+
+#[tokio::test]
+async fn filtered_bash_output_drops_pass_lines_escapes_and_repeats() {
+    let (output, _ctx) = run_cargo_failure(true).await;
+    let content = &output.content;
+    assert!(!content.contains("test parser::ok_one ... ok"), "{content}");
+    assert!(!content.contains("Entering directory"), "{content}");
+    assert!(!content.contains('\u{1b}'), "{content}");
+    assert!(!content.contains("Progress 10%"), "{content}");
+    assert!(content.contains("Progress 100%"), "{content}");
+    assert_eq!(
+        content.matches("Blocking waiting for file lock").count(),
+        1,
+        "{content}"
+    );
+    assert!(
+        content.contains("[previous line repeated 3 more times]"),
+        "{content}"
+    );
+}
+
+#[tokio::test]
+async fn filtered_bash_output_keeps_the_full_text_in_the_spool() {
+    let (output, _ctx) = run_cargo_failure(true).await;
+    let path = output
+        .content
+        .split("Full output: ")
+        .nth(1)
+        .and_then(|rest| rest.split(". Read it").next())
+        .unwrap_or_else(|| panic!("no spool path in:\n{}", output.content));
+    let spooled = fs::read_to_string(path).unwrap();
+    assert!(spooled.contains("\u{1b}[32m    Finished"), "{spooled}");
+    assert!(spooled.contains("test parser::ok_one ... ok"), "{spooled}");
+    assert!(spooled.contains("Progress 10%\rProgress 100%"), "{spooled}");
+    assert!(spooled.contains("[exit code 101]"), "{spooled}");
+}
+
+#[tokio::test]
+async fn bash_output_is_unfiltered_by_default() {
+    let (output, _ctx) = run_cargo_failure(false).await;
+    assert!(
+        output.content.contains("test parser::ok_one ... ok"),
+        "{}",
+        output.content
+    );
+    assert!(
+        output.content.contains("Entering directory"),
+        "{}",
+        output.content
+    );
+    assert!(
+        !output.content.contains("Full output"),
+        "{}",
+        output.content
+    );
+}

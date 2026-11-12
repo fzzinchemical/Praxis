@@ -45,6 +45,7 @@ fn defaults_apply_when_no_layer_sets_a_key() {
     assert_eq!(config.lmstudio.api_key_env, "LM_API_TOKEN");
     assert!(!config.agent.auto_load);
     assert_eq!(config.context.mask_keep_turns, 10);
+    assert!(!config.context.filter_output);
     assert!(notices.is_empty());
 }
 

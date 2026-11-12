@@ -5,6 +5,7 @@ pub(crate) mod bash;
 mod checkpoint;
 pub(crate) mod confine;
 mod files;
+mod filter;
 mod search;
 
 pub use checkpoint::UNDO_NOTE;
@@ -98,6 +99,8 @@ pub struct ToolContext {
     spooled: Mutex<Option<u64>>,
     /// `None` runs `Bash` unsandboxed, which only `sandbox.mode = "off"` should choose.
     sandbox: Option<crate::sandbox::Sandbox>,
+    /// Whether `Bash` output is filtered before the model sees it (SPEC §7).
+    filter_output: bool,
     /// `Bash`'s private, writable `TMPDIR`. Created on first use.
     tmp_dir: PathBuf,
     tmp_created: Mutex<bool>,
@@ -124,6 +127,7 @@ impl ToolContext {
             spool_dir: new_temp_path("spool"),
             spooled: Mutex::default(),
             sandbox: None,
+            filter_output: false,
             tmp_dir: new_temp_path("tmp"),
             tmp_created: Mutex::default(),
             checkpoints: Mutex::default(),
@@ -133,6 +137,12 @@ impl ToolContext {
     /// Runs every `Bash` command through `sandbox`'s helper (SPEC §9).
     pub fn with_sandbox(mut self, sandbox: crate::sandbox::Sandbox) -> Self {
         self.sandbox = Some(sandbox);
+        self
+    }
+
+    /// Filters `Bash` output for the model; the full text goes to the spool when it changes.
+    pub fn with_output_filter(mut self, on: bool) -> Self {
+        self.filter_output = on;
         self
     }
 

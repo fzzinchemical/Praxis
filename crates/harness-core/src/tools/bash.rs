@@ -3,7 +3,7 @@
 //! shortcut: a command that calls `setsid` leaves the process group and survives the kill; use a
 //! cgroup or PID namespace if that becomes a real problem.
 
-use super::{ToolContext, ToolError, ToolOutput};
+use super::{ToolContext, ToolError, ToolOutput, filter};
 use crate::sandbox::Policy;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -131,6 +131,25 @@ enum Ending {
     Cancelled,
 }
 
+/// Shows the filtered text and keeps the full one in the spool. If the spool fails, the full
+/// text is shown instead, so filtering never loses output.
+fn filtered(ctx: &ToolContext, full: String) -> String {
+    let kept = filter::filter(&full);
+    if kept == full {
+        return full;
+    }
+    match ctx.spool(&full) {
+        Ok(path) => format!(
+            "{kept}[Output filtered to save context. Full output: {}. Read it for the rest.]",
+            path.display()
+        ),
+        Err(error) => {
+            tracing::warn!(%error, "couldn't spool filtered output; showing it unfiltered");
+            full
+        }
+    }
+}
+
 pub async fn run(
     input: BashInput,
     ctx: &ToolContext,
@@ -246,6 +265,11 @@ pub async fn run(
         "(no output)".to_owned()
     } else {
         content.join("\n")
+    };
+    let content = if ctx.filter_output {
+        filtered(ctx, content)
+    } else {
+        content
     };
     Ok(ToolOutput {
         content,
