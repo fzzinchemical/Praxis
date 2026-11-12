@@ -188,6 +188,13 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     for e in errors {
         eprintln!("Agent skipped: {}", sanitize(&e));
     }
+    // Claude Code settings hooks run from the project, so the workspace stands in for a plugin root.
+    out.hooks.extend(
+        config
+            .hooks
+            .iter()
+            .map(|h| (h.clone(), workspace.to_path_buf())),
+    );
     let Some(root) = xdg_path("XDG_DATA_HOME", ".local/share", "plugins") else {
         return out;
     };
@@ -315,6 +322,11 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
             .collect(),
         overrides,
         trust: xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new),
+        claude_user: std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join(".claude/settings.json")),
+        claude_project: [".claude/settings.json", ".claude/settings.local.json"]
+            .map(|f| workspace.join(f))
+            .to_vec(),
     };
     let loaded = config::load_with_approval(sources, &mut approve_project_config)
         .map_err(|e| e.to_string())?;

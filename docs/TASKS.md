@@ -784,6 +784,7 @@ flowchart LR
   - **Needs:** T9.4.
   - **Done when:** table tests cover `$ARGUMENTS[N]`, `$N`, `\$1`, the appended `ARGUMENTS:` line, `${CLAUDE_SKILL_DIR}` and friends, `when_to_use`, `disable-model-invocation` (absent from the index) and `user-invocable: false` (no `/` command), for plugin and standalone skills alike.
 
-- [ ] **T9.8 Claude Code settings** (§8, §9, §12) · *Should*
+- [x] **T9.8 Claude Code settings** (§8, §9, §12) · *Should*
   - **Needs:** T3.5, T6.3.
   - **Done when:** `permissions.allow`/`deny` and `hooks` from `~/.claude/settings.json` apply; those from `.claude/settings.json` and `settings.local.json` are trust-gate items (deny applied at once, allow and hooks only after approval; hostile fixture extended); other keys are ignored silently; a malformed file is a config error naming the file.
+  - **Approval (2026-11-12, project owner):** `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt (SPEC §8 Trust).

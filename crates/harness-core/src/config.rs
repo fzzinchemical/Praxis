@@ -4,7 +4,9 @@
 
 use crate::agent::DEFAULT_MAX_TURN_REQUESTS;
 use crate::agent::profile::ProfileLayer;
+use crate::claude_settings::{self, Permissions, Settings};
 use crate::context::compaction::DEFAULT_MASK_KEEP_TURNS;
+use crate::hooks::{self, Hook};
 use crate::permissions::Mode;
 use crate::trust::{TrustStore, hash};
 use serde::Deserialize;
@@ -40,6 +42,9 @@ pub struct Config {
     pub profiles: BTreeMap<String, ProfileLayer>,
     /// `[mcp.name]` servers (SPEC §13). Project ones run code, so they need approval.
     pub mcp: BTreeMap<String, McpServer>,
+    /// Hooks from Claude Code settings files. Filled by the loader, never read from a file.
+    #[serde(skip)]
+    pub hooks: Vec<Hook>,
 }
 
 /// An MCP server, from `[mcp.name]` or Claude Code's `.mcp.json` shape (SPEC §8, §13).
@@ -321,6 +326,10 @@ pub struct Sources {
     pub overrides: Vec<String>,
     /// Where approvals of widening project config persist. `None` keeps none between runs.
     pub trust: Option<TrustStore>,
+    /// `~/.claude/settings.json`, read below the harness user layer (SPEC §12).
+    pub claude_user: Option<PathBuf>,
+    /// The project's `.claude/settings.json` then `settings.local.json`, below the project layer.
+    pub claude_project: Vec<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -359,6 +368,16 @@ pub fn load_with_approval(
 ) -> Result<Loaded, ConfigError> {
     let mut merged = Table::new();
     let mut notices = Vec::new();
+    let mut hooks = Vec::new();
+    // Claude Code's user file sits below the harness user layer and needs no approval: it's the
+    // user's own file (SPEC §8).
+    if let Some(path) = &sources.claude_user {
+        let settings = read_settings(path)?;
+        merge(&mut merged, rules_table(&settings.permissions), "");
+        if let Some(events) = &settings.hooks {
+            parse_hooks(events, &mut hooks, &mut notices);
+        }
+    }
     if let Some(path) = &sources.user {
         merge(&mut merged, read_file(path)?, "");
     }
@@ -375,9 +394,26 @@ pub fn load_with_approval(
                 ));
             }
         }
-        let (widening, keys) = split_widening(&mut project, mode_of(&merged).unwrap_or_default());
+        // Deny rules apply at once; allow rules and hooks widen, so they wait for approval.
+        let mut project_hooks = Vec::new();
+        for file in &sources.claude_project {
+            let settings = read_settings(file)?;
+            merge(&mut project, rules_table(&settings.permissions), "");
+            project_hooks.extend(settings.hooks);
+        }
+        let (widening, mut keys) =
+            split_widening(&mut project, mode_of(&merged).unwrap_or_default());
+        // Shown to the approver as TOML, but not merged into the config table: hooks are parsed.
+        let mut shown = widening.clone();
+        if !project_hooks.is_empty() {
+            shown.insert(
+                "hooks".to_owned(),
+                Value::try_from(&project_hooks).map_err(|e| error("config", e))?,
+            );
+            keys.push("`hooks`".to_owned());
+        }
         if !keys.is_empty() {
-            let text = toml::to_string(&widening).map_err(|e| error("config", e))?;
+            let text = toml::to_string(&shown).map_err(|e| error("config", e))?;
             let digest = hash(&text);
             let store_error = |e: String| error("trust store", e);
             let stored = match &sources.trust {
@@ -393,6 +429,9 @@ pub fn load_with_approval(
             }
             if approved {
                 merge(&mut project, widening, "");
+                for events in &project_hooks {
+                    parse_hooks(events, &mut hooks, &mut notices);
+                }
             } else {
                 notices.push(format!(
                     "Ignored {} from {}: widening project config needs your approval.",
@@ -418,10 +457,38 @@ pub fn load_with_approval(
             .ok_or_else(|| error(&origin, "expected KEY=VALUE, such as agent.auto_load=true"))?;
         merge(&mut merged, entry(&origin, key, value)?, "");
     }
-    let config = merged
+    let mut config: Config = merged
         .try_into()
         .map_err(|e: toml::de::Error| error("config", e.message()))?;
+    config.hooks = hooks;
     Ok(Loaded { config, notices })
+}
+
+/// Reads a Claude Code settings file; a missing one is empty.
+fn read_settings(path: &Path) -> Result<Settings, ConfigError> {
+    let settings =
+        claude_settings::read(path).map_err(|e| error(&path.display().to_string(), e))?;
+    Ok(settings.unwrap_or_default())
+}
+
+/// `permissions.allow`/`deny` as a `[permissions]` table, so they merge like the config's own.
+fn rules_table(rules: &Permissions) -> Table {
+    let list = |items: &[String]| Value::Array(items.iter().cloned().map(Value::String).collect());
+    let mut table = Table::new();
+    if !rules.allow.is_empty() {
+        table.insert("allow".to_owned(), list(&rules.allow));
+    }
+    if !rules.deny.is_empty() {
+        table.insert("deny".to_owned(), list(&rules.deny));
+    }
+    Table::from_iter((!table.is_empty()).then(|| ("permissions".to_owned(), Value::Table(table))))
+}
+
+/// Appends a settings file's hooks; skipped entries become notices.
+fn parse_hooks(events: &serde_json::Value, out: &mut Vec<Hook>, notices: &mut Vec<String>) {
+    let (found, warnings) = hooks::parse(events);
+    out.extend(found);
+    notices.extend(warnings);
 }
 
 fn read_file(path: &std::path::Path) -> Result<Table, ConfigError> {

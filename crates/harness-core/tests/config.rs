@@ -66,6 +66,8 @@ fn later_layers_win_over_earlier_ones() {
         overrides: flags(&["default_model=flag", "lmstudio.base_url=http://127.0.0.1:9"]),
         mcp_json: None,
         trust: None,
+        claude_user: None,
+        claude_project: Vec::new(),
     })
     .unwrap();
     let config = loaded.config;
@@ -89,6 +91,8 @@ fn permission_rule_lists_merge_and_other_values_replace() {
         overrides: flags(&["permissions.deny=[\"Write\"]"]),
         mcp_json: None,
         trust: None,
+        claude_user: None,
+        claude_project: Vec::new(),
     })
     .unwrap()
     .config;
