@@ -55,8 +55,10 @@ extern "C" {
     type Configuration;
     #[wasm_bindgen(method)]
     fn get(this: &Configuration, key: &str) -> JsValue;
-    #[wasm_bindgen(js_namespace = workspace, getter, js_name = workspaceFolders)]
-    fn workspace_folders() -> JsValue;
+    // A `getter` on a namespaced free function is emitted as a call (`workspace.workspaceFolders()`),
+    // which throws; bind the namespace object and read the property instead.
+    #[wasm_bindgen(thread_local_v2, js_name = workspace)]
+    static WORKSPACE: JsValue;
 
     type Uri;
     #[wasm_bindgen(static_method_of = Uri, js_name = joinPath)]
@@ -224,7 +226,8 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
 
 /// The first workspace folder: `harness acp` runs there and reads its project config.
 fn workspace_dir() -> Option<String> {
-    let folder = Reflect::get(&workspace_folders(), &0.into()).ok()?;
+    let folders = WORKSPACE.with(|workspace| Reflect::get(workspace, &"workspaceFolders".into()));
+    let folder = Reflect::get(&folders.ok()?, &0.into()).ok()?;
     let uri = Reflect::get(&folder, &"uri".into()).ok()?;
     Reflect::get(&uri, &"fsPath".into()).ok()?.as_string()
 }
