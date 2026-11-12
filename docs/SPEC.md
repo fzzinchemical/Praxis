@@ -880,7 +880,7 @@ Security and accessibility requirements:
 
 If the child exits, show the error and last stderr lines, with a restart button.
 
-So far (T5.2): the panel is an editor-tab webview opened by `harness.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`harness-vscode/src/protocol.rs`), not the `agent-client-protocol` crate. Text chunks, tool titles and stop reasons reach the panel as plain text; permission requests are answered `cancelled` until T5.3. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
+So far (T5.3): the panel is an editor-tab webview opened by `harness.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`harness-vscode/src/protocol.rs`), not the `agent-client-protocol` crate, and become typed panel messages (`text`, `tool`, `permission`, `usage`, `done`, `notice`). Model text renders through `pulldown-cmark` with raw HTML escaped, links outside `http`, `https` and `vscode` dropped, and images reduced to alt text. Tool calls are collapsed `<details>`. Permission prompts are panel buttons; answers are checked against the open request and its offered options, and Stop sends `session/cancel` then answers open prompts `cancelled`. The status line shows phase, elapsed time and context used; "loading model" never shows because ACP sends no such event. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
 
 ## 12. Plugins
 

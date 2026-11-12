@@ -1,7 +1,7 @@
 //! VS Code extension host side, compiled to wasm32 (SPEC §11).
 //!
 //! `harness.open` opens a chat panel. Once its wasm reports ready, `harness acp` is spawned in the
-//! first workspace folder; prompts from the panel go to it and its replies come back as text.
+//! first workspace folder; prompts, stop and permission answers go to it, typed updates come back.
 
 mod protocol;
 
@@ -111,6 +111,12 @@ extern "C" {
     fn on(this: &Emitter, event: &str, callback: &Closure<dyn FnMut(JsValue)>);
 }
 
+impl Webview {
+    fn notify(&self, text: &str) {
+        self.post_message(&protocol::notice(text).to_string());
+    }
+}
+
 /// One panel and the `harness acp` process behind it.
 struct Panel {
     webview: Webview,
@@ -119,6 +125,17 @@ struct Panel {
     client: Option<Client>,
     lines: Lines,
     closed: bool,
+}
+
+impl Panel {
+    /// Writes each line to the agent's stdin, if it is running.
+    fn send(&self, lines: impl IntoIterator<Item = String>) {
+        if let Some(child) = &self.child {
+            for line in lines {
+                child.stdin().write(&format!("{line}\n"));
+            }
+        }
+    }
 }
 
 type Shared = Rc<RefCell<Panel>>;
@@ -161,6 +178,19 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
         match message.as_string().as_deref().and_then(FromPanel::parse) {
             Some(FromPanel::Ready) => start(&state),
             Some(FromPanel::Prompt(text)) => send_prompt(&state, &text),
+            Some(FromPanel::Cancel) => {
+                let mut panel = state.borrow_mut();
+                let lines = panel.client.as_mut().map(Client::cancel);
+                panel.send(lines.unwrap_or_default());
+            }
+            Some(FromPanel::Permission(id, option)) => {
+                let mut panel = state.borrow_mut();
+                let line = panel
+                    .client
+                    .as_mut()
+                    .and_then(|client| client.answer(id, option.as_deref()));
+                panel.send(line);
+            }
             None => state
                 .borrow()
                 .output
@@ -202,7 +232,7 @@ fn start(state: &Shared) {
         state
             .borrow()
             .webview
-            .post_message("Open a folder to use Harness.\n");
+            .notify("Open a folder to use Harness.");
         return;
     };
     // `harness.binaryPath` is machine-scoped in package.json, so a repository can't redirect it.
@@ -215,7 +245,7 @@ fn start(state: &Shared) {
         return state
             .borrow()
             .webview
-            .post_message(&format!("spawn failed: {error:?}\n"));
+            .notify(&format!("spawn failed: {error:?}"));
     }
     let child = match spawn(&binary, &Array::of1(&"acp".into()), &options) {
         Ok(child) => child,
@@ -223,7 +253,7 @@ fn start(state: &Shared) {
             return state
                 .borrow()
                 .webview
-                .post_message(&format!("spawn failed: {error:?}\n"));
+                .notify(&format!("spawn failed: {error:?}"));
         }
     };
     let (client, init) = Client::start(&cwd);
@@ -271,18 +301,16 @@ fn send_prompt(state: &Shared, text: &str) {
         (Some(line), Some(child)) => {
             child.stdin().write(&format!("{line}\n"));
         }
-        _ => panel.webview.post_message("Harness is not ready yet.\n"),
+        _ => panel.webview.notify("Harness is not ready yet."),
     }
 }
 
 fn react(state: &Shared, reaction: Reaction) {
     let panel = state.borrow();
-    if let Some(text) = reaction.show {
-        panel.webview.post_message(&text);
+    if let Some(message) = reaction.show {
+        panel.webview.post_message(&message.to_string());
     }
-    if let (Some(line), Some(child)) = (reaction.send, &panel.child) {
-        child.stdin().write(&format!("{line}\n"));
-    }
+    panel.send(reaction.send);
 }
 
 fn exited(state: &Shared, code: &str) {
@@ -293,9 +321,7 @@ fn exited(state: &Shared, code: &str) {
         if panel.closed {
             return;
         }
-        panel
-            .webview
-            .post_message(&format!("[harness acp exited: {code}]\n"));
+        panel.webview.notify(&format!("harness acp exited: {code}"));
     }
     let message = format!("Harness exited ({code}). Its log is in the Harness output channel.");
     let state = state.clone();

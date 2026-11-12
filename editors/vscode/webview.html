@@ -9,11 +9,13 @@
 <body>
 <main>
 <h1>Harness</h1>
-<pre id="output" tabindex="0" aria-live="polite" aria-label="Conversation"></pre>
+<div id="output" role="log" tabindex="0" aria-live="polite" aria-label="Conversation"></div>
+<p id="status" aria-live="off" aria-label="Status">Idle</p>
 <form id="prompt-form">
 <label for="prompt">Prompt</label>
 <textarea id="prompt" rows="3"></textarea>
 <button type="submit">Send</button>
+<button type="button" id="stop">Stop</button>
 </form>
 </main>
 </body>
