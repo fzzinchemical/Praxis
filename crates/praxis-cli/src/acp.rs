@@ -811,6 +811,10 @@ fn subagent_update(
     if let AgentEvent::TextDelta(delta) = event {
         let text = texts.entry(parent.clone()).or_default();
         text.push_str(&delta);
+        // The final reply arrives as the Agent call's result, so a last partial line is not lost.
+        if !delta.contains('\n') {
+            return None;
+        }
         let fields = v1::ToolCallUpdateFields::new().content(vec![text.as_str().into()]);
         return Some(v1::SessionUpdate::ToolCallUpdate(v1::ToolCallUpdate::new(
             parent.clone(),
@@ -1139,6 +1143,17 @@ mod tests {
     /// A parent turn that delegates to `general`, which asks to write a file, then answers.
     /// Returns the session updates and the permission titles the client saw, in order.
     async fn subagent_turn(dir: &Path) -> (Vec<Value>, Vec<String>) {
+        // The subagent reports 12000 prompt tokens, which must not show as the parent's.
+        let reply = sse(&[
+            json!({"choices": [{"delta": {"content": "found it\n"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 12000, "completion_tokens": 3}}),
+        ]);
+        subagent_turn_replying(dir, reply).await
+    }
+
+    /// `subagent_turn` with the subagent's SSE reply given by the caller.
+    async fn subagent_turn_replying(dir: &Path, reply: String) -> (Vec<Value>, Vec<String>) {
         let server = fake_server_bodies(vec![
             tool_call_body(
                 "c0",
@@ -1150,12 +1165,7 @@ mod tests {
                 "Write",
                 &json!({"file_path": "sub.txt", "content": "x"}),
             ),
-            // The subagent reports 12000 prompt tokens, which must not show as the parent's.
-            sse(&[
-                json!({"choices": [{"delta": {"content": "found it"}, "finish_reason": null}]}),
-                json!({"choices": [{"delta": {}, "finish_reason": "stop"}],
-                    "usage": {"prompt_tokens": 12000, "completion_tokens": 3}}),
-            ]),
+            reply,
             text_body("done"),
         ])
         .await;
@@ -1225,12 +1235,12 @@ mod tests {
             .filter(|u| u["toolCallId"] == "c0")
             .filter_map(|u| u["content"][0]["content"]["text"].as_str())
             .collect();
-        assert_eq!(agent_text.last(), Some(&"found it"), "{updates:?}");
+        assert_eq!(agent_text.last(), Some(&"found it\n"), "{updates:?}");
         assert!(
             !updates
                 .iter()
                 .any(|u| u["sessionUpdate"] == "agent_message_chunk"
-                    && u["content"]["text"] == "found it")
+                    && u["content"]["text"] == "found it\n")
         );
         assert!(
             updates
@@ -1246,6 +1256,27 @@ mod tests {
         let logged = log.collect::<String>();
         assert!(logged.contains(r#""subagent_of":"c0""#), "{logged}");
         assert!(!logged.contains(r#""subagent_of":"c1""#), "{logged}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagents_text_is_sent_per_line_not_per_delta() {
+        let dir = temp_dir("subagent_lines");
+        let deltas = ["one ", "two ", "three\n", "four ", "five\n", "six"];
+        let mut chunks: Vec<Value> = deltas
+            .iter()
+            .map(|d| json!({"choices": [{"delta": {"content": d}, "finish_reason": null}]}))
+            .collect();
+        chunks.push(json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}));
+        let (updates, _) = subagent_turn_replying(&dir, sse(&chunks)).await;
+
+        let sent = updates
+            .iter()
+            // The completed update carries the Agent's result, not streamed text, so it is not counted.
+            .filter(|u| {
+                u["toolCallId"] == "c0" && u["content"].is_array() && u["status"] != "completed"
+            })
+            .count();
+        assert!(sent <= 2, "{sent} text updates for six deltas: {updates:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
