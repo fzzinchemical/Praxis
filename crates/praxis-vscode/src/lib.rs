@@ -444,18 +444,29 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
                     .and_then(|client| client.stop_subagent(&id));
                 panel.send(line);
             }
+            // Both overwrite files on disk, including the user's own later edits, so they ask first.
             Some(FromPanel::Rewind(turn)) => {
-                let panel = state.borrow();
-                let line = panel.client.as_ref().and_then(|client| client.rewind(turn));
-                panel.send(line);
+                let state = Rc::clone(&state);
+                let message = "Rewind files and chat to before this message? Later changes to those files are lost, and Bash effects are not undone.";
+                confirm(message, "Rewind", move || {
+                    let panel = state.borrow();
+                    let line = panel.client.as_ref().and_then(|client| client.rewind(turn));
+                    panel.send(line);
+                });
             }
             Some(FromPanel::RevertFile(path)) => {
-                let panel = state.borrow();
-                let line = panel
-                    .client
-                    .as_ref()
-                    .and_then(|client| client.revert_file(&path));
-                panel.send(line);
+                let state = Rc::clone(&state);
+                let message = format!(
+                    "Revert {path} to before the change set? Later changes to it are lost."
+                );
+                confirm(&message, "Revert", move || {
+                    let panel = state.borrow();
+                    let line = panel
+                        .client
+                        .as_ref()
+                        .and_then(|client| client.revert_file(&path));
+                    panel.send(line);
+                });
             }
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
