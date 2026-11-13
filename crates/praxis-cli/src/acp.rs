@@ -225,7 +225,7 @@ impl<M: Models> Server<M> {
 }
 
 /// Hides `user-invocable: false` skills. The source is the plugin (the part of `<plugin>:<name>`)
-/// or, for a standalone skill, its directory, and goes in `_meta` so the panel can group by it.
+/// or, for a standalone skill, the skills directory it sits in, and goes in `_meta` so the panel can group by it.
 /// None when nothing is user-invocable, so a session without commands replays as it did before.
 fn commands_update(
     session: impl Into<v1::SessionId>,
@@ -237,7 +237,8 @@ fn commands_update(
         .map(|s| {
             let source = match s.name.split_once(':') {
                 Some((plugin, _)) => plugin.to_owned(),
-                None => s.dir.display().to_string(),
+                // A standalone skill's folder is its own; group by the skills directory holding it.
+                None => s.dir.parent().unwrap_or(&s.dir).display().to_string(),
             };
             let meta = serde_json::Map::from_iter([("source".into(), Value::String(source))]);
             v1::AvailableCommand::new(&s.name, &s.description).meta(meta)
@@ -1154,7 +1155,7 @@ mod tests {
         assert_eq!(list[0]["description"], "ponytail:lite does things");
         assert_eq!(list[0]["_meta"]["source"], "ponytail");
         assert_eq!(list[1]["name"], "deploy");
-        assert_eq!(list[1]["_meta"]["source"], "/home/u/.claude/skills/deploy");
+        assert_eq!(list[1]["_meta"]["source"], "/home/u/.claude/skills");
     }
 
     #[tokio::test(flavor = "multi_thread")]
