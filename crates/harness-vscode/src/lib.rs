@@ -112,6 +112,9 @@ extern "C" {
     fn uri(this: &TextDocument) -> Uri;
     #[wasm_bindgen(method, js_name = getText)]
     fn get_text(this: &TextDocument) -> String;
+    /// True only for unsaved edits; VS Code's buffer otherwise differs from disk (BOM, EOLs).
+    #[wasm_bindgen(method, getter, js_name = isDirty)]
+    fn is_dirty(this: &TextDocument) -> bool;
     #[wasm_bindgen(method, js_name = getText)]
     fn get_text_in(this: &TextDocument, range: &JsValue) -> String;
 
@@ -789,7 +792,16 @@ fn failure_logger(output: &OutputChannel) -> JsValue {
     })
 }
 
-/// The text of an open document at `path`, unsaved edits included, else the file on disk.
+/// Picks the text for `fs/read_text_file`: the buffer only when it has unsaved edits.
+fn choose_text(
+    dirty: bool,
+    buffer: impl FnOnce() -> Option<String>,
+    disk: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if dirty { buffer() } else { disk() }
+}
+
+/// The text of an open document at `path` when it has unsaved edits, else the file on disk.
 fn editor_text(path: &str) -> Option<String> {
     let documents = WORKSPACE.with(|workspace| Reflect::get(workspace, &"textDocuments".into()));
     let documents: Array = documents.ok()?.unchecked_into();
@@ -798,9 +810,18 @@ fn editor_text(path: &str) -> Option<String> {
         .map(|value| value.unchecked_into::<TextDocument>())
         .find(|document| document.uri().fs_path() == path)
     {
-        return Some(document.get_text());
+        return choose_text(
+            document.is_dirty(),
+            || Some(document.get_text()),
+            || read_disk(path),
+        );
     }
-    // shortcut: reads the whole file into memory with no size cap; cap it if large files show up.
+    read_disk(path)
+}
+
+/// The file on disk as text.
+// shortcut: reads the whole file into memory with no size cap; cap it if large files show up.
+fn read_disk(path: &str) -> Option<String> {
     read_file_sync(path, "utf8").ok()?.as_string()
 }
 
@@ -1252,5 +1273,18 @@ mod tests {
     #[test]
     fn no_settings_means_no_arguments() {
         assert!(override_args(&[("default_model", None)]).is_empty());
+    }
+
+    #[test]
+    fn a_dirty_document_answers_with_its_buffer() {
+        let text = choose_text(true, || Some("buffer".into()), || Some("disk".into()));
+        assert_eq!(text.as_deref(), Some("buffer"));
+    }
+
+    #[test]
+    fn a_clean_document_answers_with_the_disk_not_the_buffer() {
+        // VS Code's buffer drops a BOM and rewrites mixed EOLs; only dirty text counts as unsaved.
+        let text = choose_text(false, || Some("normalized".into()), || Some("disk".into()));
+        assert_eq!(text.as_deref(), Some("disk"));
     }
 }
