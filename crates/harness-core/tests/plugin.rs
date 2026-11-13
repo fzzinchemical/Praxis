@@ -694,3 +694,35 @@ fn standalone_agents_read_fields_and_skip_unresolved_models() {
     assert_eq!(scout.max_turns, Some(4));
     assert_eq!(scout.model, None);
 }
+
+#[test]
+fn crlf_agent_frontmatter_keeps_its_tools() {
+    let root = plugin_dir("crlf-agent");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("agents/scout.md"),
+        "---\r\nname: scout\r\ndescription: Finds things\r\ntools: Read\r\n---\r\nYou scout.\r\n",
+    );
+    let plugin = load(&root).unwrap();
+
+    let agents = plugin.agents(&harness_core::config::Config::default());
+    let scout = agents.iter().find(|a| a.skill.name == "kit:scout").unwrap();
+    assert_eq!(scout.skill.description, "Finds things");
+    assert_eq!(scout.tools.as_deref(), Some(&["Read".to_owned()][..]));
+}
+
+#[test]
+fn frontmatter_closed_at_end_of_file_is_read() {
+    let root = plugin_dir("eof-frontmatter");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("agents/scout.md"),
+        "---\nname: scout\ndescription: Finds things\ntools: Read\n---",
+    );
+    let plugin = load(&root).unwrap();
+
+    let agents = plugin.agents(&harness_core::config::Config::default());
+    let scout = agents.iter().find(|a| a.skill.name == "kit:scout").unwrap();
+    assert_eq!(scout.skill.description, "Finds things");
+    assert_eq!(scout.tools.as_deref(), Some(&["Read".to_owned()][..]));
+}

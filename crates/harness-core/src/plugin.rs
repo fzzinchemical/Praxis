@@ -603,10 +603,22 @@ impl Plugin {
 
 // shortcut: reads flat `key: value` lines and `>`/`|` block scalars (folded to one line), not
 // full YAML; add a YAML parser if plugins need lists or nested maps.
+// Accepts CRLF files (Windows editors) and a closing `---` with no newline after it.
 pub(crate) fn split_frontmatter(text: &str) -> (&str, &str) {
-    text.strip_prefix("---\n")
-        .and_then(|rest| rest.split_once("\n---\n"))
-        .unwrap_or(("", text))
+    let Some(rest) = text
+        .strip_prefix("---\n")
+        .or_else(|| text.strip_prefix("---\r\n"))
+    else {
+        return ("", text);
+    };
+    let mut offset = 0;
+    for line in rest.split_inclusive('\n') {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            return (&rest[..offset], &rest[offset + line.len()..]);
+        }
+        offset += line.len();
+    }
+    ("", text)
 }
 
 /// Expands `/<name> args` into the command's prompt, or `None` if `input` names no
