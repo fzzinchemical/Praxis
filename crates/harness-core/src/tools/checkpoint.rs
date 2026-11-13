@@ -117,6 +117,12 @@ impl ToolContext {
                     // The model must read the file again before editing it.
                     self.forget(path);
                     restored.push(path.clone());
+                    if let Some(copy) = copy {
+                        // The restore already succeeded, so a leftover copy only wastes disk.
+                        if let Err(e) = fs::remove_file(copy) {
+                            tracing::warn!(copy = %copy.display(), error = %e, "could not delete a restored checkpoint");
+                        }
+                    }
                 }
                 Err(e) => {
                     failures.push(format!("{}: {e}", path.display()));
@@ -201,6 +207,7 @@ mod tests {
             "one\n"
         );
         assert!(ctx.undo().unwrap().is_empty());
+        assert_eq!(fs::read_dir(root.join("checkpoints")).unwrap().count(), 0);
         assert!(UNDO_NOTE.contains("Bash effects are not"));
         fs::remove_dir_all(&root).unwrap();
     }
