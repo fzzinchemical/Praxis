@@ -537,15 +537,16 @@ impl Client {
 }
 
 /// The text shown after "Turn ended:". A turn cut by the request limit names the limit and its settings.
-pub fn done_reason(reason: &str, limit: u64) -> String {
-    if reason == "max_turn_requests" {
-        format!(
-            "stopped at the limit of {limit} model requests per turn. To allow more, raise \
-             praxis.agent.maxTurnRequests in VS Code settings or agent.max_turn_requests in config.toml."
-        )
-    } else {
-        reason.to_owned()
+/// `limit` is `None` when only config.toml (or its default) sets it, since the extension can't see that value.
+pub fn done_reason(reason: &str, limit: Option<u64>) -> String {
+    if reason != "max_turn_requests" {
+        return reason.to_owned();
     }
+    let limit = limit.map_or_else(|| "the limit".to_owned(), |n| format!("the limit of {n}"));
+    format!(
+        "stopped at {limit} model requests per turn. To allow more, raise \
+         praxis.agent.maxTurnRequests in VS Code settings or agent.max_turn_requests in config.toml."
+    )
 }
 
 /// The `initialize` line both kinds of `praxis acp` child send first.
@@ -658,11 +659,12 @@ mod tests {
 
     #[test]
     fn turn_limit_stop_names_the_limit_and_both_settings() {
-        let text = done_reason("max_turn_requests", 40);
+        let text = done_reason("max_turn_requests", Some(40));
         assert!(text.contains("40"), "{text}");
         assert!(text.contains("praxis.agent.maxTurnRequests"), "{text}");
         assert!(text.contains("agent.max_turn_requests"), "{text}");
-        assert_eq!(done_reason("end_turn", 40), "end_turn");
+        assert!(!done_reason("max_turn_requests", None).contains("50"));
+        assert_eq!(done_reason("end_turn", Some(40)), "end_turn");
     }
 
     #[test]
