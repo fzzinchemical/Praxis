@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta 1 (`v1.0.0-beta.1`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.1.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -160,10 +160,10 @@ All product code is Rust ([ADR 0001](docs/adr/0001-rust-only-with-minimal-vscode
 
 ### Releases
 
-CI runs `./scripts/verify` on every push and pull request to `main`. Pushing a version tag that points to a commit on `main` builds the Linux binary and the `.vsix` and publishes a GitHub release. A tag with a suffix (`v1.0.0-beta.1`) becomes a pre-release.
+CI runs `./scripts/verify` on every push and pull request to `main`. Pushing a version tag that points to a commit on `main` builds the Linux binary and the `.vsix` and publishes a GitHub release. A tag with a suffix (`v1.1.0-beta`) becomes a pre-release.
 
 ```sh
-git tag v1.0.0-beta.1 && git push origin v1.0.0-beta.1
+git tag v1.1.0-beta && git push origin v1.1.0-beta
 ```
 
 ## Further reading
