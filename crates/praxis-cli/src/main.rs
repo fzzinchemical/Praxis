@@ -114,6 +114,23 @@ enum PluginCommand {
     },
 }
 
+/// The commands, skills and agents a details page lists, each with its description.
+fn components(plugin: &praxis_core::plugin::Plugin) -> Vec<serde_json::Value> {
+    let kinds = [
+        ("command", plugin.commands()),
+        ("skill", plugin.skills()),
+        ("agent", plugin.agent_skills()),
+    ];
+    kinds
+        .into_iter()
+        .flat_map(|(kind, found)| {
+            found.into_iter().map(move |skill| {
+                serde_json::json!({"kind": kind, "name": skill.name, "description": skill.description})
+            })
+        })
+        .collect()
+}
+
 /// `praxis plugin ...`: no model or server needed.
 fn plugin_command(command: PluginCommand) -> Result<u8> {
     let root = xdg_path("XDG_DATA_HOME", ".local/share", "plugins")
@@ -141,9 +158,14 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
             let mut plugins = Vec::new();
             for (name, entry) in store.list().map_err(anyhow::Error::msg)? {
                 // One broken plugin must not hide the others: the Remove action needs its row.
-                let loaded = store
-                    .get(&name)
-                    .and_then(|(_, plugin)| plugin.runs(&store.data_root()));
+                let (readme, components, loaded) = match store.get(&name) {
+                    Ok((_, plugin)) => (
+                        plugin.readme(),
+                        components(&plugin),
+                        plugin.runs(&store.data_root()),
+                    ),
+                    Err(error) => (None, Vec::new(), Err(error)),
+                };
                 let (can_run, error) = match loaded {
                     Ok(runs) => (runs, None),
                     Err(error) => (Vec::new(), Some(error)),
@@ -155,6 +177,8 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
                     "enabled": entry.enabled,
                     "can_run": can_run,
                     "error": error,
+                    "readme": readme,
+                    "components": components,
                 }));
             }
             println!("{}", serde_json::Value::Array(plugins));

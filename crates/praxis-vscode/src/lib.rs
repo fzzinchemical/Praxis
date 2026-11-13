@@ -3,6 +3,7 @@
 //! `praxis.open` opens a chat panel. Once its wasm reports ready, `praxis acp` is spawned in the
 //! first workspace folder; prompts, stop and permission answers go to it, typed updates come back.
 
+mod details;
 mod plugins;
 mod protocol;
 
@@ -138,6 +139,8 @@ extern "C" {
     fn on_did_dispose(this: &WebviewPanel, callback: &JsValue);
     #[wasm_bindgen(method)]
     fn dispose(this: &WebviewPanel);
+    #[wasm_bindgen(method)]
+    fn reveal(this: &WebviewPanel);
 
     #[derive(Clone)]
     type Webview;
@@ -300,6 +303,11 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     command(&context, "praxis.removePlugin", |item| {
         if let Some(name) = item_id(&item) {
             remove_plugin(name);
+        }
+    })?;
+    command(&context, "praxis.showPlugin", |name| {
+        if let Some(name) = name.as_string() {
+            show_details(name);
         }
     })?;
     command(&context, "praxis.installPlugin", |_| install_plugin())?;
@@ -1208,6 +1216,9 @@ struct Plugins {
 
 thread_local! {
     static PLUGINS: RefCell<Option<Plugins>> = const { RefCell::new(None) };
+    /// The open plugin details tabs, by plugin name; a tab removes itself when VS Code disposes it.
+    static DETAILS: RefCell<std::collections::BTreeMap<String, WebviewPanel>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
 /// Registers the Plugins view, same shape as the sessions view.
@@ -1264,7 +1275,59 @@ fn plugin_node(item: &PluginItem) -> JsValue {
         ("label", JsValue::from_str(&item.name)),
         ("description", JsValue::from_str(&item.description())),
         ("contextValue", JsValue::from_str(context)),
+        // A click opens the details tab; the name is the argument, since the item is not passed back.
+        (
+            "command",
+            node(&[
+                ("command", JsValue::from_str("praxis.showPlugin")),
+                (
+                    "arguments",
+                    Array::of1(&JsValue::from_str(&item.name)).into(),
+                ),
+            ]),
+        ),
     ])
+}
+
+/// Opens the plugin's details tab, or reveals the one already open for it. Each tab is one plugin.
+fn show_details(name: String) {
+    if let Some(panel) = DETAILS.with(|panels| panels.borrow().get(&name).cloned()) {
+        panel.reveal();
+        return;
+    }
+    let page = PLUGINS.with(|plugins| {
+        plugins
+            .borrow()
+            .as_ref()
+            .and_then(|plugins| plugins.items.iter().find(|item| item.name == name))
+            .map(details::details_page)
+    });
+    let Some(page) = page else {
+        return plugin_log(&format!("plugins: {name} is not listed\n"));
+    };
+    if let Err(error) = open_details(&name, &page) {
+        plugin_log(&format!("plugins: details failed: {}\n", text_of(error)));
+    }
+}
+
+/// Creates the read-only details tab and forgets it when VS Code closes it.
+fn open_details(name: &str, page: &str) -> Result<(), JsValue> {
+    let panel = create_webview_panel(
+        "praxis.plugin",
+        &format!("{name} (plugin)"),
+        VIEW_COLUMN_ACTIVE,
+        &Object::new(),
+    )?;
+    panel.webview().set_html(page);
+    let key = name.to_owned();
+    let on_dispose = Closure::once_into_js(move || {
+        DETAILS.with(|panels| {
+            panels.borrow_mut().remove(&key);
+        });
+    });
+    panel.on_did_dispose(&on_dispose);
+    DETAILS.with(|panels| panels.borrow_mut().insert(name.to_owned(), panel));
+    Ok(())
 }
 
 fn publish_plugins(items: Vec<PluginItem>) {

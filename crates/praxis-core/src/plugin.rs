@@ -226,6 +226,25 @@ impl Plugin {
             .collect()
     }
 
+    /// Agents as listed in details: like `agents`, but without resolving `model`, so an agent
+    /// whose model isn't enabled still shows.
+    // shortcut: lists agents that `agents` would skip for their model; upgrade if details should match what runs.
+    pub fn agent_skills(&self) -> Vec<Skill> {
+        self.agents
+            .iter()
+            .filter_map(|f| self.read_skill(f))
+            .collect()
+    }
+
+    /// The root `README.md`, unless it links outside the plugin root.
+    pub fn readme(&self) -> Option<String> {
+        let path = self.root.join("README.md").canonicalize().ok()?;
+        if !path.starts_with(&self.root) {
+            return None;
+        }
+        fs::read_to_string(path).ok()
+    }
+
     fn read_skill(&self, path: &Path) -> Option<Skill> {
         self.read_markdown(path).map(|(skill, _)| skill)
     }

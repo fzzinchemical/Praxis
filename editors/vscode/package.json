@@ -19,6 +19,7 @@
       { "command": "praxis.enablePlugin", "title": "Praxis: Enable Plugin" },
       { "command": "praxis.disablePlugin", "title": "Praxis: Disable Plugin" },
       { "command": "praxis.removePlugin", "title": "Praxis: Remove Plugin" },
+      { "command": "praxis.showPlugin", "title": "Praxis: Show Plugin Details" },
       { "command": "praxis.installPlugin", "title": "Praxis: Install Plugin", "icon": "$(add)" },
       { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" }
     ],
@@ -51,7 +52,8 @@
         { "command": "praxis.moveSessionToFolder", "when": "false" },
         { "command": "praxis.enablePlugin", "when": "false" },
         { "command": "praxis.disablePlugin", "when": "false" },
-        { "command": "praxis.removePlugin", "when": "false" }
+        { "command": "praxis.removePlugin", "when": "false" },
+        { "command": "praxis.showPlugin", "when": "false" }
       ]
     },
     "configuration": {

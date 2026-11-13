@@ -191,6 +191,8 @@ fn list_json_reports_state_and_what_each_plugin_can_run() {
     assert_eq!(demo["name"], "demo");
     assert_eq!(demo["commit"], commit.as_str());
     assert_eq!(demo["enabled"], false);
+    assert!(demo["readme"].is_null(), "{demo}");
+    assert!(demo["components"].is_array(), "{demo}");
     assert!(demo["source"].as_str().unwrap().ends_with("src"), "{demo}");
     let can_run: Vec<&str> = demo["can_run"]
         .as_array()
@@ -211,6 +213,62 @@ fn list_json_reports_state_and_what_each_plugin_can_run() {
     let enabled: serde_json::Value =
         serde_json::from_str(&stdout(&praxis(&home, &["list", "--json"]))).unwrap();
     assert_eq!(enabled[0]["enabled"], true);
+}
+
+#[test]
+fn list_json_carries_the_readme_and_every_component_with_its_description() {
+    let home = temp("list-details");
+    let src = home.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::create_dir_all(src.join(".claude-plugin")).unwrap();
+    fs::create_dir_all(src.join("commands")).unwrap();
+    fs::create_dir_all(src.join("skills/fmt")).unwrap();
+    fs::create_dir_all(src.join("agents")).unwrap();
+    fs::write(
+        src.join(".claude-plugin/plugin.json"),
+        r#"{"name": "demo"}"#,
+    )
+    .unwrap();
+    fs::write(src.join("README.md"), "# Demo\n\nHello.\n").unwrap();
+    fs::write(
+        src.join("commands/hello.md"),
+        "---\ndescription: Says hi\n---\nSay hi.\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("skills/fmt/SKILL.md"),
+        "---\nname: fmt\ndescription: Formats code\n---\nFormat.\n",
+    )
+    .unwrap();
+    fs::write(
+        src.join("agents/rev.md"),
+        "---\nname: rev\ndescription: Reviews diffs\n---\nReview.\n",
+    )
+    .unwrap();
+    git(&src, &["init", "--quiet"]);
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "--quiet", "-m", "one"]);
+    stdout(&praxis(&home, &["install", src.to_str().unwrap()]));
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&stdout(&praxis(&home, &["list", "--json"]))).unwrap();
+    let demo = &listed[0];
+    assert_eq!(demo["readme"], "# Demo\n\nHello.\n", "{demo}");
+    let components = demo["components"]
+        .as_array()
+        .expect("components is an array");
+    let find = |kind: &str| {
+        components
+            .iter()
+            .find(|c| c["kind"] == kind)
+            .unwrap_or_else(|| panic!("no {kind} in {components:?}"))
+    };
+    assert_eq!(find("command")["name"], "demo:hello");
+    assert_eq!(find("command")["description"], "Says hi");
+    assert_eq!(find("skill")["name"], "demo:fmt");
+    assert_eq!(find("skill")["description"], "Formats code");
+    assert_eq!(find("agent")["name"], "demo:rev");
+    assert_eq!(find("agent")["description"], "Reviews diffs");
 }
 
 #[test]

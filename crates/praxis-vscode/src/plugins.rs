@@ -12,6 +12,37 @@ pub struct PluginItem {
     pub can_run: Vec<String>,
     /// Set when the CLI could not load the plugin; such a row only offers Remove.
     pub error: Option<String>,
+    /// The root `README.md`, if the plugin has one.
+    pub readme: Option<String>,
+    /// Commands, skills and agents, in the order the CLI lists them.
+    pub components: Vec<Component>,
+}
+
+/// What a plugin component is, as `plugin list --json` names it.
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Kind {
+    Command,
+    Skill,
+    Agent,
+}
+
+impl Kind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Command => "Command",
+            Kind::Skill => "Skill",
+            Kind::Agent => "Agent",
+        }
+    }
+}
+
+/// A command, skill or agent of a plugin, with its description.
+#[derive(Debug, PartialEq)]
+pub struct Component {
+    pub kind: Kind,
+    /// `<plugin>:<name>`, as the CLI names it.
+    pub name: String,
+    pub description: String,
 }
 
 impl PluginItem {
@@ -74,6 +105,33 @@ fn plugin_item(row: &Value) -> Result<PluginItem, String> {
         commit: text("commit")?,
         can_run,
         error: row["error"].as_str().map(str::to_owned),
+        readme: row["readme"].as_str().map(str::to_owned),
+        components: row["components"]
+            .as_array()
+            .ok_or("plugin row without a `components` array")?
+            .iter()
+            .map(component)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn component(row: &Value) -> Result<Component, String> {
+    let kind = match row["kind"].as_str() {
+        Some("command") => Kind::Command,
+        Some("skill") => Kind::Skill,
+        Some("agent") => Kind::Agent,
+        _ => return Err("component with an unknown `kind`".to_owned()),
+    };
+    Ok(Component {
+        kind,
+        name: row["name"]
+            .as_str()
+            .ok_or("component without a string `name`")?
+            .to_owned(),
+        description: row["description"]
+            .as_str()
+            .ok_or("component without a string `description`")?
+            .to_owned(),
     })
 }
 
@@ -114,12 +172,36 @@ fn args(rest: &[&str]) -> Vec<String> {
 mod tests {
     use super::*;
 
-    const LISTING: &str = r#"[
+    const LISTING: &str = r##"[
         {"name":"review","source":"/src/review","commit":"1a2b3c4d5e","enabled":true,
-         "can_run":["hook: PreToolUse Bash","bin/lint"]},
+         "can_run":["hook: PreToolUse Bash","bin/lint"],"readme":"# Review","components":[
+           {"kind":"skill","name":"review:fmt","description":"Formats code"}]},
         {"name":"notes","source":"https://example.com/notes.git","commit":"9f8e7d6c5b",
-         "enabled":false,"can_run":[]}
-    ]"#;
+         "enabled":false,"can_run":[],"readme":null,"components":[]}
+    ]"##;
+
+    #[test]
+    fn maps_the_readme_and_each_component_with_its_kind() {
+        let items = plugin_items(LISTING).unwrap();
+        assert_eq!(items[0].readme.as_deref(), Some("# Review"));
+        assert_eq!(
+            items[0].components,
+            [Component {
+                kind: Kind::Skill,
+                name: "review:fmt".to_owned(),
+                description: "Formats code".to_owned(),
+            }]
+        );
+        assert_eq!(items[1].readme, None);
+        assert!(items[1].components.is_empty());
+    }
+
+    #[test]
+    fn rejects_a_component_of_an_unknown_kind() {
+        let json = r#"[{"name":"p","source":"/s","commit":"c","enabled":true,"can_run":[],
+            "components":[{"kind":"hook","name":"p:x","description":""}]}]"#;
+        assert!(plugin_items(json).is_err());
+    }
 
     #[test]
     fn maps_each_listed_plugin_to_an_item() {
@@ -190,7 +272,7 @@ mod tests {
     fn a_broken_plugin_keeps_its_row_with_the_error_and_no_runs() {
         let items = plugin_items(
             r#"[{"name":"other","source":"/s","commit":"abc","enabled":false,
-                 "can_run":[],"error":"manifest is not JSON"}]"#,
+                 "can_run":[],"error":"manifest is not JSON","components":[]}]"#,
         )
         .unwrap();
         assert_eq!(items[0].error.as_deref(), Some("manifest is not JSON"));
