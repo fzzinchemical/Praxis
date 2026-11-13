@@ -104,6 +104,12 @@ pub enum AgentEvent {
         title: String,
         detail: Option<String>,
     },
+    /// A subagent's text or tool event, tagged with the `Agent` call that runs it (SPEC §11).
+    Subagent {
+        parent: ToolCallId,
+        kind: String,
+        event: Box<AgentEvent>,
+    },
     TurnEnded(StopReason),
 }
 
@@ -331,6 +337,7 @@ impl Agent {
     // Boxed with an explicit `Send` type, since the child's turn reaches this function again.
     fn delegate<'a>(
         &'a self,
+        parent: ToolCallId,
         input: &'a Value,
         turn: &'a Turn<'_>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>> {
@@ -396,17 +403,25 @@ impl Agent {
                     _ => None,
                 })
             };
-            // The parent's front end sees the subagent's tool calls and permission prompts, but
-            // not its text or token counts, which would read as the parent's.
+            // The parent's front end sees the subagent's text, tool calls and permission prompts,
+            // tagged with the `Agent` call, but not its token counts, which would read as the parent's.
             let forward = async {
                 let mut ended = StopReason::EndTurn;
                 while let Some(event) = rx.recv().await {
                     match event {
                         AgentEvent::TurnEnded(reason) => ended = reason,
-                        AgentEvent::ToolStarted { .. }
+                        AgentEvent::Notice { .. } => turn.emit(event).await,
+                        event @ (AgentEvent::TextDelta(_)
+                        | AgentEvent::ToolStarted { .. }
                         | AgentEvent::ToolFinished { .. }
-                        | AgentEvent::PermissionRequest { .. }
-                        | AgentEvent::Notice { .. } => turn.emit(event).await,
+                        | AgentEvent::PermissionRequest { .. }) => {
+                            let event = AgentEvent::Subagent {
+                                parent: parent.clone(),
+                                kind: def.skill.name.clone(),
+                                event: Box::new(event),
+                            };
+                            turn.emit(event).await;
+                        }
                         _ => {}
                     }
                 }
@@ -1108,7 +1123,7 @@ impl Agent {
                 Ok(input) => match &self.mcp {
                     _ if call.name == "Skill" => self.load_skill(&input),
                     _ if call.name == "ToolSearch" => self.search_tools(&input),
-                    _ if call.name == "Agent" => self.delegate(&input, turn).await,
+                    _ if call.name == "Agent" => self.delegate(call.id.clone(), &input, turn).await,
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }

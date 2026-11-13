@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use view::{Phase, Status};
+use view::{Phase, Status, subagent_summary};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
@@ -26,6 +26,30 @@ extern "C" {
     fn post_message(this: &VsCodeApi, message: &str);
 }
 
+/// One tool call's collapsible block. An `Agent` call also holds its subagent's calls nested inside.
+struct Tool {
+    details: Element,
+    summary: Element,
+    pre: Element,
+    title: String,
+    status: String,
+    /// The subagent's type, set only on an `Agent` call.
+    kind: Option<String>,
+    /// Calls nested under this one.
+    calls: usize,
+}
+
+/// Sets a block's summary as text, never HTML: titles and types come from the model.
+fn show_summary(tool: &Tool) -> Result<(), JsValue> {
+    let line = match &tool.kind {
+        Some(kind) => subagent_summary(kind, tool.calls, &tool.status),
+        None => format!("{} ({})", tool.title, tool.status),
+    };
+    tool.summary.set_text_content(Some(&line));
+    tool.summary.set_attribute("data-title", &tool.title)?;
+    tool.summary.set_attribute("data-status", &tool.status)
+}
+
 struct Ui {
     document: Document,
     output: Element,
@@ -36,8 +60,8 @@ struct Ui {
     ended: Option<f64>,
     /// The assistant message being streamed and its markdown so far.
     message: Option<(Element, String)>,
-    /// Tool call id to its summary and output elements.
-    tools: HashMap<String, (Element, Element)>,
+    /// Tool call id to its block.
+    tools: HashMap<String, Tool>,
     /// Set by the extension's "ready" notice; cleared again by an exit or failure notice.
     ready: bool,
     send: Element,
@@ -669,25 +693,50 @@ impl Ui {
         };
         if !self.tools.contains_key(&id) {
             // Collapsed by default: tool output is long and the summary carries the status.
-            let details = self.append("details", "tool", "")?;
+            let details = self.document.create_element("details")?;
+            details.set_class_name("tool");
             let summary = self.document.create_element("summary")?;
             let pre = self.document.create_element("pre")?;
             details.append_child(&summary)?;
             details.append_child(&pre)?;
-            summary.set_attribute("data-title", "tool")?;
-            self.tools.insert(id.clone(), (summary, pre));
+            // A subagent's call nests under the `Agent` call that runs it.
+            match message["parent"]
+                .as_str()
+                .and_then(|parent| self.tools.get_mut(parent))
+            {
+                Some(owner) => {
+                    owner.calls += 1;
+                    owner.details.append_child(&details)?;
+                    show_summary(owner)?;
+                }
+                None => {
+                    self.output.append_child(&details)?;
+                }
+            }
+            let tool = Tool {
+                details,
+                summary,
+                pre,
+                title: "tool".to_owned(),
+                status: String::new(),
+                kind: None,
+                calls: 0,
+            };
+            self.tools.insert(id.clone(), tool);
         }
-        let Some((summary, pre)) = self.tools.get(&id) else {
+        let Some(tool) = self.tools.get_mut(&id) else {
             return Ok(());
         };
         if let Some(title) = message["title"].as_str() {
-            summary.set_attribute("data-title", title)?;
+            tool.title = title.to_owned();
         }
-        let title = summary.get_attribute("data-title").unwrap_or_default();
-        summary.set_text_content(Some(&format!("{title} ({status})")));
-        summary.set_attribute("data-status", status)?;
+        if let Some(kind) = message["subagent"].as_str() {
+            tool.kind = Some(kind.to_owned());
+        }
+        status.clone_into(&mut tool.status);
+        show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
-            pre.set_text_content(Some(output));
+            tool.pre.set_text_content(Some(output));
         }
         Ok(())
     }

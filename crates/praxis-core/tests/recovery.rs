@@ -87,6 +87,7 @@ fn label(event: &AgentEvent) -> String {
         AgentEvent::Usage { .. } => "usage".to_owned(),
         AgentEvent::Compaction(state) => format!("compaction:{state:?}"),
         AgentEvent::Notice { title, .. } => format!("notice:{title}"),
+        AgentEvent::Subagent { event, .. } => format!("subagent:{}", label(event)),
         AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
     }
 }

@@ -182,6 +182,7 @@ fn label(event: &AgentEvent) -> String {
         AgentEvent::Usage { used_tokens, .. } => format!("usage:{used_tokens}"),
         AgentEvent::Compaction(state) => format!("compaction:{state:?}"),
         AgentEvent::Notice { .. } => "notice".to_owned(),
+        AgentEvent::Subagent { event, .. } => format!("subagent:{}", label(event)),
         AgentEvent::TurnEnded(reason) => format!("ended:{reason:?}"),
     }
 }
@@ -259,7 +260,10 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
 
     let events = h.turn("go", CancellationToken::new(), never_asked).await;
 
-    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(
+        events.contains(&"subagent:error:s1".to_owned()),
+        "{events:?}"
+    );
     assert!(!h.workspace.join("x").exists());
     // The subagent starts from its own prompt, without the parent's conversation.
     let child = h.request_messages(1).await;
@@ -880,7 +884,10 @@ async fn the_general_agent_obeys_session_deny_rules() {
         })
         .await;
 
-    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(
+        events.contains(&"subagent:error:s1".to_owned()),
+        "{events:?}"
+    );
     assert!(!workspace.join("x").exists());
 }
 
@@ -992,7 +999,10 @@ async fn a_worker_on_another_model_obeys_the_session_deny_rules() {
         })
         .await;
 
-    assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
+    assert!(
+        events.contains(&"subagent:error:s1".to_owned()),
+        "{events:?}"
+    );
     assert!(!workspace.join("x").exists());
 }
 

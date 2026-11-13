@@ -642,10 +642,17 @@ fn update(update: &Value) -> Reaction {
                 .filter_map(|item| item["content"]["text"].as_str())
                 .collect();
             let output = (!texts.is_empty()).then(|| texts.join("\n"));
-            show(
-                json!({"type": "tool", "id": update["toolCallId"], "title": update["title"],
-                "status": update["status"], "output": output}),
-            )
+            let mut message = json!({"type": "tool", "id": update["toolCallId"], "title": update["title"],
+                "status": update["status"], "output": output});
+            // Set only when present, so plain tool calls keep their shape.
+            let meta = &update["_meta"]["praxis"];
+            if let Some(parent) = meta["parentToolCallId"].as_str() {
+                message["parent"] = parent.into();
+            }
+            if let Some(kind) = meta["subagent"].as_str() {
+                message["subagent"] = kind.into();
+            }
+            show(message)
         }
         Some("usage_update") => {
             show(json!({"type": "usage", "used": update["used"], "size": update["size"]}))
@@ -955,6 +962,30 @@ mod tests {
                 json!({"type": "tool", "id": "c1", "title": "Read a.rs", "status": "pending", "output": null}),
                 json!({"type": "tool", "id": "c1", "title": null, "status": "completed", "output": "fn a"}),
                 json!({"type": "text", "text": "done"}),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_subagents_tool_calls_reach_the_panel_with_their_parent() {
+        let (mut client, _) = Client::start("/work");
+        let agent = json!({"sessionUpdate": "tool_call", "toolCallId": "c0", "title": "Agent",
+            "status": "pending", "_meta": {"praxis": {"subagent": "general"}}});
+        let child = json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Read a.rs",
+            "status": "pending", "_meta": {"praxis": {"parentToolCallId": "c0"}}});
+        let shown: Vec<Value> = [agent, child]
+            .into_iter()
+            .filter_map(|update| {
+                let line = json!({"jsonrpc": "2.0", "method": "session/update",
+                    "params": {"sessionId": "s1", "update": update}});
+                client.on_line(&line.to_string()).show
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                json!({"type": "tool", "id": "c0", "title": "Agent", "status": "pending", "output": null, "subagent": "general"}),
+                json!({"type": "tool", "id": "c1", "title": "Read a.rs", "status": "pending", "output": null, "parent": "c0"}),
             ]
         );
     }

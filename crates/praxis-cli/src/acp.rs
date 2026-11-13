@@ -4,14 +4,16 @@ use agent_client_protocol::v1::{ConnectionTo, schema as v1};
 use agent_client_protocol::{
     Agent as AcpAgent, Client, ConnectTo, Error, on_receive_notification, on_receive_request,
 };
-use praxis_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome, title};
+use praxis_core::agent::{
+    Agent, AgentEvent, PermissionReply, StopReason, ToolCallId, ToolOutcome, title,
+};
 use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
 use praxis_core::provider::Message;
 use praxis_core::session::{self, SessionLog};
 use praxis_core::tools::EditorReader;
 use praxis_core::tools::{FileDiff, ToolOutput};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -391,7 +393,17 @@ pub fn agent(
                         agent
                     });
                     let mut stop = StopReason::ProviderError;
+                    let mut subagent_text = HashMap::new();
                     while let Some(event) = rx.recv().await {
+                        // A subagent's events arrive tagged with the `Agent` call that runs it.
+                        let (owner, event) = match event {
+                            AgentEvent::Subagent {
+                                parent,
+                                kind,
+                                event,
+                            } => (Some((parent, kind)), *event),
+                            other => (None, other),
+                        };
                         match event {
                             AgentEvent::PermissionRequest {
                                 id: call,
@@ -401,6 +413,11 @@ pub fn agent(
                                 diff,
                                 respond,
                             } => {
+                                // The title names the subagent, so the user can tell who asks.
+                                let name = match &owner {
+                                    Some((_, kind)) => format!("{kind}: {name}"),
+                                    None => name,
+                                };
                                 let update = permission_update(call, name, input, diff);
                                 let reply =
                                     ask(&cx, &req.session_id, update, can_always, &cancel).await;
@@ -409,11 +426,17 @@ pub fn agent(
                             }
                             AgentEvent::TurnEnded(reason) => stop = reason,
                             other => {
-                                if let Some(update) = update(other)
+                                let sent = match &owner {
+                                    Some((parent, _)) => {
+                                        subagent_update(parent, other, &mut subagent_text)
+                                    }
+                                    None => update(other),
+                                };
+                                if let Some(sent) = sent
                                     && cx
                                         .send_notification(v1::SessionNotification::new(
                                             req.session_id.clone(),
-                                            update,
+                                            sent,
                                         ))
                                         .is_err()
                                 {
@@ -652,13 +675,21 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
         AgentEvent::TextDelta(text) => v1::SessionUpdate::AgentMessageChunk(chunk(text)),
         AgentEvent::ThinkingDelta(text) => v1::SessionUpdate::AgentThoughtChunk(chunk(text)),
         AgentEvent::ToolStarted {
-            id, name, title, ..
-        } => v1::SessionUpdate::ToolCall(
-            v1::ToolCall::new(id, title)
+            id,
+            name,
+            input,
+            title,
+        } => {
+            let call = v1::ToolCall::new(id, title)
                 .kind(tool_kind(&name))
                 // `pending` is the default, so the wire leaves `status` out.
-                .status(v1::ToolCallStatus::Pending),
-        ),
+                .status(v1::ToolCallStatus::Pending);
+            // The panel titles the subagent's block with its type (SPEC §11).
+            let kind = input["subagent_type"].as_str().filter(|_| name == "Agent");
+            let meta =
+                kind.and_then(|kind| json!({"praxis": {"subagent": kind}}).as_object().cloned());
+            v1::SessionUpdate::ToolCall(call.meta(meta))
+        }
         AgentEvent::ToolFinished { id, outcome } => {
             let (status, content) = match outcome {
                 ToolOutcome::Completed(output) => {
@@ -691,10 +722,41 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
         }
         AgentEvent::Compaction(_)
         | AgentEvent::PermissionRequest { .. }
+        | AgentEvent::Subagent { .. }
         | AgentEvent::TurnEnded(_) => {
             return None;
         }
     })
+}
+
+/// A subagent's event as the parent client sees it. Its text replaces the `Agent` call's content,
+/// so a plain client still sees one flat list; its tool calls keep their own ids and name the
+/// `Agent` call in `_meta`, which the panel nests them under.
+fn subagent_update(
+    parent: &ToolCallId,
+    event: AgentEvent,
+    texts: &mut HashMap<ToolCallId, String>,
+) -> Option<v1::SessionUpdate> {
+    if let AgentEvent::TextDelta(delta) = event {
+        let text = texts.entry(parent.clone()).or_default();
+        text.push_str(&delta);
+        let fields = v1::ToolCallUpdateFields::new().content(vec![text.as_str().into()]);
+        return Some(v1::SessionUpdate::ToolCallUpdate(v1::ToolCallUpdate::new(
+            parent.clone(),
+            fields,
+        )));
+    }
+    let meta = json!({"praxis": {"parentToolCallId": parent}})
+        .as_object()
+        .cloned();
+    match update(event)? {
+        v1::SessionUpdate::ToolCall(call) => Some(v1::SessionUpdate::ToolCall(call.meta(meta))),
+        v1::SessionUpdate::ToolCallUpdate(call) => {
+            Some(v1::SessionUpdate::ToolCallUpdate(call.meta(meta)))
+        }
+        // shortcut: a subagent's reasoning and notices are dropped rather than shown on its call; upgrade with the panel's sub-block rendering.
+        _ => None,
+    }
 }
 
 /// The updates a live turn would have sent for one logged message, so a loaded chat looks the same.
@@ -801,23 +863,36 @@ mod tests {
 
     /// A fake LM Studio that makes each call in turn, one model request per call, then says "done".
     async fn fake_server_script(calls: &[(&str, Value)]) -> MockServer {
-        let server = MockServer::start().await;
         let mut bodies: Vec<String> = calls
             .iter()
             .enumerate()
-            .map(|(i, (name, input))| {
-                sse(&[
-                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": format!("c{i}"),
-                        "function": {"name": name, "arguments": input.to_string()}}]},
-                        "finish_reason": null}]}),
-                    json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-                ])
-            })
+            .map(|(i, (name, input))| tool_call_body(&format!("c{i}"), name, input))
             .collect();
-        bodies.push(sse(&[
-            json!({"choices": [{"delta": {"content": "done"}, "finish_reason": null}]}),
+        bodies.push(text_body("done"));
+        fake_server_bodies(bodies).await
+    }
+
+    /// One model reply that calls `name` with `input` under call id `id`.
+    fn tool_call_body(id: &str, name: &str, input: &Value) -> String {
+        sse(&[
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": id,
+                "function": {"name": name, "arguments": input.to_string()}}]},
+                "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ])
+    }
+
+    /// One model reply that says `text` and stops.
+    fn text_body(text: &str) -> String {
+        sse(&[
+            json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
             json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        ]));
+        ])
+    }
+
+    /// A fake LM Studio that answers each request with the next body, in order.
+    async fn fake_server_bodies(bodies: Vec<String>) -> MockServer {
+        let server = MockServer::start().await;
         for body in bodies {
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
@@ -875,7 +950,7 @@ mod tests {
             };
             let tools = Arc::new(ToolContext::new(&workspace)?);
             let provider = Arc::new(Provider::new(&url, None)?);
-            Ok(Agent::new(provider, tools, config))
+            Ok(Agent::new(provider, tools, config).with_agents(Vec::new()))
         });
         agent(new_agent, dir.join("sessions"), FakeModels, commands)
     }
@@ -948,6 +1023,101 @@ mod tests {
             .unwrap();
         let seen = log.lock().unwrap().clone();
         (id, seen)
+    }
+
+    /// A parent turn that delegates to `general`, which asks to write a file, then answers.
+    /// Returns the session updates and the permission titles the client saw, in order.
+    async fn subagent_turn(dir: &Path) -> (Vec<Value>, Vec<String>) {
+        let server = fake_server_bodies(vec![
+            tool_call_body(
+                "c0",
+                "Agent",
+                &json!({"subagent_type": "general", "prompt": "write it"}),
+            ),
+            tool_call_body(
+                "c1",
+                "Write",
+                &json!({"file_path": "sub.txt", "content": "x"}),
+            ),
+            text_body("found it"),
+            text_body("done"),
+        ])
+        .await;
+        let (updates, asks) = (Log::default(), Log::default());
+        let (on_update, on_ask) = (updates.clone(), asks.clone());
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |req: v1::RequestPermissionRequest, responder, _cx| {
+                    let title = to_value(&req).unwrap()["toolCall"]["title"].to_string();
+                    push(&on_ask, title);
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    push(&on_update, to_value(&note.update).unwrap().to_string());
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(praxis(&server, dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(dir);
+                let session = cx.send_request(session).block_task().await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let updates = updates
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|u| serde_json::from_str(u).unwrap())
+            .collect();
+        let asks = asks.lock().unwrap().clone();
+        (updates, asks)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagents_calls_carry_the_parent_id_and_its_text_stays_on_the_agent_call() {
+        let dir = temp_dir("subagent");
+        let (updates, asks) = subagent_turn(&dir).await;
+        let call = |id: &str| updates.iter().find(|u| u["toolCallId"] == id).cloned();
+
+        let agent = call("c0").expect("the Agent call is sent");
+        assert_eq!(agent["_meta"]["praxis"]["subagent"], "general");
+        let child = call("c1").expect("the subagent's Write is sent");
+        assert_eq!(child["_meta"]["praxis"]["parentToolCallId"], "c0");
+        // Its text is on the Agent call, not a flat message chunk, and the parent's reply stays flat.
+        let agent_text: Vec<&str> = updates
+            .iter()
+            .filter(|u| u["toolCallId"] == "c0")
+            .filter_map(|u| u["content"][0]["content"]["text"].as_str())
+            .collect();
+        assert_eq!(agent_text.last(), Some(&"found it"), "{updates:?}");
+        assert!(
+            !updates
+                .iter()
+                .any(|u| u["sessionUpdate"] == "agent_message_chunk"
+                    && u["content"]["text"] == "found it")
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|u| u["sessionUpdate"] == "agent_message_chunk"
+                    && u["content"]["text"] == "done")
+        );
+        // The permission names the subagent.
+        assert_eq!(asks, [r#""general: Write""#]);
     }
 
     /// Stands in for a turn whose task panicked, so its agent never comes back.

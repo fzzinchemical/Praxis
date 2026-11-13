@@ -81,6 +81,22 @@ pub fn suggestions<'a>(commands: &'a [Command], prompt: &str) -> Vec<(&'a str, V
     groups
 }
 
+/// The one-line summary of a subagent's `Agent` call block. The caller sets it as text, never HTML,
+/// since the type name comes from the model.
+pub fn subagent_summary(kind: &str, calls: usize, status: &str) -> String {
+    let state = match status {
+        "pending" | "in_progress" => "running",
+        "failed" => "failed",
+        _ => "completed",
+    };
+    let noun = if calls == 1 {
+        "tool call"
+    } else {
+        "tool calls"
+    };
+    format!("{kind} · {calls} {noun} · {state}")
+}
+
 /// What the agent is doing, for the status line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -219,6 +235,22 @@ mod tests {
         assert!(suggestions(&commands, "please /deploy").is_empty());
         assert!(suggestions(&commands, "/deploy ").is_empty());
         assert!(suggestions(&commands, "/deploy now").is_empty());
+    }
+
+    #[test]
+    fn a_subagent_summary_names_its_type_calls_and_status() {
+        assert_eq!(
+            subagent_summary("Explore", 6, "in_progress"),
+            "Explore · 6 tool calls · running"
+        );
+        assert_eq!(
+            subagent_summary("general", 1, "completed"),
+            "general · 1 tool call · completed"
+        );
+        assert_eq!(
+            subagent_summary("general", 0, "failed"),
+            "general · 0 tool calls · failed"
+        );
     }
 
     #[test]

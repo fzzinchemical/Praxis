@@ -568,6 +568,14 @@ async fn run_turn(
     let mut stop = StopReason::ProviderError;
     let mut mid_line = false;
     while let Some(event) = rx.recv().await {
+        let event = match event {
+            // A subagent's text stays out of the terminal view; its tool calls and prompts show as before.
+            AgentEvent::Subagent { event, .. } if !matches!(*event, AgentEvent::TextDelta(_)) => {
+                *event
+            }
+            AgentEvent::Subagent { .. } => continue,
+            other => other,
+        };
         match event {
             AgentEvent::TextDelta(text) => {
                 let text = sanitize(&text);
@@ -614,6 +622,8 @@ async fn run_turn(
             AgentEvent::Compaction(state) => eprintln!("[compaction {state:?}]"),
             AgentEvent::Notice { title, .. } => eprintln!("{}", sanitize(&title)),
             AgentEvent::TurnEnded(reason) => stop = reason,
+            // Unwrapped above, so only reachable if that unwrapping changes.
+            AgentEvent::Subagent { .. } => {}
         }
     }
     if mid_line {
