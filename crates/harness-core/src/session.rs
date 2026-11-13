@@ -85,6 +85,7 @@ impl SessionLog {
     }
 
     /// Writes one record as a single line, so a crash can only cut the last one short.
+    /// shortcut: logs are never deleted or trimmed, so disk use grows with every turn. Upgrade with a per-user size or age cap.
     pub fn append(&mut self, message: &Message) -> io::Result<()> {
         let mut line = serde_json::to_string(message).map_err(io::Error::other)?;
         line.push('\n');

@@ -8,6 +8,10 @@ use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
 
 /// Shown with every undo: only file tools are checkpointed.
+/// Undo steps whose copies are kept; older turns are dropped with their copy files.
+/// shortcut: copies are kept for the last 20 turns only, so `/undo` cannot go further back. Upgrade if users need deeper undo.
+const CHECKPOINT_TURNS: usize = 20;
+
 pub const UNDO_NOTE: &str = "Only Write and Edit changes are undone; Bash effects are not.";
 
 #[derive(Debug, Default)]
@@ -35,10 +39,21 @@ impl ToolContext {
     }
 
     /// Starts a new undo step. Turns that changed nothing don't count as one.
+    /// Turns beyond `CHECKPOINT_TURNS` are dropped, and their copies deleted.
     pub fn begin_turn(&self) {
         let mut cp = self.checkpoints();
         if cp.turns.last().is_none_or(|turn| !turn.is_empty()) {
             cp.turns.push(Vec::new());
+        }
+        let expired = cp.turns.len().saturating_sub(CHECKPOINT_TURNS);
+        for (_, copy) in cp.turns.drain(..expired).flatten() {
+            let Some(copy) = copy else { continue };
+            match fs::remove_file(&copy) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                    tracing::warn!(copy = %copy.display(), error = %e, "could not delete an old checkpoint");
+                }
+                _ => {}
+            }
         }
     }
 
@@ -262,6 +277,40 @@ mod tests {
         assert_eq!(
             fs::read_to_string(workspace.join("a.txt")).unwrap(),
             "two\n"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+    #[test]
+    fn checkpoints_older_than_the_last_turns_are_deleted_and_undo_still_works() {
+        let root = std::env::temp_dir().join(format!("harness-retention-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "v0\n").unwrap();
+        let checkpoints = root.join("checkpoints");
+        let ctx = ToolContext::new(&workspace).unwrap();
+        ctx.checkpoint_into(checkpoints.clone());
+        let path = file.display().to_string();
+
+        let turns = CHECKPOINT_TURNS + 1;
+        for i in 0..turns {
+            ctx.begin_turn();
+            read(from_value(json!({"file_path": path})).unwrap(), &ctx).unwrap();
+            let input = json!({"file_path": path, "old_string": format!("v{i}\n"), "new_string": format!("v{}\n", i + 1)});
+            edit(from_value(input).unwrap(), &ctx).unwrap();
+        }
+
+        let copies = fs::read_dir(&checkpoints).unwrap().count();
+        assert_eq!(copies, CHECKPOINT_TURNS);
+        assert!(
+            !checkpoints.join("1").exists(),
+            "oldest copy should be deleted"
+        );
+
+        assert_eq!(ctx.undo().unwrap().len(), 1);
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!("v{CHECKPOINT_TURNS}\n")
         );
         fs::remove_dir_all(&root).unwrap();
     }
