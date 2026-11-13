@@ -1081,67 +1081,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "harness-cli"
-version = "1.0.0-beta.1"
-dependencies = [
- "agent-client-protocol",
- "anyhow",
- "clap",
- "harness-core",
- "serde_json",
- "tokio",
- "tokio-util",
- "tracing-subscriber",
- "wiremock",
-]
-
-[[package]]
-name = "harness-core"
-version = "1.0.0-beta.1"
-dependencies = [
- "futures",
- "globset",
- "grep-regex",
- "grep-searcher",
- "ignore",
- "jsonschema",
- "landlock",
- "regex",
- "reqwest",
- "rmcp",
- "schemars 1.2.3",
- "serde",
- "serde_json",
- "sha2",
- "thiserror",
- "tokio",
- "tokio-util",
- "toml",
- "tracing",
- "wiremock",
-]
-
-[[package]]
-name = "harness-vscode"
-version = "1.0.0-beta.1"
-dependencies = [
- "js-sys",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
-name = "harness-vscode-ui"
-version = "1.0.0-beta.1"
-dependencies = [
- "js-sys",
- "pulldown-cmark",
- "serde_json",
- "wasm-bindgen",
- "web-sys",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2017,6 +1956,67 @@ name = "powerfmt"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4a6394b9e965e73d0a289ee54f589087e2c676aedf60885baf52c76b771e4958"
+
+[[package]]
+name = "praxis-cli"
+version = "1.0.0-beta.1"
+dependencies = [
+ "agent-client-protocol",
+ "anyhow",
+ "clap",
+ "praxis-core",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tracing-subscriber",
+ "wiremock",
+]
+
+[[package]]
+name = "praxis-core"
+version = "1.0.0-beta.1"
+dependencies = [
+ "futures",
+ "globset",
+ "grep-regex",
+ "grep-searcher",
+ "ignore",
+ "jsonschema",
+ "landlock",
+ "regex",
+ "reqwest",
+ "rmcp",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "toml",
+ "tracing",
+ "wiremock",
+]
+
+[[package]]
+name = "praxis-vscode"
+version = "1.0.0-beta.1"
+dependencies = [
+ "js-sys",
+ "serde_json",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "praxis-vscode-ui"
+version = "1.0.0-beta.1"
+dependencies = [
+ "js-sys",
+ "pulldown-cmark",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -3616,7 +3616,7 @@ name = "xtask"
 version = "1.0.0-beta.1"
 dependencies = [
  "anyhow",
- "harness-core",
+ "praxis-core",
  "serde_json",
  "tokio",
  "tokio-util",

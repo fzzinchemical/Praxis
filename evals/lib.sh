@@ -1,6 +1,6 @@
 # Sourced by every evals/<task>/check.sh. Usage: check.sh [workdir], where workdir is the
 # agent's edited copy of repo/ (default: the untouched fixture). Works on a throwaway copy,
-# so a check never changes the workdir and never sees the harness's own Cargo workspace.
+# so a check never changes the workdir and never sees the praxis's own Cargo workspace.
 set -euo pipefail
 
 task_dir=$(cd "$(dirname "${BASH_SOURCE[1]}")" && pwd)

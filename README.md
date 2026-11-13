@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta 1 (`v1.0.0-beta.1`).** Linux x86_64 only. The binary and commands are still called `harness` (the working name); the rename to `praxis` is planned. Expect rough edges and breaking changes.
+> **Beta 1 (`v1.0.0-beta.1`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -41,7 +41,7 @@ Hosted models still help with tasks local models can't do yet. Support for the A
 - **Sessions:** resume (`--resume`), checkpoints and `/undo`, and plan-first mode (`/plan`, then `/execute`).
 - **MCP client** over stdio and streamable HTTP, read from config or `.mcp.json`. Tool definitions are pinned, and a changed tool needs your approval.
 - **Claude Code compatibility:** plugins (`plugin.json`, skills, commands, agents, hooks, MCP), standalone skills and agents in `.claude/` and `~/.claude/`, `CLAUDE.md` and `AGENTS.md` memory with imports and nested files, path-scoped rules, and Claude Code settings.
-- **Editors:** a VS Code extension (Rust compiled to WebAssembly, no npm) with chat, diff review, sessions and plugin views. Any [Agent Client Protocol](https://agentclientprotocol.com) client, such as Zed, can use `harness acp`.
+- **Editors:** a VS Code extension (Rust compiled to WebAssembly, no npm) with chat, diff review, sessions and plugin views. Any [Agent Client Protocol](https://agentclientprotocol.com) client, such as Zed, can use `praxis acp`.
 
 ## Install
 
@@ -49,12 +49,12 @@ Hosted models still help with tasks local models can't do yet. Support for the A
 
 Download from the [Releases page](https://github.com/fzzinchemical/Praxis/releases):
 
-- `harness-<version>-x86_64-linux.tar.gz`: the CLI
-- `harness-<version>.vsix`: the VS Code extension
+- `praxis-<version>-x86_64-linux.tar.gz`: the CLI
+- `praxis-<version>.vsix`: the VS Code extension
 
 ```sh
-tar xzf harness-*-x86_64-linux.tar.gz
-install -Dm755 harness ~/.local/bin/harness
+tar xzf praxis-*-x86_64-linux.tar.gz
+install -Dm755 praxis ~/.local/bin/praxis
 ```
 
 ### From source
@@ -64,7 +64,7 @@ Requires Rust 1.99 or newer.
 ```sh
 git clone https://github.com/fzzinchemical/Praxis.git
 cd Praxis
-cargo build --release -p harness-cli    # binary at target/release/harness
+cargo build --release -p praxis-cli    # binary at target/release/praxis
 ```
 
 ### Requirements
@@ -76,13 +76,13 @@ cargo build --release -p harness-cli    # binary at target/release/harness
 
 ```sh
 # 1. Start LM Studio's server and load a model, then check Praxis can see it:
-harness models
+praxis models
 
 # 2. One-shot task in the current directory:
-harness "fix the failing test in src/parse.rs"
+praxis "fix the failing test in src/parse.rs"
 
 # 3. Or start an interactive session:
-harness
+praxis
 ```
 
 In the REPL, use `/plan <task>` to plan in read-only mode, `/execute` to carry out the plan, `/undo` to revert the last turn's edits and `/exit` to quit. Ctrl-C cancels the current turn; press it again to exit.
@@ -90,19 +90,19 @@ In the REPL, use `/plan <task>` to plan in read-only mode, `/execute` to carry o
 Other commands:
 
 ```sh
-harness --model qwen3.5-4b "..."    # choose the model (default: the first one loaded)
-harness --resume                    # continue the newest session in this workspace
-harness sessions                    # list saved sessions
-harness plugin install <git-url>    # plugins start disabled; enable them after review
-harness plugin list
-harness acp                         # Agent Client Protocol over stdio, for editors
+praxis --model qwen3.5-4b "..."    # choose the model (default: the first one loaded)
+praxis --resume                    # continue the newest session in this workspace
+praxis sessions                    # list saved sessions
+praxis plugin install <git-url>    # plugins start disabled; enable them after review
+praxis plugin list
+praxis acp                         # Agent Client Protocol over stdio, for editors
 ```
 
 Only a person at a terminal can approve a permission prompt. Piped or non-interactive runs deny anything that needs approval.
 
 ## Configuration
 
-Config is TOML, layered from lowest to highest priority: built-in defaults, then `~/.config/harness/config.toml` (user), then `.harness/config.toml` (project; untrusted until you trust the workspace), then `HARNESS_*` environment variables, then `--config-override KEY=VALUE` flags. Unknown keys are errors.
+Config is TOML, layered from lowest to highest priority: built-in defaults, then `~/.config/praxis/config.toml` (user), then `.praxis/config.toml` (project; untrusted until you trust the workspace), then `PRAXIS_*` environment variables, then `--config-override KEY=VALUE` flags. Unknown keys are errors.
 
 ```toml
 default_model = "qwen3.5-4b"
@@ -132,9 +132,9 @@ The full reference is [docs/SPEC.md §8](docs/SPEC.md#8-config-trust-and-session
 
 ## VS Code
 
-1. Install the extension: `code --install-extension harness-<version>.vsix`.
-2. Set **Harness: Binary Path** (`harness.binaryPath`) to your `harness` binary if it isn't on `PATH`.
-3. Run **Harness: Open Chat** from the command palette.
+1. Install the extension: `code --install-extension praxis-<version>.vsix`.
+2. Set **Praxis: Binary Path** (`praxis.binaryPath`) to your `praxis` binary if it isn't on `PATH`.
+3. Run **Praxis: Open Chat** from the command palette.
 
 ## Status and limits
 

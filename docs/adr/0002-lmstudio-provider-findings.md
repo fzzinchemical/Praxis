@@ -1,7 +1,7 @@
 # ADR 0002: LM Studio provider findings
 
 > [!NOTE]
-> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/harness-core/tests/fixtures/lmstudio/`. **Amended the same day:** the owner dropped qwen2.5-coder after these findings, and chose `qwen3.5-4b` as the second model alongside `gemma-4-12b-qat`.
+> **Status: accepted, 2026-11-06.** From spike T0.3. Recordings and raw timings are in `crates/praxis-core/tests/fixtures/lmstudio/`. **Amended the same day:** the owner dropped qwen2.5-coder after these findings, and chose `qwen3.5-4b` as the second model alongside `gemma-4-12b-qat`.
 
 ## Context
 

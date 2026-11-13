@@ -3,10 +3,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-wasm_crates=(harness-vscode harness-vscode-ui)
+wasm_crates=(praxis-vscode praxis-vscode-ui)
 wasm_target=wasm32-unknown-unknown
 # --workspace overrides default-members, so wasm crates must be excluded by name to stay off native.
-native=(--workspace --exclude harness-vscode --exclude harness-vscode-ui)
+native=(--workspace --exclude praxis-vscode --exclude praxis-vscode-ui)
 
 cargo fmt --all --check
 cargo clippy "${native[@]}" --all-targets -- -D warnings

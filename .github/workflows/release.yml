@@ -33,15 +33,15 @@ jobs:
 
       - name: Build
         run: |
-          cargo build --release --locked -p harness-cli
+          cargo build --release --locked -p praxis-cli
           cargo xtask vsix
 
       - name: Package
         run: |
           v="${GITHUB_REF_NAME#v}"
           mkdir dist
-          tar czf "dist/harness-$v-x86_64-linux.tar.gz" -C target/release harness -C "$GITHUB_WORKSPACE" README.md
-          cp target/harness.vsix "dist/harness-$v.vsix"
+          tar czf "dist/praxis-$v-x86_64-linux.tar.gz" -C target/release praxis -C "$GITHUB_WORKSPACE" README.md
+          cp target/praxis.vsix "dist/praxis-$v.vsix"
           (cd dist && sha256sum * > SHA256SUMS)
 
       - name: Publish

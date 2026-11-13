@@ -82,7 +82,7 @@ So the two pieces of advice conflict: mask old output to save tokens, but avoid 
 | **Awareness** | Status line with phase, elapsed time and context used, which matters because local models are slow | Must | T5.3 |
 | **Attention** | Collapsed tool output with a one-line summary | Must | T5.3 |
 | **Honest behaviour** | System prompt asks the model to state assumptions, disagree when warranted, and report only what it verified | Should | T2.13 |
-| **Evidence** | Timed trial of real tasks with and without the harness | Could | T7.5 |
+| **Evidence** | Timed trial of real tasks with and without the praxis | Could | T7.5 |
 
 Risk labels are rule-based (paths such as CI, dependencies and auth). They only direct attention, and are never shown as a safety verdict.
 
@@ -113,17 +113,17 @@ Risk labels are rule-based (paths such as CI, dependencies and auth). They only 
 
 Checked 2026-11-12 against the [memory](https://code.claude.com/docs/en/memory.md), [skills](https://code.claude.com/docs/en/skills.md) and [subagents](https://code.claude.com/docs/en/sub-agents.md) docs. These formats belong to Claude Code and change often; re-check before implementing.
 
-| Area | Claude Code | Harness ([ADR 0007](adr/0007-markdown-sources-like-claude-code.md)) |
+| Area | Claude Code | Praxis ([ADR 0007](adr/0007-markdown-sources-like-claude-code.md)) |
 |---|---|---|
 | Memory locations | Managed, `~/.claude/CLAUDE.md`, every ancestor of cwd up to `/`, `CLAUDE.local.md`; subdirectories lazily | Same, except no managed file and nothing above the workspace root |
 | `AGENTS.md` | Read only when no `CLAUDE.md` exists | Same |
 | Imports | `@path`, four hops, skipped in code; outside-cwd imports need approval | Same syntax and depth; outside imports are skipped |
-| Rules | `.claude/rules/**/*.md`, `paths` globs | Same, plus `~/.config/harness/rules/` and `.harness/rules/` |
+| Rules | `.claude/rules/**/*.md`, `paths` globs | Same, plus `~/.config/praxis/rules/` and `.praxis/rules/` |
 | Skills and commands | Merged namespace; enterprise > personal > project; many frontmatter fields, `` !`cmd` `` injection, `context: fork` | Same namespace and order; subset of fields; no injection or fork |
 | Agents | Managed > CLI > project > user > plugin; `permissionMode`, `hooks`, `mcpServers`, `memory`, `isolation` and more | Project > user > plugin; §12 fields only |
 | Settings | `permissions`, `hooks` and many more in `settings.json` | `permissions` and `hooks` only; project ones through the trust gate |
 
-Not confirmed: whether local Claude Code expands `@file` inside skill bodies (docs only mention it for synced skills), so the harness doesn't.
+Not confirmed: whether local Claude Code expands `@file` inside skill bodies (docs only mention it for synced skills), so the praxis doesn't.
 
 ## Sources
 

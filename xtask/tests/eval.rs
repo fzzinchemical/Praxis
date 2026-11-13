@@ -85,7 +85,7 @@ fn write_task(evals: &Path, name: &str) {
 #[tokio::test]
 async fn an_eval_runs_the_agent_in_the_sandbox_and_writes_the_scoreboard() {
     let server = fake_server().await;
-    let outside = std::env::temp_dir().join(format!("harness-eval-outside-{}", std::process::id()));
+    let outside = std::env::temp_dir().join(format!("praxis-eval-outside-{}", std::process::id()));
     // The agent must see neither the judge nor anything outside its copy.
     let command = format!(
         "touch {}; ls /evals && touch saw-judge; touch fixed",
@@ -102,7 +102,7 @@ async fn an_eval_runs_the_agent_in_the_sandbox_and_writes_the_scoreboard() {
         ))
         .mount(&server)
         .await;
-    let dir = std::env::temp_dir().join(format!("harness-eval-test-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("praxis-eval-test-{}", std::process::id()));
     fs::create_dir_all(&dir).unwrap();
     write_task(&dir, "injection-sample");
     let out = dir.join("board.json");

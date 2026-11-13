@@ -13,7 +13,7 @@ ADR 0004 lets each delegated agent run on its own model, but it leaves out who d
 2. **Workers are agent definitions (SPEC §12) whose `model` names a local model.** The orchestrator delegates through the delegation tool, giving a self-contained instruction. The worker runs its own loop with its own history, profile, context budget and tool limits, and returns a short report.
 3. **Only the report enters the orchestrator's history.** The orchestrator never sees the worker's transcript, so a cloud orchestrator receives only what the report contains, and its prompt prefix stays stable.
 4. **Delegation stays sequential,** as in ADR 0004. One GPU can't run two local models at full speed.
-5. **No harness-side routing.** The orchestrator model picks which worker to call, and the user picks the models. The harness never chooses or switches a model itself (ADR 0004, point 6).
+5. **No praxis-side routing.** The orchestrator model picks which worker to call, and the user picks the models. The praxis never chooses or switches a model itself (ADR 0004, point 6).
 6. **Workers get no more than the session allows.** Every worker call goes through the same validation, permission checks, hooks and sandbox. A worker's `tools` can only narrow the parent's set.
 
 ## Consequences

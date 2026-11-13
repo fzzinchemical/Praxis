@@ -19,7 +19,7 @@ Local-first still holds. Nothing leaves the machine unless the user configures i
 3. **A closed `enum Backend { LmStudio, Anthropic }` inside `Provider`, not a trait.** There are exactly two variants, tests still go through HTTP against `wiremock`, and nothing needs a mock. The agent loop keeps seeing `ChatChunk`, `Usage` and `ProviderError`.
 4. **Models are named as `<backend>/<model>`** (`lmstudio/qwen3.5-4b`, `anthropic/claude-sonnet-5-5`), or by an alias from `[models.<alias>]` in config. A bare name means LM Studio, so existing config and commands keep working.
 5. **Each agent has its own model.** The session model comes from `--model` or `default_model`. A delegated agent's `model` (for example `sonnet`, `haiku` or an alias) is resolved through `[models]`, and falls back to the session model. Delegation stays sequential, and each agent keeps its own history, profile and context budget.
-6. **Automatic routing is still left out.** The user or agent definition chooses the model, and the harness never switches models on its own.
+6. **Automatic routing is still left out.** The user or agent definition chooses the model, and the praxis never switches models on its own.
 
 ## Consequences
 

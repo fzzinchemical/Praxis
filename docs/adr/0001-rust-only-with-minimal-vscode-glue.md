@@ -5,7 +5,7 @@
 
 ## Context
 
-The project owner requires the entire harness to be written in Rust for maximum performance.
+The project owner requires the entire praxis to be written in Rust for maximum performance.
 
 The native binary can be entirely Rust. VS Code is the exception: extensions run in a JavaScript extension host, webviews are HTML pages, and an extension needs a `package.json` manifest. A native Rust binary can't be loaded as the extension itself.
 
@@ -13,15 +13,15 @@ Microsoft's WebAssembly Component Model route isn't usable. Its working examples
 
 ## Decision
 
-Compile the extension from Rust to WebAssembly with `wasm-bindgen`, which binds JavaScript APIs including `vscode` and Node's `child_process` directly. Glue JavaScript is generated at build time and exports `activate` and `deactivate`. All agent work stays in the native `harness` binary, so wasm speed is irrelevant to agent performance.
+Compile the extension from Rust to WebAssembly with `wasm-bindgen`, which binds JavaScript APIs including `vscode` and Node's `child_process` directly. Glue JavaScript is generated at build time and exports `activate` and `deactivate`. All agent work stays in the native `praxis` binary, so wasm speed is irrelevant to agent performance.
 
 The packaged extension is built without npm, a bundler or `vsce`: `cargo xtask vsix` writes the zip directly.
 
 ```mermaid
 flowchart LR
-    ext["harness-vscode<br/>Rust"] -->|"wasm-bindgen --target nodejs"| extout["wasm + generated JS"]
-    ui["harness-vscode-ui<br/>Rust"] -->|"wasm-bindgen --target deno"| uiout["wasm + generated JS"]
-    cli["harness-cli<br/>Rust"] -->|"cargo build --release"| bin["native harness binary"]
+    ext["praxis-vscode<br/>Rust"] -->|"wasm-bindgen --target nodejs"| extout["wasm + generated JS"]
+    ui["praxis-vscode-ui<br/>Rust"] -->|"wasm-bindgen --target deno"| uiout["wasm + generated JS"]
+    cli["praxis-cli<br/>Rust"] -->|"cargo build --release"| bin["native praxis binary"]
     manifest["package.json, HTML shell, CSS"] --> vsix
     extout --> vsix[".vsix<br/>written by cargo xtask vsix"]
     uiout --> vsix
@@ -46,7 +46,7 @@ flowchart LR
 
 If spike T0.6 shows `activate` can't be exported directly from generated glue, one additional handwritten file is allowed, containing no logic beyond re-exporting from the generated module.
 
-Plugins and MCP servers are separate programs in any language. This rule covers the harness, not what users choose to run with it.
+Plugins and MCP servers are separate programs in any language. This rule covers the praxis, not what users choose to run with it.
 
 ## Spike results (T0.6, VS Code 1.145.0, wasm-bindgen 0.2.128)
 

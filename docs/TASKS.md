@@ -68,7 +68,7 @@ flowchart LR
 
 - [x] **T0.3 Provider spike and fixture recording**
   - **Needs:** T0.0, T0.1.
-  - **Do:** script real requests against LM Studio with each model: streaming with tools, context setting, oversized prompts, and repeat requests with a shared prefix. Save raw responses under `crates/harness-core/tests/fixtures/lmstudio/`. Resolve the provider `UNVERIFIED` items in §5.2, including how to observe cache reuse. Measure cache gains.
+  - **Do:** script real requests against LM Studio with each model: streaming with tools, context setting, oversized prompts, and repeat requests with a shared prefix. Save raw responses under `crates/praxis-core/tests/fixtures/lmstudio/`. Resolve the provider `UNVERIFIED` items in §5.2, including how to observe cache reuse. Measure cache gains.
   - **Done when:** §5.2 has no provider `UNVERIFIED` items left, truncation thresholds are written into §7, and an ADR records the measured cache benefit and which tool-call formats each model emitted.
 
 - [x] **T0.4 Eval tasks**
@@ -83,7 +83,7 @@ flowchart LR
 
 - [x] **T0.6 Rust-only extension spike**
   - **Needs:** T0.0, T0.1.
-  - **Do:** minimal `harness-vscode` exporting `activate` through `wasm-bindgen --target nodejs`; bound `vscode` command, spawn of a child process, and a webview running wasm under the §11 CSP; `cargo xtask vsix`.
+  - **Do:** minimal `praxis-vscode` exporting `activate` through `wasm-bindgen --target nodejs`; bound `vscode` command, spawn of a child process, and a webview running wasm under the §11 CSP; `cargo xtask vsix`.
   - **Done when:** `code --install-extension` accepts the built file with no npm involved, and a command spawns a process and shows its output in the webview. Update ADR 0001 with what was needed. **If handwritten JS beyond the one permitted file is required, stop and ask.**
 
 ---
@@ -160,7 +160,7 @@ flowchart LR
 
 - [x] **T1.9 CLI and REPL** (§11)
   - **Needs:** T1.4, T1.8.
-  - **Do:** one-shot and REPL, `harness models`, prompts, Ctrl-C, exit codes, minimal system prompt, `--model`.
+  - **Do:** one-shot and REPL, `praxis models`, prompts, Ctrl-C, exit codes, minimal system prompt, `--model`.
   - **Done when:** integration test runs the binary against the fake server, and **a manual run fixes a seeded bug on LM Studio with a real model**. Record the eval baseline in `evals/results/`.
 
 ---
@@ -331,7 +331,7 @@ flowchart LR
 
 - [x] **T3.3 Landlock sandbox** (§9)
   - **Needs:** T1.6, T3.1.
-  - **Do:** `harness sandbox-exec`; `Bash` always uses it.
+  - **Do:** `praxis sandbox-exec`; `Bash` always uses it.
   - **Done when:** tests prove a sandboxed command can't write outside the workspace, read `~/.ssh` (use a fake home), or open a TCP connection; and that it refuses to run when Landlock is unavailable (simulate through injected ABI check).
 
 - [x] **T3.4 Trust gate** (§8)
@@ -420,7 +420,7 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    T5_1["T5.1<br/>harness acp"]
+    T5_1["T5.1<br/>praxis acp"]
     T5_2["T5.2<br/>Extension core"]
     T5_3["T5.3<br/>Webview chat"]
     T5_4["T5.4<br/>Diff review"]
@@ -478,7 +478,7 @@ flowchart TB
     class T3_8 other
 ```
 
-- [x] **T5.1 `harness acp`** (§11)
+- [x] **T5.1 `praxis acp`** (§11)
   - **Needs:** T3.2, T3.7, T0.5.
   - **Done when:** in-process tests cover the event mapping table, permission round trip, `session/load`, and cancellation ordering; and a test confirms nothing but protocol messages reach stdout.
 
@@ -503,7 +503,7 @@ flowchart TB
 
 - [ ] **T5.6 Packaging and Zed check**
   - **Needs:** T5.4.
-  - **Done when:** `cargo xtask vsix` output installs on a clean profile with no network; a full fix-review-accept cycle passes offline; and `harness acp` works in Zed with no code changes, if Zed is available. Say so if it wasn't tested.
+  - **Done when:** `cargo xtask vsix` output installs on a clean profile with no network; a full fix-review-accept cycle passes offline; and `praxis acp` works in Zed with no code changes, if Zed is available. Say so if it wasn't tested.
 
 - [x] **T5.7 Turn summary** (§11) · *Should*
   - **Needs:** T5.3.
@@ -520,7 +520,7 @@ flowchart TB
 - [x] **T5.10 Session index** (§8) · *Should*
   - **Needs:** T3.7.
   - **Do:** record each session's workspace root, start and last-activity time (UTC) and a title (the first user prompt, trimmed) in a first header line of the log; list sessions for one workspace, newest first, reading headers only. Logs without a header still load and list under no workspace.
-  - **Done when:** tests confirm listing filters by canonical workspace path, orders by last activity, skips a truncated or headerless log without failing, and `harness --resume` with no ID picks from this workspace's sessions only.
+  - **Done when:** tests confirm listing filters by canonical workspace path, orders by last activity, skips a truncated or headerless log without failing, and `praxis --resume` with no ID picks from this workspace's sessions only.
 
 - [x] **T5.11 ACP `session/list`** (§11) · *Should*
   - **Needs:** T5.10, T5.1.
@@ -545,12 +545,12 @@ flowchart TB
 
 - [x] **T5.15 VS Code settings** (§11) · *Should*
   - **Needs:** T5.2.
-  - **Do:** `harness.defaultModel`, `harness.lmstudio.baseUrl`, `harness.agent.maxTurnRequests`, `harness.context.maskKeepTurns`, `harness.context.filterOutput` in `editors/vscode/package.json`. Forwarded to the CLI as `--config-override` only when the user set them explicitly. No security-relevant keys (§11).
+  - **Do:** `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput` in `editors/vscode/package.json`. Forwarded to the CLI as `--config-override` only when the user set them explicitly. No security-relevant keys (§11).
   - **Done when:** native tests confirm an unset key adds no override, a set key adds exactly one, and `package.json` declares none of the file-only keys.
 
-- [x] **T5.16 `harness plugin list --json`** (§8, §12) · *Should*
+- [x] **T5.16 `praxis plugin list --json`** (§8, §12) · *Should*
   - **Needs:** T6.6.
-  - **Do:** a JSON output mode for `harness plugin list` with each plugin's name, source, enabled state and "can run" list, for the extension to read.
+  - **Do:** a JSON output mode for `praxis plugin list` with each plugin's name, source, enabled state and "can run" list, for the extension to read.
   - **Done when:** a CLI test parses the output as JSON and checks the fields against the text output for the same fixture.
 
 - [x] **T5.17 Plugins tree view in VS Code** (§11) · *Should*
@@ -571,7 +571,7 @@ flowchart LR
     T6_3["T6.3<br/>Hooks"]
     T6_4["T6.4<br/>Plugin MCP, userConfig, bin/"]
     T6_5["T6.5<br/>Agent definitions"]
-    T6_6["T6.6<br/>harness plugin commands"]
+    T6_6["T6.6<br/>praxis plugin commands"]
     T6_7["T6.7<br/>Compatibility check"]
     T2_5(["T2.5"])
     T3_2(["T3.2"])
@@ -617,7 +617,7 @@ flowchart LR
   - **Needs:** T6.2.
   - **Done when:** a delegated agent runs sequentially with its own history and tool restrictions, and returns a summary to the parent.
 
-- [x] **T6.6 `harness plugin` commands** (§8, §12)
+- [x] **T6.6 `praxis plugin` commands** (§8, §12)
   - **Needs:** T6.3, T6.4.
   - **Done when:** install from path or git pins a commit, lists what it can run before enabling, and removal cleans up, with data removal confirmed separately.
 
@@ -662,18 +662,18 @@ flowchart LR
 - [ ] **T7.2 Performance check** (§2)
   - **Needs:** T5.6.
   - **Done when:** every target is measured and reported. Investigate misses and update the targets with evidence. Don't use `unsafe` to hit them.
-  - **Also measure:** the sessions sidebar's refresh, which starts a fresh `harness acp` child each time (T5.12). If startup is noticeable, keep one listing child alive and resend `session/list`.
+  - **Also measure:** the sessions sidebar's refresh, which starts a fresh `praxis acp` child each time (T5.12). If startup is noticeable, keep one listing child alive and resend `session/list`.
 
 - [x] ~~**T7.3 Rich TUI decision**~~ Cut (2026-11-12): the owner chose the REPL; no `ratatui`.
 
 - [ ] **T7.4 Release** `HUMAN` approves
-  - **Working name:** `praxis` (owner, 2026-11-12; Marx's unity of thought and action). Not final; the rename happens in this task.
+  - **Name:** `praxis` (owner, 2026-11-12; Marx's unity of thought and action). Renamed from `harness` on 2026-11-13.
   - **Needs:** T7.1, T7.2.
-  - **Done when:** the final name is chosen (rename from `harness`), binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval.
+  - **Done when:** binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval.
 
 - [ ] **T7.5 Timed real-use trial** `HUMAN` · *Could*
   - **Needs:** T5.6.
-  - **Done when:** real tasks done with and without the harness are timed, and results are recorded along with their small sample size. Perception isn't used as evidence.
+  - **Done when:** real tasks done with and without the praxis are timed, and results are recorded along with their small sample size. Perception isn't used as evidence.
 
 ---
 
@@ -722,7 +722,7 @@ flowchart LR
 ```
 
 - [ ] **T8.1 Record Anthropic fixtures** `HUMAN` provides a key (paid) (§5.6) · **On hold** (2026-11-12, owner's call)
-  - **Done when:** `crates/harness-core/tests/fixtures/anthropic/` holds recorded streams for a text reply, a reply with two `tool_use` blocks, adaptive thinking, a `max_tokens` stop, an SSE `error` event, a 401 and a 429 or 529, plus one `GET /v1/models/{id}` body. Each `UNVERIFIED` fact in §5.6 is confirmed or corrected.
+  - **Done when:** `crates/praxis-core/tests/fixtures/anthropic/` holds recorded streams for a text reply, a reply with two `tool_use` blocks, adaptive thinking, a `max_tokens` stop, an SSE `error` event, a 401 and a 429 or 529, plus one `GET /v1/models/{id}` body. Each `UNVERIFIED` fact in §5.6 is confirmed or corrected.
 
 - [x] **T8.2 Backends and model references** (§5.1, §8)
   - **Needs:** T3.1.
@@ -811,7 +811,7 @@ flowchart LR
 
 - [x] **T9.4 Standalone skills and commands** (§12) · *Should*
   - **Needs:** T6.2.
-  - **Done when:** skills and commands from `~/.claude/`, `~/.config/harness/`, `.claude/` and `.harness/` appear in the index and run as `/<name>` with `$ARGUMENTS`; nested command directories give `a:b` names; every precedence rule in §12 has a test; a project skill with `allowed-tools` and `` !`cmd` `` warns and runs nothing.
+  - **Done when:** skills and commands from `~/.claude/`, `~/.config/praxis/`, `.claude/` and `.praxis/` appear in the index and run as `/<name>` with `$ARGUMENTS`; nested command directories give `a:b` names; every precedence rule in §12 has a test; a project skill with `allowed-tools` and `` !`cmd` `` warns and runs nothing.
 
 - [x] **T9.5 Standalone agents** (§12) · *Should*
   - **Needs:** T9.4, T6.5, T8.9.

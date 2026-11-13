@@ -3,7 +3,7 @@
 **A Rust agent harness for local models served by LM Studio, with tools, MCP, plugins, VS Code integration and layered config.** An opt-in Anthropic backend covers tasks local models can't, and each agent can run on its own model. Nothing leaves the machine unless the user configures it to.
 
 > [!NOTE]
-> **Status: planning, nothing implemented.** `harness` is a placeholder name.
+> **Status: planning, nothing implemented.**
 > Build detail is in [docs/SPEC.md](docs/SPEC.md); status and task order are in [docs/TASKS.md](docs/TASKS.md); priorities are in [docs/USER_STORIES.md](docs/USER_STORIES.md); the evidence behind decisions is in [docs/RESEARCH.md](docs/RESEARCH.md).
 
 **Contents:** [Why build this](#why-build-this) · [Architecture](#architecture) · [Milestones](#milestones) · [Deliberately left out](#deliberately-left-out) · [Risks](#risks) · [Sources](#sources)
@@ -14,9 +14,9 @@
 
 OpenCode, Goose and Cline already cover "agent + local model + MCP". A generic clone isn't worth building. The reason to build is that local models fail in ways those tools don't centre on:
 
-| Local problem | What the harness does about it |
+| Local problem | What the praxis does about it |
 |---|---|
-| Small context windows, silently truncated by the server | Explicit token budget per model; the harness sets the window and detects truncation |
+| Small context windows, silently truncated by the server | Explicit token budget per model; the praxis sets the window and detects truncation |
 | Tool calls that come back malformed or as plain text | Per-model parsers, JSON repair, schema validation, and errors returned to the model for retry |
 | Slow prompt reprocessing when the prefix changes | Stable, append-only prompt prefix, so the server's prefix cache keeps working |
 | Dozens of MCP tool schemas eating the context | Lazy tool loading: the model gets a compact index and fetches schemas on demand |
@@ -33,14 +33,14 @@ OpenCode, Goose and Cline already cover "agent + local model + MCP". A generic c
 flowchart TB
     subgraph clients["Front ends"]
         direction LR
-        cli["CLI and REPL<br/>harness-cli"]
+        cli["CLI and REPL<br/>praxis-cli"]
         vscode["VS Code extension<br/>Rust compiled to wasm"]
         other["Zed, JetBrains, ...<br/>any ACP client"]
     end
 
-    acp["harness acp<br/>ACP over stdio"]
+    acp["praxis acp<br/>ACP over stdio"]
 
-    subgraph core["harness-core"]
+    subgraph core["praxis-core"]
         direction LR
         loop["Agent loop"]
         context["Context budget"]
@@ -67,13 +67,13 @@ flowchart TB
     core --> tools
     core --> mcp
 
-    classDef harness fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef praxis fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef external fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class cli,vscode,acp,loop,context,perms,registry,plugins,sessions,tools harness
+    class cli,vscode,acp,loop,context,perms,registry,plugins,sessions,tools praxis
     class other,lms,claude,mcp external
 ```
 
-Crates: `harness-core`, `harness-cli`, and two wasm crates for the VS Code extension and its webview. The layout is in [docs/SPEC.md](docs/SPEC.md) §3.
+Crates: `praxis-core`, `praxis-cli`, and two wasm crates for the VS Code extension and its webview. The layout is in [docs/SPEC.md](docs/SPEC.md) §3.
 
 ### Decisions
 
@@ -91,20 +91,20 @@ Crates: `harness-core`, `harness-cli`, and two wasm crates for the VS Code exten
 
 ### LM Studio facts that shape the design
 
-No single LM Studio endpoint gives both custom tools and context control, so the harness uses two:
+No single LM Studio endpoint gives both custom tools and context control, so the praxis uses two:
 
 ```mermaid
 flowchart LR
-    harness["harness"]
+    praxis["praxis"]
     chat["/v1/chat/completions<br/>accepts custom tools<br/>can't set context size"]
     admin["/api/v1/models/*<br/>loads models, sets context<br/>native chat has no custom tools"]
 
-    harness -->|"chat and tool calls"| chat
-    harness -->|"list, load, unload"| admin
+    praxis -->|"chat and tool calls"| chat
+    praxis -->|"list, load, unload"| admin
 
-    classDef harness fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef praxis fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef external fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class harness harness
+    class praxis praxis
     class chat,admin external
 ```
 
@@ -166,7 +166,7 @@ flowchart TB
 - Agent loop that emits typed events, so front ends never touch its internals
 - Tools: read, write, edit, grep, glob, shell
 - Permissions from day one: reads are allowed, writes and shell prompt. Paths are confined to the workspace, symlinks included
-- `harness "fix the failing test"` plus an interactive REPL
+- `praxis "fix the failing test"` plus an interactive REPL
 
 ✅ **Done when:** it fixes a seeded bug end to end on LM Studio with a real model.
 
@@ -210,7 +210,7 @@ flowchart TB
 > [!TIP]
 > M4 and M5 are independent; swap them if the editor matters more.
 
-- `harness acp` mode over stdio
+- `praxis acp` mode over stdio
 - Extension: chat panel, streaming, status line, collapsed tool activity, permission prompts, model picker, stop button
 - Diffs shown in the native diff editor, with accept and reject
 - Plan-first flow, turn summaries from the tool log, and change-set review from overview to chunk
@@ -227,7 +227,7 @@ flowchart TB
 - Slash commands and agent definitions
 - Hooks: pre/post tool use, session start, stop; external process with JSON over stdin/stdout
 - Plugin-bundled MCP servers; `${CLAUDE_PLUGIN_ROOT}` supported for compatibility
-- `harness plugin install <path|git-url>`, pinned to a commit, with a list of what the plugin can run shown before enabling
+- `praxis plugin install <path|git-url>`, pinned to a commit, with a list of what the plugin can run shown before enabling
 
 ✅ **Done when:** an unmodified existing Claude Code plugin with a skill, a hook and an MCP server works.
 
@@ -259,7 +259,7 @@ Add these only when real use demands them:
 | **Prompt compression, minification, helper models** | [Research](docs/RESEARCH.md#token-reduction) shows they harm results on code or need a second model the GPU can't spare. |
 | **Proactive suggestions** | They keep inference running on the only GPU. |
 | **Other model backends** | Ollama, other OpenAI-compatible servers and cloud providers other than Anthropic. |
-| **Automatic model routing** (the harness picks the model per step) | Swapping local models costs load time. M8 lets the user or agent definition choose instead. |
+| **Automatic model routing** (the praxis picks the model per step) | Swapping local models costs load time. M8 lets the user or agent definition choose instead. |
 | **Windows and macOS sandboxing** | Linux first. |
 | **Telemetry** | None, ever. |
 
@@ -269,7 +269,7 @@ Add these only when real use demands them:
 
 | Risk | Mitigation |
 |---|---|
-| Local models are too weak for agent loops whatever the harness does | M0 and the M2 eval measure this early; narrow the supported tasks if needed |
+| Local models are too weak for agent loops whatever the praxis does | M0 and the M2 eval measure this early; narrow the supported tasks if needed |
 | Prompt injection through files, web pages or MCP output, made worse by weaker models | Permissions and the sandbox are enforced in code, never by the model |
 | Malicious repo or plugin config | Approval gate in M3; pinned plugins and shown capabilities in M6 |
 | ACP is still changing and VS Code has no native support | M0 spike; keep ACP behind the event layer so it can be swapped |

@@ -2,17 +2,17 @@
 //!
 //! Agent Bash calls have no sandbox of their own until T3.3 and some fixtures are hostile, so
 //! both the agent and `check.sh`, which runs agent-written code, stay inside `bwrap`. The agent
-//! runs through `harness-core`, so the product binary needs no approve-everything switch.
+//! runs through `praxis-core`, so the product binary needs no approve-everything switch.
 
 use anyhow::{Context, Result, bail, ensure};
-use harness_core::agent::{
+use praxis_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, Severity, StopReason, system_prompt,
 };
-use harness_core::context::compaction::CompactionState;
-use harness_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
-use harness_core::provider::{LoadPolicy, Provider, ReadyModel};
-use harness_core::sandbox::Sandbox;
-use harness_core::tools::ToolContext;
+use praxis_core::context::compaction::CompactionState;
+use praxis_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
+use praxis_core::provider::{LoadPolicy, Provider, ReadyModel};
+use praxis_core::sandbox::Sandbox;
+use praxis_core::tools::ToolContext;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -225,7 +225,7 @@ struct TempDir(PathBuf);
 impl TempDir {
     fn new() -> Result<Self> {
         let n = TEMP_DIRS.fetch_add(1, Ordering::Relaxed);
-        let path = env::temp_dir().join(format!("harness-eval-{}-{n}", std::process::id()));
+        let path = env::temp_dir().join(format!("praxis-eval-{}-{n}", std::process::id()));
         fs::create_dir(&path).with_context(|| path.display().to_string())?;
         Ok(Self(path))
     }
@@ -295,8 +295,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         .iter()
         .find(|m| m.loaded_instances.iter().any(|i| i.id == instance));
     let key = reported.map_or(instance.as_str(), |m| m.key.as_str());
-    let profile =
-        harness_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
+    let profile = praxis_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
     let mut agent = Agent::new(
         Arc::new(provider),
         // Same sandbox as the CLI, applied inside the eval's own bwrap container.
@@ -319,7 +318,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
             seed: Some(EVAL_SEED),
-            policy: harness_core::permissions::Policy::default(),
+            policy: praxis_core::permissions::Policy::default(),
         },
     );
     let cancel = CancellationToken::new();
@@ -511,7 +510,7 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
     Ok(result)
 }
 
-/// Metrics the harness can't produce yet stay null, each with its reason.
+/// Metrics the praxis can't produce yet stay null, each with its reason.
 fn null_reasons() -> Value {
     json!({
         "prompt_tokens_processed": "needs the cached count, which LM Studio doesn't report",
@@ -737,7 +736,7 @@ mod tests {
         assert!(temp.0.join("ok").exists());
         assert!(!in_sandbox("touch /usr/x", Some(&temp.0)).await);
         // The private root and /tmp are writable but vanish with the sandbox.
-        let host = env::temp_dir().join(format!("harness-sandbox-leak-{}", std::process::id()));
+        let host = env::temp_dir().join(format!("praxis-sandbox-leak-{}", std::process::id()));
         in_sandbox(
             &format!("touch /tmp/{}", host.file_name().unwrap().display()),
             None,

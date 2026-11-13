@@ -1,10 +1,10 @@
 # VS Code extension checklist
 
-Manual checks for what native tests can't reach (SPEC §14). Install with `cargo xtask vsix` into an isolated profile: `env -i HOME=$HOME PATH=$PATH DISPLAY=$DISPLAY code --user-data-dir <tmp> --extensions-dir <tmp> --install-extension target/harness.vsix`, then open a folder with the same flags.
+Manual checks for what native tests can't reach (SPEC §14). Install with `cargo xtask vsix` into an isolated profile: `env -i HOME=$HOME PATH=$PATH DISPLAY=$DISPLAY code --user-data-dir <tmp> --extensions-dir <tmp> --install-extension target/praxis.vsix`, then open a folder with the same flags.
 
-- [ ] **Open panel, send prompt, see a response (T5.2).** Set `harness.binaryPath` in user settings, run "Harness: Open Chat", wait for `ready`, send "Say hi". Reply text streams in as formatted markdown and ends with "Turn ended: end_turn".
-- [ ] **Restart on exit (T5.2).** Kill the `harness acp` process. The panel shows the exit, an error offers Restart, and Restart brings back `ready`.
-- [ ] **Output channel (T5.2).** The "Harness" output channel shows the agent's stderr.
+- [ ] **Open panel, send prompt, see a response (T5.2).** Set `praxis.binaryPath` in user settings, run "Praxis: Open Chat", wait for `ready`, send "Say hi". Reply text streams in as formatted markdown and ends with "Turn ended: end_turn".
+- [ ] **Restart on exit (T5.2).** Kill the `praxis acp` process. The panel shows the exit, an error offers Restart, and Restart brings back `ready`.
+- [ ] **Output channel (T5.2).** The "Praxis" output channel shows the agent's stderr.
 - [ ] **Status line (T5.3).** During a turn the line under the transcript shows the phase (Processing prompt, Generating, Running tool), a ticking elapsed time and `context used / size (n%)`; after the turn it shows Idle with the final time.
 - [ ] **Tool output (T5.3).** Ask for a file read. The tool shows as a collapsed item with its status; expanding it shows the output.
 - [ ] **Permission prompt (T5.3).** Ask for a shell command. A prompt with Allow/Reject buttons appears and takes focus; Allow runs it, Reject refuses it, and the prompt disappears after the answer.
@@ -17,6 +17,6 @@ Manual checks for what native tests can't reach (SPEC §14). Install with `cargo
 - [ ] **Active file chip (T5.5).** Open a file in the workspace: the composer shows a chip with its name. Select some lines and ask "what does the selection do?". The model's reply refers to the selected lines. The chip's × drops the file from the next prompt, and opening another file brings its chip back.
 - [ ] **Add file (T5.5).** Press "Add file": VS Code's picker opens at the workspace folder. Pick a file inside it and it appears as a chip. Pick one outside the workspace and the transcript says it was not attached.
 - [ ] **Include problems (T5.5).** With a file that has errors open, tick "Include problems" and ask "why does this file fail?". The model names the reported lines; with the box unticked it does not see them.
-- [ ] **Panel leak (T5.5).** Open and close the Harness panel 20 times. In Developer: Show Running Extensions or a heap snapshot, memory does not grow per open. After closing, edit the active editor or switch files: the panel is gone and nothing is posted to it (no errors in the Developer Tools console).
-- [ ] **Sessions sidebar (T5.12).** Click the Harness activity-bar icon: the Sessions view lists this workspace's earlier sessions only, newest first. Pick one with Enter: a chat panel shows its history and a prompt continues it. "New Session" in the view title opens an empty chat; Refresh reloads the list, and a finished turn updates it.
-- [ ] **Plugins view (T5.17).** Click the Plugins view. Install a plugin by path (Harness: Install Plugin); it lists as disabled with its commit. Enable it: the modal lists what it can run, Cancel leaves it disabled, Enable shows it as enabled. Remove it: the modal asks to confirm, and the entry disappears.
+- [ ] **Panel leak (T5.5).** Open and close the Praxis panel 20 times. In Developer: Show Running Extensions or a heap snapshot, memory does not grow per open. After closing, edit the active editor or switch files: the panel is gone and nothing is posted to it (no errors in the Developer Tools console).
+- [ ] **Sessions sidebar (T5.12).** Click the Praxis activity-bar icon: the Sessions view lists this workspace's earlier sessions only, newest first. Pick one with Enter: a chat panel shows its history and a prompt continues it. "New Session" in the view title opens an empty chat; Refresh reloads the list, and a finished turn updates it.
+- [ ] **Plugins view (T5.17).** Click the Plugins view. Install a plugin by path (Praxis: Install Plugin); it lists as disabled with its commit. Enable it: the modal lists what it can run, Cancel leaves it disabled, Enable shows it as enabled. Remove it: the modal asks to confirm, and the entry disappears.

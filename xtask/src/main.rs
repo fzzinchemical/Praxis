@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     if let Some((command, rest)) = args.split_first()
         && command == "sandbox-exec"
     {
-        bail!("{}", harness_core::sandbox::exec(rest));
+        bail!("{}", praxis_core::sandbox::exec(rest));
     }
     async_main()
 }
@@ -59,15 +59,15 @@ fn vsix() -> Result<()> {
     if out.exists() {
         fs::remove_dir_all(&out)?;
     }
-    build_wasm(root, "harness-vscode", "nodejs", &out.join("dist"))?;
+    build_wasm(root, "praxis-vscode", "nodejs", &out.join("dist"))?;
     // `deno` is the only target that fetches and starts the wasm on import: `web` needs an init call the
     // CSP bars, and Electron rejects the `import source` syntax of `module` (ADR 0001).
-    build_wasm(root, "harness-vscode-ui", "deno", &out.join("ui"))?;
+    build_wasm(root, "praxis-vscode-ui", "deno", &out.join("ui"))?;
     fs::copy(root.join("editors/vscode/ui.css"), out.join("ui/ui.css"))?;
     fs::create_dir_all(out.join("media"))?;
     fs::copy(
-        root.join("editors/vscode/media/harness.svg"),
-        out.join("media/harness.svg"),
+        root.join("editors/vscode/media/praxis.svg"),
+        out.join("media/praxis.svg"),
     )?;
 
     let package = fs::read_to_string(root.join("editors/vscode/package.json"))?;
@@ -88,7 +88,7 @@ fn vsix() -> Result<()> {
         }
     }
 
-    let path = root.join("target/harness.vsix");
+    let path = root.join("target/praxis.vsix");
     write_zip(&path, &entries)?;
     eprintln!("wrote {}", path.display());
     Ok(())

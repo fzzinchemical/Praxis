@@ -4,7 +4,7 @@ A checklist for agents. Work one item per branch, as `AGENTS.md` says: write the
 test first and watch it fail, then fix, run `./scripts/verify`, and tick the box here in the same
 branch. Items are numbered by priority; the number stays fixed even after an item is ticked.
 
-**What this repo does:** `harness` is a local coding agent written in Rust. It talks to a model
+**What this repo does:** `praxis` is a local coding agent written in Rust. It talks to a model
 (LM Studio, or the Anthropic API if the user opts in), and lets the model read, write and edit
 files and run shell commands in one workspace. The commands run in a Landlock sandbox and go
 through permission checks. It runs as a CLI and, through ACP (Agent Client Protocol: JSON
@@ -19,7 +19,7 @@ hostile content: model output, repository files and tool results are all untrust
 ## Must fix
 
 - [x] **1. The model can plant code that git runs later, past the `.git` hard denial**
-  (`crates/harness-core/src/tools/confine.rs:59-66`)
+  (`crates/praxis-core/src/tools/confine.rs:59-66`)
   - **What this is:** `check_writable` decides which paths `Write` and `Edit` may never touch.
     SPEC §10 wants this to stop the agent from "planting code that runs later".
   - **Problem:** It blocks only `.git/hooks` and `.git/config` when they come directly after a
@@ -35,14 +35,14 @@ hostile content: model output, repository files and tool results are all untrust
   - **Fix:** Refuse every path that has a component named `.git`: the `.git` file itself and
     anything under a `.git` folder. `Write` and `Edit` never need to write there. This is a
     one-line change to the `denied` expression. Update the SPEC §10 list to match.
-  - **Done when:** A test in `crates/harness-core/tests/security.rs` shows that `Write` to
+  - **Done when:** A test in `crates/praxis-core/tests/security.rs` shows that `Write` to
     `.git/modules/sub/hooks/pre-commit`, to `.git/modules/sub/config`, and to a `.git` file
     (the worktree case) all return `HardDenied`.
   - **If we skip it:** Text injected into any file the model reads can lead to code running on
     the user's machine, outside the sandbox.
 
 - [x] **2. In a resumed session, every `Write` and `Edit` fails**
-  (`crates/harness-core/src/tools/checkpoint.rs:54`)
+  (`crates/praxis-core/src/tools/checkpoint.rs:54`)
   - **What this is:** Before each change, the agent copies the old file to
     `sessions/<id>/checkpoints/<n>` so that `/undo` can restore it. `n` counts up from
     `saved + 1`.
@@ -58,7 +58,7 @@ hostile content: model output, repository files and tool results are all untrust
   - **If we skip it:** Resuming a session is broken for any session that edited files.
 
 - [x] **3. A resumed session can carry tool calls without results, which breaks the next request**
-  (`crates/harness-core/src/agent/mod.rs:516-520`, `crates/harness-core/src/session.rs` `resume`)
+  (`crates/praxis-core/src/agent/mod.rs:516-520`, `crates/praxis-core/src/session.rs` `resume`)
   - **What this is:** `with_session` loads the saved messages back into the history.
   - **Problem:** The log is written one message at a time. Suppose the process dies while a tool
     runs: the terminal closes during a long `cargo build`, or VS Code reloads. Then the log
@@ -68,13 +68,13 @@ hostile content: model output, repository files and tool results are all untrust
   - **Fix:** In `with_session`, after loading `prior`, add a `Message::Tool` with
     `NOT_RUN_RESULT`-style text for each call in the last assistant message that has no result.
     Write those messages to the log too, so the log is repaired as well.
-  - **Done when:** A test in `crates/harness-core/tests/session.rs` or `agent.rs` resumes a
+  - **Done when:** A test in `crates/praxis-core/tests/session.rs` or `agent.rs` resumes a
     log that ends in an unanswered tool call. The test shows that the next request has a tool
     result for every call id.
   - **If we skip it:** The sessions most likely to need a resume (crashed ones) can't continue.
 
 - [x] **4. Hooks see relative paths, so a guard hook can be bypassed**
-  (`crates/harness-core/src/agent/mod.rs:1083-1100`)
+  (`crates/praxis-core/src/agent/mod.rs:1083-1100`)
   - **What this is:** `PreToolUse` hooks get `tool_input` as JSON. Claude Code hooks often guard
     paths, for example "block writes under `$CLAUDE_PROJECT_DIR/secrets`". SPEC §6 says:
     "Paths are absolute in `tool_input`. Resolve relative paths against the workspace before
@@ -91,7 +91,7 @@ hostile content: model output, repository files and tool results are all untrust
     they expect.
 
 - [x] **5. `Edit` refuses every file that has unsaved changes in VS Code**
-  (`crates/harness-core/src/tools/files.rs:94` vs `:237`)
+  (`crates/praxis-core/src/tools/files.rs:94` vs `:237`)
   - **What this is:** In ACP mode, `Read` returns the editor buffer, unsaved edits included,
     and remembers that text's hash. `Edit` checks that the file hasn't changed since the read.
   - **Problem:** `Edit` hashes the file on disk, not the buffer. With unsaved changes the two
@@ -102,14 +102,14 @@ hostile content: model output, repository files and tool results are all untrust
   - **Fix:** The smallest safe fix: in `Edit`, if the editor buffer differs from the disk,
     refuse with a clear message ("<file> has unsaved changes in the editor; ask the user to
     save it"). Proper buffer edits through `fs/write_text_file` are a separate feature.
-  - **Done when:** A test in `crates/harness-cli/src/acp.rs` (next to
+  - **Done when:** A test in `crates/praxis-cli/src/acp.rs` (next to
     `read_returns_the_unsaved_buffer_when_the_client_serves_files`) reads a dirty buffer, then
     calls `Edit`. The test gets the "unsaved changes" message, not the "Read it again" message.
   - **If we skip it:** In VS Code, the agent can't edit the file the user is working on, and
     it wastes turns trying.
 
 - [x] **6. A hook that doesn't read its input can hang the agent forever**
-  (`crates/harness-core/src/hooks.rs:246-248`)
+  (`crates/praxis-core/src/hooks.rs:246-248`)
   - **What this is:** `hooks::run` writes the JSON input to the hook's stdin, then waits for the
     hook, with a timeout.
   - **Problem:** The stdin write happens before the timeout starts. If the input is larger than
@@ -127,7 +127,7 @@ hostile content: model output, repository files and tool results are all untrust
 ## Should fix
 
 - [x] **7. Hook events other than `PreToolUse` are dropped without a word**
-  (`crates/harness-core/src/hooks.rs:12`, `crates/harness-core/src/agent/mod.rs:282`)
+  (`crates/praxis-core/src/hooks.rs:12`, `crates/praxis-core/src/agent/mod.rs:282`)
   - **What this is:** `hooks::parse` accepts `PostToolUse`, `UserPromptSubmit`, `SessionStart`
     and `Stop`. Then `Agent::with_hooks` drops all of them except `PreToolUse`. In
     `PreToolUse` results, `continue: false`, `additionalContext` and `systemMessage` are
@@ -144,7 +144,7 @@ hostile content: model output, repository files and tool results are all untrust
   - **If we skip it:** Users trust hooks that don't run.
 
 - [x] **8. Two sessions saving approvals at once can corrupt `trust.json`, after which nothing starts**
-  (`crates/harness-core/src/trust.rs:66`, `crates/harness-core/src/plugin.rs:862-866`)
+  (`crates/praxis-core/src/trust.rs:66`, `crates/praxis-core/src/plugin.rs:862-866`)
   - **What this is:** `TrustStore::set` writes `trust.json.partial`, then renames it over the
     store. `Store::save` writes `installed.json` in place with `fs::write`.
   - **Problem:** The temp name is fixed. Two processes (the CLI and VS Code, or two chat tabs
@@ -162,7 +162,7 @@ hostile content: model output, repository files and tool results are all untrust
   - **If we skip it:** A rare race locks the user out until they edit files by hand.
 
 - [x] **9. A turn that fails inside the ACP prompt task locks the session for good**
-  (`crates/harness-cli/src/acp.rs:320-330`)
+  (`crates/praxis-cli/src/acp.rs:320-330`)
   - **What this is:** The prompt handler takes the `Agent` out of its session slot, runs the
     turn, and puts it back with `end_turn`.
   - **Problem:** Two `?` exits skip `end_turn`. One is `send_notification(…)?` inside the event
@@ -179,23 +179,23 @@ hostile content: model output, repository files and tool results are all untrust
   - **If we skip it:** A single bug or a blip on the connection leaves a chat tab dead.
 
 - [x] **10. ACP sessions are never freed, so memory and temp folders only grow**
-  (`crates/harness-cli/src/acp.rs:143`)
+  (`crates/praxis-cli/src/acp.rs:143`)
   - **What this is:** `Server::open` adds every new or loaded session to a `HashMap`, which
     holds its `Agent`: the full history, a `ToolContext`, and spool and temp folders.
-  - **Problem:** Nothing ever removes an entry. The VS Code extension's `harness acp` process
+  - **Problem:** Nothing ever removes an entry. The VS Code extension's `praxis acp` process
     lives as long as the window. Each new chat or session reload adds one more agent, with its
-    whole history, plus `/tmp/harness-spool-*` and `harness-tmp-*` folders that are deleted
+    whole history, plus `/tmp/praxis-spool-*` and `praxis-tmp-*` folders that are deleted
     only on drop.
   - **Fix:** When a session id is loaded again, replace its old slot (this already happens).
     Also drop the other idle slots when a new session opens, if the client uses only one at a
-    time (check what `harness-vscode` does). Or handle the ACP session close request if the
+    time (check what `praxis-vscode` does). Or handle the ACP session close request if the
     crate offers one.
   - **Done when:** A test opens two sessions one after the other and shows that the first
     slot is dropped (for example, its spool folder is gone).
   - **If we skip it:** A long VS Code day slowly uses more RAM and fills `/tmp`.
 
 - [x] **11. A failed `/undo` loses the rest of that turn's checkpoints**
-  (`crates/harness-core/src/tools/checkpoint.rs:84-100`)
+  (`crates/praxis-core/src/tools/checkpoint.rs:84-100`)
   - **What this is:** `undo` takes the last turn's list of saved copies and restores them one by
     one.
   - **Problem:** The turn is removed from the list before the restore starts. If one restore
@@ -209,7 +209,7 @@ hostile content: model output, repository files and tool results are all untrust
   - **If we skip it:** The user loses work in exactly the case undo exists for.
 
 - [x] **12. Skills, commands and agents saved with Windows line endings lose their frontmatter**
-  (`crates/harness-core/src/plugin.rs:606-609`)
+  (`crates/praxis-core/src/plugin.rs:606-609`)
   - **What this is:** `split_frontmatter` separates the `---` header (name, description, model,
     tools) from the body.
   - **Problem:** It matches only `---\n`. With CRLF (`---\r\n`) line endings, or a closing `---`
@@ -219,15 +219,15 @@ hostile content: model output, repository files and tool results are all untrust
     instead of a few.
   - **Fix:** Accept `\r\n`: strip `\r` at the end of each frontmatter line, and accept a
     closing `\n---` at the end of the file.
-  - **Done when:** A test in `crates/harness-core/tests/plugin.rs` parses a CRLF agent file with
+  - **Done when:** A test in `crates/praxis-core/tests/plugin.rs` parses a CRLF agent file with
     `tools: Read` and gets `Some(["Read"])`.
   - **If we skip it:** Files shared from Windows users act differently, and agents can get more
     tools than they should.
 
 - [x] **13. Checkpoint copies and session logs are never deleted**
-  (`crates/harness-core/src/tools/checkpoint.rs`, `crates/harness-core/src/session.rs`)
+  (`crates/praxis-core/src/tools/checkpoint.rs`, `crates/praxis-core/src/session.rs`)
   - **What this is:** Each turn copies every file it changes into
-    `~/.local/share/harness/sessions/<id>/checkpoints/`. Logs are append-only.
+    `~/.local/share/praxis/sessions/<id>/checkpoints/`. Logs are append-only.
   - **Problem:** Nothing ever deletes them. Editing a 5 MB file in 100 turns keeps 500 MB.
     This is per user, not per session, so it adds up over months.
   - **Fix:** Keep checkpoints only for the last N turns (undo goes back step by step, so old
@@ -239,13 +239,13 @@ hostile content: model output, repository files and tool results are all untrust
 ## Nice to have
 
 - [x] **14. Unsaved buffers are not used when the workspace path has a symlink in it**
-  (`crates/harness-vscode/src/protocol.rs:596-602`)
+  (`crates/praxis-vscode/src/protocol.rs:596-602`)
   - **What this is:** The extension answers `fs/read_text_file` only for paths inside its `cwd`.
-  - **Problem:** The harness canonicalises the workspace (it resolves symlinks), but the
+  - **Problem:** The praxis canonicalises the workspace (it resolves symlinks), but the
     extension compares against VS Code's path, which may not be resolved. With a symlinked
     folder (for example `~/work`, a link to `/mnt/4TB/Work`), every request is refused, and
     `Read` silently falls back to the disk.
-  - **Fix:** Send the session's `cwd` as the canonical path the harness uses, or compare against
+  - **Fix:** Send the session's `cwd` as the canonical path the praxis uses, or compare against
     it in `inside`.
   - **Done when:** A native test of `inside` (or of the session setup) covers a symlinked root.
   - **If we skip it:** Unsaved edits are quietly ignored for some users.
@@ -253,7 +253,7 @@ hostile content: model output, repository files and tool results are all untrust
 ## Follow-ups (gaps left after the fixes)
 
 - [x] **F1. Item 9's notification-failure path has no test**
-  (`crates/harness-cli/src/acp.rs`, prompt handler)
+  (`crates/praxis-cli/src/acp.rs`, prompt handler)
   - **Problem:** When `send_notification` fails, the turn is now cancelled and the loop keeps
     draining events. No test reaches this path, because closing the connection mid-turn has no
     seam in the test client yet.
@@ -269,7 +269,7 @@ hostile content: model output, repository files and tool results are all untrust
     connection. The `cancel` branch stays as a guard in case a later crate version keeps tasks alive.
 
 - [x] **F2. Item 9's panic test bypasses the protocol**
-  (`crates/harness-cli/src/acp.rs`, `a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running`)
+  (`crates/praxis-cli/src/acp.rs`, `a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running`)
   - **Problem:** The test calls `settle_turn` directly with a `JoinError`. It does not prove that
     the prompt handler sends the client an error, because a turn can't be made to panic through
     `session/prompt`.
@@ -285,7 +285,7 @@ hostile content: model output, repository files and tool results are all untrust
     session must refuse prompts"), item 11 (the error doesn't name `gone/b.txt`).
 
 - [x] **F4. Checkpoint copies and session logs from earlier runs are never deleted**
-  (`crates/harness-core/src/tools/checkpoint.rs`, `crates/harness-core/src/session.rs`)
+  (`crates/praxis-core/src/tools/checkpoint.rs`, `crates/praxis-core/src/session.rs`)
   - **Problem:** Item 13 keeps copies only for the last 20 turns, but only within one process. A
     resumed session starts with an empty turn list, so copies from earlier runs stay on disk. Logs
     and `sessions/<id>/` folders are never deleted (marked with a `shortcut:` comment).
@@ -295,15 +295,15 @@ hostile content: model output, repository files and tool results are all untrust
     oldest ones are gone after the next turn.
 
 - [x] **F5. A failed `/undo` doesn't say which files it did restore**
-  (`crates/harness-core/src/tools/checkpoint.rs` `undo`)
+  (`crates/praxis-core/src/tools/checkpoint.rs` `undo`)
   - **Problem:** When some restores fail, `undo` returns only the error, which names the failed
     files. The user isn't told which files were restored.
   - **Done when:** The error (or the CLI and ACP message) lists the restored files too.
 
 - [x] **F6. A hooks test may hang under heavy load**
-  (`crates/harness-core/src/hooks.rs` tests)
+  (`crates/praxis-core/src/hooks.rs` tests)
   - **Problem:** During the parallel fix work (load average about 100), one `cargo test -p
-    harness-core` run seemed to hang in a hooks test, and passed on a rerun. This was not
+    praxis-core` run seemed to hang in a hooks test, and passed on a rerun. This was not
     investigated. It may be a timing-sensitive timeout test.
   - **Done when:** The test is found and made deterministic, or a stress run (for example 20
     runs under `stress`) shows that it doesn't hang.
@@ -317,7 +317,7 @@ resume unusable.
 removes unused `Outcome` fields). No dependency can be dropped.
 
 **Not checked:** `xtask/` (eval runner) and `scripts/prove-evals` were only skimmed. Most of
-`harness-vscode/src/lib.rs` and `harness-vscode-ui/src/lib.rs` (DOM and process wiring) was
+`praxis-vscode/src/lib.rs` and `praxis-vscode-ui/src/lib.rs` (DOM and process wiring) was
 not read, except the markdown escaping, the `read_file` guard and the process spawn. In
 `context/` (budget, compaction, prefix), only the turn-boundary logic was checked. `provider/admin.rs` (model load/unload) was not read; there is no Anthropic provider code yet. `./scripts/verify` was not run
 for this audit, and nothing was changed in the code.
@@ -334,7 +334,7 @@ one item per branch, write the test first, tick the box here.
 ## Must fix
 
 - [x] **15. A subagent ignores plan mode and the session's permission choices**
-  (`crates/harness-core/src/agent/mod.rs:349`, `:247`, `:501`)
+  (`crates/praxis-core/src/agent/mod.rs:349`, `:247`, `:501`)
   - **What this is:** The `Agent` tool runs a subagent. `delegate` builds it from
     `self.config.clone()`, and `Agent::new` builds its permissions from `config.policy`.
   - **Problem:** `set_mode` (plan mode, and the VS Code permission picker) changes only
@@ -347,18 +347,18 @@ one item per branch, write the test first, tick the box here.
   - **Fix:** Give the child a copy of the parent's current permissions
     (`child.permissions = self.permissions.clone()`; add `Clone` to `Permissions`), instead of
     building new ones from `config.policy`.
-  - **Done when:** A test in `crates/harness-core/tests/plan.rs` builds an agent with
+  - **Done when:** A test in `crates/praxis-core/tests/plan.rs` builds an agent with
     `Mode::AutoEdit` and an agent definition, calls `set_mode(Mode::ReadOnly)`, and has the fake
     model call `Agent`, whose child then calls `Write`. The file must not exist afterwards.
   - **If we skip it:** Plan mode is not read-only: one tool call gets around it.
 
 - [x] **16. Two panels on the same session write one log and fight over checkpoints**
-  (`crates/harness-vscode/src/lib.rs:296-298`, `crates/harness-core/src/session.rs` `create`/`resume`)
-  - **What this is:** Clicking a session in the sidebar runs `harness.openSession`. That always
-    opens a new panel, and each panel starts its own `harness acp` process, which resumes the
+  (`crates/praxis-vscode/src/lib.rs:296-298`, `crates/praxis-core/src/session.rs` `create`/`resume`)
+  - **What this is:** Clicking a session in the sidebar runs `praxis.openSession`. That always
+    opens a new panel, and each panel starts its own `praxis acp` process, which resumes the
     session log.
   - **Problem:** Click the same session twice (or keep it open in VS Code and also run
-    `harness --resume` in a terminal), and two processes append to one `.jsonl` file. Their
+    `praxis --resume` in a terminal), and two processes append to one `.jsonl` file. Their
     messages mix, so the next resume rebuilds a history that neither process had. Both also
     read the highest checkpoint number at start and then create the same next number. One of
     them fails with "File exists" on its next `Write` or `Edit`. This is item 2 again, in a new
@@ -367,7 +367,7 @@ one item per branch, write the test first, tick the box here.
     std's `File::try_lock` (stable since Rust 1.89, so no new dependency). If the lock fails,
     report "session `<id>` is open in another window". The lock is released when the log is
     dropped. Optionally, the extension can also show the panel that already exists.
-  - **Done when:** A test in `crates/harness-core/tests/session.rs` resumes one id twice. The
+  - **Done when:** A test in `crates/praxis-core/tests/session.rs` resumes one id twice. The
     second call returns an error while the first log is still alive, and succeeds after it is
     dropped.
   - **If we skip it:** The session history gets mixed up for good, and file edits fail at
@@ -376,8 +376,8 @@ one item per branch, write the test first, tick the box here.
 ## Should fix
 
 - [x] **17. Absolute paths (item 4) let a symlinked path get around its deny rule**
-  (`crates/harness-core/src/agent/mod.rs` `absolute_paths`,
-  `crates/harness-core/src/permissions/mod.rs` `subjects`)
+  (`crates/praxis-core/src/agent/mod.rs` `absolute_paths`,
+  `crates/praxis-core/src/permissions/mod.rs` `subjects`)
   - **What this is:** `subjects` matches deny rules against two spellings of a path: the one
     the model wrote and the resolved one. Its comment says "so neither `..` nor a symlink can
     step around a deny rule".
@@ -396,7 +396,7 @@ one item per branch, write the test first, tick the box here.
   - **If we skip it:** Deny rules on symlinked folders silently stop working.
 
 - [x] **18. `Write` still overwrites files that have unsaved changes in VS Code**
-  (`crates/harness-core/src/tools/files.rs` `write`)
+  (`crates/praxis-core/src/tools/files.rs` `write`)
   - **What this is:** Item 5 made `Edit` refuse a file whose editor buffer differs from the
     disk.
   - **Problem:** `Write` has no such check. It replaces the file on disk under a dirty buffer.
@@ -411,7 +411,7 @@ one item per branch, write the test first, tick the box here.
 ## Nice to have
 
 - [x] **19. Lost trust-store updates can let a changed MCP tool through without a prompt**
-  (`crates/harness-core/src/trust.rs` `set`)
+  (`crates/praxis-core/src/trust.rs` `set`)
   - **What this is:** Item 8 made each write atomic. But `set` still reads, changes and writes
     the whole file with no lock.
   - **Problem:** Suppose two processes start at the same time and both pin MCP tools. The
@@ -426,7 +426,7 @@ one item per branch, write the test first, tick the box here.
   - **If we skip it:** Rarely, a changed MCP tool gets in without approval.
 
 - [x] **20. Checkpoint copies of undone turns, and of ended sessions, are never deleted**
-  (`crates/harness-core/src/tools/checkpoint.rs` `undo`, `begin_turn`)
+  (`crates/praxis-core/src/tools/checkpoint.rs` `undo`, `begin_turn`)
   - **What this is:** Item 13 deletes copies when a turn drops out of the 20-turn window.
   - **Problem:** `undo` pops a turn but leaves its copy files on disk. Those copies are no
     longer in `turns`, so nothing will ever delete them. The last 20 turns of every session are
@@ -450,7 +450,7 @@ undo with partial failures (11). Also fine: memory and rule imports stay confine
 `~/` imports outside the workspace are refused), the branch name read from `HEAD` is filtered,
 and the eval runner runs the agent under bwrap plus Landlock.
 
-**Not checked:** `harness-vscode-ui/src/lib.rs` beyond the markdown path, the compaction
+**Not checked:** `praxis-vscode-ui/src/lib.rs` beyond the markdown path, the compaction
 summary request, `scripts/prove-evals`. `./scripts/verify` was not run, and none of the round 2
 findings were reproduced with a test. They come from reading the code.
 
@@ -459,37 +459,37 @@ findings were reproduced with a test. They come from reading the code.
 # Round 3 (2026-11-13)
 
 Round 3 reviewed the round 2 fix commits (`5eae6a9`..`48f646c`) and parts not read before: the
-CLI startup flow (`harness-cli/src/main.rs` `run`, `ready_model`, `plugin_command`), the VS Code
-protocol and review wiring (`harness-vscode/src/protocol.rs`, `lib.rs` `react`, `open_review`,
+CLI startup flow (`praxis-cli/src/main.rs` `run`, `ready_model`, `plugin_command`), the VS Code
+protocol and review wiring (`praxis-vscode/src/protocol.rs`, `lib.rs` `react`, `open_review`,
 `editor_text`, `refresh_sessions`), and the VS Code setting scopes in `package.json`. Same
 rules: one item per branch, write the test first, tick the box here.
 
 ## Should fix
 
-- [x] **21. Every finished turn starts a whole `harness acp`, MCP servers included, just to list sessions**
-  (`crates/harness-vscode/src/lib.rs:711-718`, `:1012`; `crates/harness-cli/src/main.rs` `run`)
-  - **What this is:** The sidebar lists sessions by starting a separate `harness acp` and sending
+- [x] **21. Every finished turn starts a whole `praxis acp`, MCP servers included, just to list sessions**
+  (`crates/praxis-vscode/src/lib.rs:711-718`, `:1012`; `crates/praxis-cli/src/main.rs` `run`)
+  - **What this is:** The sidebar lists sessions by starting a separate `praxis acp` and sending
     `session/list`. `react` calls `refresh_sessions` after every `done` message, so this happens
     after every turn.
-  - **Problem:** `harness acp` runs the full startup before it answers. It loads the config,
+  - **Problem:** `praxis acp` runs the full startup before it answers. It loads the config,
     calls `ready_model`, which loads a model when `agent.auto_load = true`, and connects every
     MCP server: one process each, with up to 10 s `CONNECT_TIMEOUT`, and pinning. So with three
     stdio MCP servers, each turn starts three more server processes that are killed again at
     once. The sidebar also waits for the slowest server. Listing sessions needs none of this:
-    it only reads `~/.local/share/harness/sessions`.
-  - **Fix:** Add `harness sessions --json`, which prints `session::list(dir, cwd)` like
+    it only reads `~/.local/share/praxis/sessions`.
+  - **Fix:** Add `praxis sessions --json`, which prints `session::list(dir, cwd)` like
     `plugin list --json` does, and have `refresh_sessions` run it the way the Plugins view runs
     its CLI. Then delete `protocol::list_request`, `listing_on_line` and the listing child
     wiring. This removes code.
-  - **Done when:** A CLI test in `crates/harness-cli/tests/cli.rs` runs `harness sessions
+  - **Done when:** A CLI test in `crates/praxis-cli/tests/cli.rs` runs `praxis sessions
     --json` with no LM Studio reachable and gets the sessions of the temp workspace. A native
-    test in `harness-vscode` maps that JSON to `SessionItem`s.
+    test in `praxis-vscode` maps that JSON to `SessionItem`s.
   - **If we skip it:** Turns end more slowly, MCP servers are started over and over (with their
     side effects), and a sidebar refresh can load a model.
 
 - [x] **22. Clean files whose text VS Code normalizes are refused as "unsaved changes"**
-  (`crates/harness-vscode/src/lib.rs:790-804` `editor_text`,
-  `crates/harness-core/src/tools/files.rs` `refuse_unsaved_buffer`)
+  (`crates/praxis-vscode/src/lib.rs:790-804` `editor_text`,
+  `crates/praxis-core/src/tools/files.rs` `refuse_unsaved_buffer`)
   - **What this is:** For an open document, the extension answers `fs/read_text_file` with
     `document.getText()`. Items 5 and 18 refuse `Edit`/`Write` when that text differs from the
     bytes on disk.
@@ -501,13 +501,13 @@ rules: one item per branch, write the test first, tick the box here.
   - **Fix:** In `editor_text`, return `getText()` only when `document.isDirty`; otherwise read
     the disk as the fallback already does. Then "differs from disk" really means "unsaved".
   - **Done when:** A native test of the extracted choice (dirty → buffer, clean → disk) in
-    `harness-vscode`. Optionally an ACP test where the client serves a BOM-less copy of a clean
+    `praxis-vscode`. Optionally an ACP test where the client serves a BOM-less copy of a clean
     BOM file and `Edit` succeeds.
   - **If we skip it:** The agent is stuck on some files for reasons the user can't see or fix.
 
 - [x] **23. One broken plugin empties the whole Plugins view, so it can't be removed there**
-  (`crates/harness-cli/src/main.rs:122-136`)
-  - **What this is:** `harness plugin list --json` feeds the VS Code Plugins tree. For each
+  (`crates/praxis-cli/src/main.rs:122-136`)
+  - **What this is:** `praxis plugin list --json` feeds the VS Code Plugins tree. For each
     installed plugin it calls `store.get` and `plugin.runs`, each with `?`.
   - **Problem:** If one plugin fails to load (a broken `plugin.json`, a hook file with bad
     JSON, a component path that no longer exists after an update), the whole command fails.
@@ -516,7 +516,7 @@ rules: one item per branch, write the test first, tick the box here.
     load plugins, so it still works.
   - **Fix:** On a load error, still print the entry, with `"error": "<message>"` and an empty
     `can_run`. Show it in the tree as an item that has the Remove action.
-  - **Done when:** A test in `crates/harness-cli/tests/plugin_cli.rs` installs two plugins,
+  - **Done when:** A test in `crates/praxis-cli/tests/plugin_cli.rs` installs two plugins,
     breaks one's manifest, and gets both from `plugin list --json`, the broken one with an
     `error`.
   - **If we skip it:** One bad plugin update locks the user out of plugin management in VS Code.
@@ -524,7 +524,7 @@ rules: one item per branch, write the test first, tick the box here.
 ## Nice to have
 
 - [x] **24. `Write` now reads the whole old file every time, with no size cap, even without an editor**
-  (`crates/harness-core/src/tools/files.rs:184`)
+  (`crates/praxis-core/src/tools/files.rs:184`)
   - **What this is:** Item 18 added `fs::read(&path)` before every `Write` over an existing
     file, to compare it with the editor buffer.
   - **Problem:** It runs in the CLI too, where there is no editor to compare against. It uses
@@ -543,18 +543,18 @@ starts processes nobody asked for, and its fix deletes code. Then 22, which is a
 that items 5 and 18 brought in.
 
 **Lean:** item 21 deletes the session-listing protocol path (`list_request`, `listing_on_line`,
-the listing child): about -60 lines in `harness-vscode`, plus about +20 for the CLI command.
+the listing child): about -60 lines in `praxis-vscode`, plus about +20 for the CLI command.
 
 **Checked and fine:** subagents now get the parent's live permissions (15). Log locking,
 together with dropping the old slot on reload (16), works. Path folding (17) keeps symlink names
 visible to deny rules, and `..` that leaves the workspace still ends in the tool's refusal.
 `trust.json` locking (19) holds the lock across the read-modify-write. Copies are deleted after
 undo (20). The review diffs are untitled documents, so the files on disk are never touched before
-approval. `harness.binaryPath` and `harness.lmstudio.baseUrl` are machine-scoped. Model output
+approval. `praxis.binaryPath` and `praxis.lmstudio.baseUrl` are machine-scoped. Model output
 reaches the panel only through escaped markdown. Without a terminal, project config widening
 and changed MCP tools both stay inactive.
 
-**Not checked:** `harness-vscode-ui/src/lib.rs` DOM code, the compaction summary request,
-`scripts/prove-evals`, `harness-vscode/src/plugins.rs`. `./scripts/verify` was not run, and none
+**Not checked:** `praxis-vscode-ui/src/lib.rs` DOM code, the compaction summary request,
+`scripts/prove-evals`, `praxis-vscode/src/plugins.rs`. `./scripts/verify` was not run, and none
 of the round 3 findings were reproduced with a test. The BOM and EOL behaviour in item 22 is
 VS Code's documented text model behaviour; it was not tried in a running editor.

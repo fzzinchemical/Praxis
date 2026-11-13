@@ -1,82 +1,82 @@
 {
-  "name": "harness",
-  "displayName": "Harness",
-  "description": "Local-first coding agent harness",
-  "publisher": "harness",
+  "name": "praxis",
+  "displayName": "Praxis",
+  "description": "Local-first coding agent",
+  "publisher": "praxis",
   "version": "1.0.0-beta.1",
   "license": "UNLICENSED",
   "engines": { "vscode": "^1.145.0" },
-  "main": "./dist/harness_vscode.js",
+  "main": "./dist/praxis_vscode.js",
   "capabilities": { "untrustedWorkspaces": { "supported": false } },
   "contributes": {
     "commands": [
-      { "command": "harness.open", "title": "Harness: Open Chat" },
-      { "command": "harness.newSession", "title": "Harness: New Session", "icon": "$(add)" },
-      { "command": "harness.openSession", "title": "Harness: Open Session" },
-      { "command": "harness.refreshSessions", "title": "Harness: Refresh Sessions", "icon": "$(refresh)" },
-      { "command": "harness.enablePlugin", "title": "Harness: Enable Plugin" },
-      { "command": "harness.disablePlugin", "title": "Harness: Disable Plugin" },
-      { "command": "harness.removePlugin", "title": "Harness: Remove Plugin" },
-      { "command": "harness.installPlugin", "title": "Harness: Install Plugin", "icon": "$(add)" },
-      { "command": "harness.refreshPlugins", "title": "Harness: Refresh Plugins", "icon": "$(refresh)" }
+      { "command": "praxis.open", "title": "Praxis: Open Chat" },
+      { "command": "praxis.newSession", "title": "Praxis: New Session", "icon": "$(add)" },
+      { "command": "praxis.openSession", "title": "Praxis: Open Session" },
+      { "command": "praxis.refreshSessions", "title": "Praxis: Refresh Sessions", "icon": "$(refresh)" },
+      { "command": "praxis.enablePlugin", "title": "Praxis: Enable Plugin" },
+      { "command": "praxis.disablePlugin", "title": "Praxis: Disable Plugin" },
+      { "command": "praxis.removePlugin", "title": "Praxis: Remove Plugin" },
+      { "command": "praxis.installPlugin", "title": "Praxis: Install Plugin", "icon": "$(add)" },
+      { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" }
     ],
     "viewsContainers": {
-      "activitybar": [{ "id": "harness", "title": "Harness", "icon": "media/harness.svg" }]
+      "activitybar": [{ "id": "praxis", "title": "Praxis", "icon": "media/praxis.svg" }]
     },
     "views": {
-      "harness": [
-        { "id": "harness.sessions", "name": "Sessions" },
-        { "id": "harness.plugins", "name": "Plugins" }
+      "praxis": [
+        { "id": "praxis.sessions", "name": "Sessions" },
+        { "id": "praxis.plugins", "name": "Plugins" }
       ]
     },
     "menus": {
       "view/title": [
-        { "command": "harness.newSession", "when": "view == harness.sessions", "group": "navigation" },
-        { "command": "harness.refreshSessions", "when": "view == harness.sessions", "group": "navigation" },
-        { "command": "harness.installPlugin", "when": "view == harness.plugins", "group": "navigation" },
-        { "command": "harness.refreshPlugins", "when": "view == harness.plugins", "group": "navigation" }
+        { "command": "praxis.newSession", "when": "view == praxis.sessions", "group": "navigation" },
+        { "command": "praxis.refreshSessions", "when": "view == praxis.sessions", "group": "navigation" },
+        { "command": "praxis.installPlugin", "when": "view == praxis.plugins", "group": "navigation" },
+        { "command": "praxis.refreshPlugins", "when": "view == praxis.plugins", "group": "navigation" }
       ],
       "view/item/context": [
-        { "command": "harness.enablePlugin", "when": "view == harness.plugins && viewItem == plugin-disabled", "group": "1_state" },
-        { "command": "harness.disablePlugin", "when": "view == harness.plugins && viewItem == plugin-enabled", "group": "1_state" },
-        { "command": "harness.removePlugin", "when": "view == harness.plugins && viewItem =~ /^plugin-/", "group": "2_remove" }
+        { "command": "praxis.enablePlugin", "when": "view == praxis.plugins && viewItem == plugin-disabled", "group": "1_state" },
+        { "command": "praxis.disablePlugin", "when": "view == praxis.plugins && viewItem == plugin-enabled", "group": "1_state" },
+        { "command": "praxis.removePlugin", "when": "view == praxis.plugins && viewItem =~ /^plugin-/", "group": "2_remove" }
       ],
       "commandPalette": [
-        { "command": "harness.openSession", "when": "false" },
-        { "command": "harness.enablePlugin", "when": "false" },
-        { "command": "harness.disablePlugin", "when": "false" },
-        { "command": "harness.removePlugin", "when": "false" }
+        { "command": "praxis.openSession", "when": "false" },
+        { "command": "praxis.enablePlugin", "when": "false" },
+        { "command": "praxis.disablePlugin", "when": "false" },
+        { "command": "praxis.removePlugin", "when": "false" }
       ]
     },
     "configuration": {
-      "title": "Harness",
+      "title": "Praxis",
       "properties": {
-        "harness.binaryPath": {
+        "praxis.binaryPath": {
           "type": "string",
-          "default": "harness",
+          "default": "praxis",
           "scope": "machine",
-          "description": "Path to the harness binary. Machine-scoped so a workspace can't change it."
+          "description": "Path to the praxis binary. Machine-scoped so a workspace can't change it."
         },
-        "harness.defaultModel": {
+        "praxis.defaultModel": {
           "type": "string",
           "description": "Model key for new runs. Unset uses config.toml (default_model)."
         },
-        "harness.lmstudio.baseUrl": {
+        "praxis.lmstudio.baseUrl": {
           "type": "string",
           "scope": "machine",
           "description": "LM Studio server URL. Machine-scoped so a workspace can't send prompts to another server. Unset uses config.toml (lmstudio.base_url)."
         },
-        "harness.agent.maxTurnRequests": {
+        "praxis.agent.maxTurnRequests": {
           "type": "integer",
           "minimum": 0,
           "description": "Model requests allowed in one turn. Unset uses config.toml (agent.max_turn_requests)."
         },
-        "harness.context.maskKeepTurns": {
+        "praxis.context.maskKeepTurns": {
           "type": "integer",
           "minimum": 0,
           "description": "Recent turns whose tool output stays unmasked. Unset uses config.toml (context.mask_keep_turns)."
         },
-        "harness.context.filterOutput": {
+        "praxis.context.filterOutput": {
           "type": "boolean",
           "description": "Filter noisy tool output before the model sees it. Unset uses config.toml (context.filter_output)."
         }

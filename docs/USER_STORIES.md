@@ -26,7 +26,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **VS Code user** | The same developer, working from the editor instead of the terminal |
 | **Plugin user** | Wants to reuse existing skills, hooks and MCP servers without rewriting them |
 | **Hybrid user** | The same developer, who opts in to a Claude model for work a local model can't do |
-| **Maintainer** | Builds the harness and needs evidence that it works |
+| **Maintainer** | Builds the praxis and needs evidence that it works |
 
 ---
 
@@ -53,7 +53,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | ID | Story | Accepted when | Tasks |
 |---|---|---|---|
 | **US-01** | As a developer, I want to connect to my LM Studio server and see replies stream, so that the agent works with models I already run. | Replies stream as they arrive. A stopped server or missing model gives a message saying what to do. | T1.1, T1.2 |
-| **US-02** | As a developer, I want the harness to load my model with the context size it needs, so that prompts aren't silently cut short. | Context comes from the load settings. A reload needs my consent unless `auto_load` is on. | T1.4 |
+| **US-02** | As a developer, I want the praxis to load my model with the context size it needs, so that prompts aren't silently cut short. | Context comes from the load settings. A reload needs my consent unless `auto_load` is on. | T1.4 |
 | **US-03** | As a developer, I want to give a task in the terminal and have the agent read, edit and run things, so that it can finish real coding work. | One-shot and REPL modes both fix a seeded bug with a real model. | T1.5, T1.6, T1.7, T1.9 |
 | **US-04** | As a developer, I want to stop a turn at any moment, so that a bad run can't keep going. | Ctrl-C stops the model and running tools, including child processes. The next prompt continues from consistent history. | T1.7, T1.9 |
 
@@ -66,7 +66,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **US-07** | As a developer, I want large outputs kept within the context budget, so that one big file or log doesn't crowd out the task. | Oversized results are truncated, and the rest can be read back. Prompt truncation triggers a warning. | T2.4 |
 | **US-08** | As a developer, I want later turns to avoid reprocessing the whole prompt, so that I spend less time waiting. | Consecutive requests share a byte-identical prefix, and a real run shows a measured improvement. | T2.5 |
 | **US-09** | As a developer, I want long tasks to continue when the context fills up, so that work isn't lost partway through. | Old tool output is masked in rare batches, with a summary only if that isn't enough. The prefix stays intact, and the large-file eval passes on a small context. | T2.6 |
-| **US-10** | As a maintainer, I want an eval scoreboard for each model, so that I can prove the harness improves results. | One command runs all eval tasks and writes results for that model, including turns, wall time, re-fetches and tokens processed versus cached. | T2.1 |
+| **US-10** | As a maintainer, I want an eval scoreboard for each model, so that I can prove the praxis improves results. | One command runs all eval tasks and writes results for that model, including turns, wall time, re-fetches and tokens processed versus cached. | T2.1 |
 
 ### Safety
 
@@ -159,11 +159,11 @@ The first things to cut.
 |---|---|---|
 | **US-38** | As a developer, I want a rich terminal UI, so that long sessions are easier to follow. | Cut (2026-11-12): the REPL stays |
 | **US-39** | As a developer, I want MCP resources and prompts, so that servers can offer more than tools. | Part of T4.5 |
-| **US-40** | As a developer, I want to use the harness from Zed or another ACP editor, so that I'm not tied to VS Code. | Part of T5.6 |
+| **US-40** | As a developer, I want to use the praxis from Zed or another ACP editor, so that I'm not tied to VS Code. | Part of T5.6 |
 | **US-41** | As a VS Code user, I want editor diagnostics available as context, so that the agent can see current errors. | Part of T5.5 |
 | **US-42** | As a plugin user, I want plugin `bin/` tools on the agent's `PATH`, so that plugins can ship command-line tools. | Part of T6.4 |
 | **US-43** | As a VS Code user, I want the extension to work in VSCodium, so that I can avoid the proprietary build. | Part of T5.6 |
-| **US-52** | As a maintainer, I want a timed trial of real tasks with and without the harness, so that its value is measured rather than felt. | T7.5 |
+| **US-52** | As a maintainer, I want a timed trial of real tasks with and without the praxis, so that its value is measured rather than felt. | T7.5 |
 | **US-55** | As a maintainer, I want a scoreboard on a Claude model, so that local results have a reference ceiling. | T8.7 |
 
 ---
@@ -175,7 +175,7 @@ Not stories to build, but recorded so nobody builds them by accident.
 | Feature | Why not | Revisit if |
 |---|---|---|
 | **Ollama, other OpenAI-compatible servers, cloud providers other than Anthropic** | LM Studio plus opt-in Anthropic covers the need ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)) | Those two stop meeting the need |
-| **Hosting or running models** | The harness connects to a server | Not planned |
+| **Hosting or running models** | The praxis connects to a server | Not planned |
 | **Parallel subagents** | One GPU means contention or model swaps | Hardware allows real parallelism |
 | **Automatic model routing** | Swapping local models costs load time; US-54 lets the user choose per agent instead | M2 measurements show a gain |
 | **Embeddings or RAG index** | The repo map and `Grep` come first | Evals show they aren't enough |

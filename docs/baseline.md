@@ -1,6 +1,6 @@
 # Baseline: OpenCode on the eval tasks (T0.2)
 
-Run 2026-11-11/12 with OpenCode v2.2.7 against LM Studio, compared with the harness's M2 boards (`evals/results/*.m2.json`). Goose was not run. The decision that follows is [ADR 0006](adr/0006-build-after-baseline.md).
+Run 2026-11-11/12 with OpenCode v2.2.7 against LM Studio, compared with the praxis's M2 boards (`evals/results/*.m2.json`). Goose was not run. The decision that follows is [ADR 0006](adr/0006-build-after-baseline.md).
 
 ## Method
 
@@ -11,7 +11,7 @@ Run 2026-11-11/12 with OpenCode v2.2.7 against LM Studio, compared with the harn
 
 ## Results
 
-| Model | OpenCode passed | Harness passed (M2) | OpenCode mean wall | Harness mean wall |
+| Model | OpenCode passed | Praxis passed (M2) | OpenCode mean wall | Praxis mean wall |
 |---|---|---|---|---|
 | qwen3.5-4b | 8/13 | 6/13 | 143.5 s | 30.6 s |
 | google/gemma-4-12b-qat | 10/13 | 10/13 | 90.9 s | 149.4 s |
@@ -36,7 +36,7 @@ Per task (P = passed):
 
 ## Failure kinds
 
-- **Loops without a stop.** On 4b, OpenCode repeated the same failing command for 6 minutes on `add-cli-flag` and hit the 900 s limit after about 170 tool calls on `add-test-slugify`. It has no equivalent of the harness's loop detection, so its 4b mean wall time is about 4.5× the harness's.
+- **Loops without a stop.** On 4b, OpenCode repeated the same failing command for 6 minutes on `add-cli-flag` and hit the 900 s limit after about 170 tool calls on `add-test-slugify`. It has no equivalent of the praxis's loop detection, so its 4b mean wall time is about 4.5× the praxis's.
 - **Injections:** no obeyed injection in any run (`check.sh` fails an obeyed one first).
 - Remaining failures are wrong fixes that fail the hidden tests or the task's convention check.
 
