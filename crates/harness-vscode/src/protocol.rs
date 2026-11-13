@@ -209,8 +209,6 @@ pub struct Reaction {
     pub models: Option<Value>,
     /// The permission mode picker's state, sent after `show`.
     pub modes: Option<Value>,
-    /// The workspace's sessions from a `session/list` answer, newest first.
-    pub sessions: Option<Vec<SessionItem>>,
 }
 
 /// One saved session as the sessions view lists it.
@@ -220,27 +218,30 @@ pub struct SessionItem {
     pub label: String,
 }
 
-/// The sessions of one workspace from a `session/list` answer, newest first. Other workspaces and
-/// entries without an id are dropped; an untitled session gets a placeholder label.
-pub fn session_items(result: &Value, cwd: &str) -> Vec<SessionItem> {
-    let mut sessions: Vec<&Value> = result["sessions"]
-        .as_array()
-        .map(Vec::as_slice)
-        .unwrap_or_default()
-        .iter()
-        .filter(|s| s["cwd"].as_str() == Some(cwd) && s["sessionId"].is_string())
-        .collect();
-    // ISO 8601 UTC strings sort by time.
-    sessions.sort_by(|a, b| b["updatedAt"].as_str().cmp(&a["updatedAt"].as_str()));
-    sessions
-        .into_iter()
-        .map(|s| SessionItem {
-            id: s["sessionId"].as_str().unwrap_or_default().to_owned(),
-            label: s["title"]
+/// Maps `harness sessions --json`, already newest first and limited to one workspace, to sidebar
+/// items. An untitled session gets a placeholder label. One malformed row fails the whole listing
+/// rather than hiding a session.
+pub fn session_items(json: &str) -> Result<Vec<SessionItem>, String> {
+    let Value::Array(rows) = serde_json::from_str(json).map_err(|error| error.to_string())? else {
+        return Err("sessions did not print an array".to_owned());
+    };
+    rows.iter()
+        .map(|row| {
+            let id = row["id"]
                 .as_str()
-                .filter(|title| !title.is_empty())
-                .unwrap_or("Untitled session")
-                .to_owned(),
+                .ok_or("session row without a string `id`")?;
+            let title = row["title"]
+                .as_str()
+                .ok_or("session row without a string `title`")?;
+            let label = if title.is_empty() {
+                "Untitled session"
+            } else {
+                title
+            };
+            Ok(SessionItem {
+                id: id.to_owned(),
+                label: label.to_owned(),
+            })
         })
         .collect()
 }
@@ -287,7 +288,6 @@ pub fn file_reply(id: Value, text: Option<&str>) -> String {
 const INITIALIZE: u64 = 0;
 const NEW_SESSION: u64 = 1;
 const SET_MODEL: u64 = 2;
-const SESSION_LIST: u64 = 3;
 const LOAD_SESSION: u64 = 4;
 const SET_MODE: u64 = 5;
 
@@ -543,38 +543,6 @@ pub fn initialize() -> String {
         "initialize",
         json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true}}}),
     )
-}
-
-/// The sidebar's `session/list` for one workspace.
-pub fn list_request(cwd: &str) -> String {
-    request(SESSION_LIST, "session/list", json!({"cwd": cwd}))
-}
-
-/// One line from the sidebar's own `harness acp` child, which only lists sessions. The
-/// `initialize` answer asks for the list and the list's answer becomes `Reaction::sessions`;
-/// the child never sends `session/new`, so listing leaves no session behind.
-pub fn listing_on_line(cwd: &str, line: &str) -> Reaction {
-    let Ok(message) = serde_json::from_str::<Value>(line) else {
-        return show(notice(&format!("unreadable agent output: {line}")));
-    };
-    if let Some(error) = message.get("error") {
-        let text = error["data"]
-            .as_str()
-            .or(error["message"].as_str())
-            .unwrap_or("unknown error");
-        return show(notice(&format!("Could not list sessions: {text}")));
-    }
-    match message["id"].as_u64() {
-        Some(INITIALIZE) => Reaction {
-            send: Some(list_request(cwd)),
-            ..Reaction::default()
-        },
-        Some(SESSION_LIST) => Reaction {
-            sessions: Some(session_items(&message["result"], cwd)),
-            ..Reaction::default()
-        },
-        _ => Reaction::default(),
-    }
 }
 
 /// The `config` option of a `session/new`, `session/load` or `session/set_config_option` answer,
@@ -1171,33 +1139,6 @@ mod tests {
     }
 
     #[test]
-    fn session_items_keep_only_this_workspace_newest_first_and_labelled() {
-        let result = json!({"sessions": [
-            {"sessionId": "old", "cwd": "/w/a", "title": "first", "updatedAt": "2026-01-01T00:00:00Z"},
-            {"sessionId": "other", "cwd": "/w/b", "title": "elsewhere", "updatedAt": "2026-03-01T00:00:00Z"},
-            {"sessionId": "new", "cwd": "/w/a", "updatedAt": "2026-02-01T00:00:00Z"},
-            {"cwd": "/w/a", "title": "no id"}
-        ]});
-        let items = session_items(&result, "/w/a");
-        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
-        assert_eq!(ids, ["new", "old"]);
-        assert_eq!(items[0].label, "Untitled session");
-        assert_eq!(items[1].label, "first");
-    }
-
-    #[test]
-    fn listing_asks_for_this_workspace_after_initialize_and_maps_the_answer() {
-        let init = json!({"jsonrpc": "2.0", "id": 0, "result": {}}).to_string();
-        let list = sent(&listing_on_line("/w/a", &init));
-        assert_eq!(list["method"], "session/list");
-        assert_eq!(list["params"]["cwd"], "/w/a");
-        let answer = json!({"jsonrpc": "2.0", "id": list["id"],
-            "result": {"sessions": [{"sessionId": "s1", "cwd": "/w/a", "title": "hi"}]}});
-        let reaction = listing_on_line("/w/a", &answer.to_string());
-        assert_eq!(reaction.sessions.unwrap()[0].id, "s1");
-    }
-
-    #[test]
     fn a_resumed_session_is_loaded_before_prompts_go_to_it() {
         let (mut client, init) = Client::resume("/w/a", "s9");
         assert!(init.contains("initialize"));
@@ -1216,11 +1157,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_session_list_is_a_notice() {
-        let error = json!({"jsonrpc": "2.0", "id": 3, "error": {"message": "boom"}});
+    fn sessions_json_maps_to_items_with_a_placeholder_for_untitled() {
+        let items = session_items(r#"[{"id":"new","title":"second"},{"id":"old","title":""}]"#);
         assert_eq!(
-            listing_on_line("/w/a", &error.to_string()).show,
-            Some(notice("Could not list sessions: boom"))
+            items,
+            Ok(vec![
+                SessionItem {
+                    id: "new".to_owned(),
+                    label: "second".to_owned(),
+                },
+                SessionItem {
+                    id: "old".to_owned(),
+                    label: "Untitled session".to_owned(),
+                },
+            ])
         );
+    }
+
+    #[test]
+    fn a_malformed_sessions_answer_fails_the_whole_listing() {
+        assert!(session_items(r#"{"id":"x"}"#).is_err());
+        assert!(session_items(r#"[{"title":"no id"}]"#).is_err());
     }
 }

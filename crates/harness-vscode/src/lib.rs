@@ -10,6 +10,7 @@ use js_sys::{Array, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
+    session_items,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -860,31 +861,13 @@ fn binary_path() -> String {
         .unwrap_or_else(|| "harness".to_owned())
 }
 
-/// The sessions view. Listing runs in its own `harness acp` child, independent of the chat panels.
+/// The sessions view, listed by the CLI like the Plugins view.
 struct Sidebar {
     emitter: EventEmitter,
     output: OutputChannel,
     items: Vec<SessionItem>,
     /// Why the last listing failed, shown as the view's first item until a listing succeeds.
     problem: Option<String>,
-    listing: Option<Listing>,
-}
-
-/// A `session/list` in flight: its child and listeners, unhooked before they drop.
-struct Listing {
-    child: ChildProcess,
-    stdout: Closure<dyn FnMut(JsValue)>,
-    stderr: Closure<dyn FnMut(JsValue)>,
-    error: Closure<dyn FnMut(JsValue)>,
-}
-
-impl Listing {
-    fn stop(&self) {
-        self.child.stdout().off("data", self.stdout.as_ref());
-        self.child.stderr().off("data", self.stderr.as_ref());
-        self.child.off_child("error", self.error.as_ref());
-        self.child.kill();
-    }
 }
 
 thread_local! {
@@ -907,7 +890,6 @@ fn create_sessions_view(output: &OutputChannel) {
             output: output.clone(),
             items: Vec::new(),
             problem: None,
-            listing: None,
         });
     });
 }
@@ -1008,71 +990,16 @@ fn redraw(change: impl FnOnce(&mut Sidebar)) {
     }
 }
 
-/// Lists the workspace's sessions with the sidebar's own child, replacing any listing in flight.
+/// Re-reads this workspace's sessions from `harness sessions --json` and redraws the view.
 fn refresh_sessions() {
     let Some(cwd) = workspace_dir() else {
         return publish(Vec::new());
     };
-    let Some((previous, output)) = SIDEBAR.with(|sidebar| {
-        sidebar
-            .borrow_mut()
-            .as_mut()
-            .map(|sidebar| (sidebar.listing.take(), sidebar.output.clone()))
-    }) else {
-        return;
-    };
-    if let Some(previous) = previous {
-        previous.stop();
-    }
-    let child = match spawn_acp(&cwd) {
-        Ok(child) => child,
-        Err(error) => return fail(format!("spawn failed: {error:?}")),
-    };
-    child
-        .stdin()
-        .write(&format!("{}\n", protocol::initialize()));
-    child.stdout().set_encoding("utf8");
-    child.stderr().set_encoding("utf8");
-
-    let answer_child = child.clone();
-    let mut lines = Lines::default();
-    let on_stdout = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
-        for line in lines.push(&text_of(chunk)) {
-            let reaction = protocol::listing_on_line(&cwd, &line);
-            let finished = reaction.sessions.is_some() || reaction.show.is_some();
-            if let Some(sessions) = reaction.sessions {
-                publish(sessions);
-            }
-            if let Some(message) = reaction.show {
-                fail(message["text"].as_str().unwrap_or_default().to_owned());
-            }
-            if let Some(send) = reaction.send {
-                answer_child.stdin().write(&format!("{send}\n"));
-            }
-            if finished {
-                answer_child.kill();
-            }
-        }
-    });
-    let stderr_output = output.clone();
-    let on_stderr = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
-        stderr_output.append(&text_of(chunk));
-    });
-    let on_error = Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
-        fail(format!("harness acp: {}", text_of(error)));
-    });
-    child.stdout().on("data", on_stdout.as_ref());
-    child.stderr().on("data", on_stderr.as_ref());
-    child.on_child("error", on_error.as_ref());
-    let listing = Listing {
-        child,
-        stdout: on_stdout,
-        stderr: on_stderr,
-        error: on_error,
-    };
-    SIDEBAR.with(|sidebar| {
-        if let Some(sidebar) = sidebar.borrow_mut().as_mut() {
-            sidebar.listing = Some(listing);
+    let args = vec!["sessions".to_owned(), "--json".to_owned()];
+    run_cli(args, Some(&cwd), |result| {
+        match result.and_then(|json| session_items(&json)) {
+            Ok(items) => publish(items),
+            Err(error) => fail(error),
         }
     });
 }
@@ -1170,13 +1097,22 @@ fn plugin_name(item: &JsValue) -> Option<String> {
     Reflect::get(item, &"id".into()).ok()?.as_string()
 }
 
-/// Runs `harness <args>` and hands its result to `then` once it exits: stdout on exit 0, stderr otherwise.
-fn run_cli(args: Vec<String>, then: impl FnOnce(Result<String, String>) + 'static) {
+/// Runs `harness <args>` in `cwd` (the extension host's by default) and hands its result to `then`
+/// once it exits: stdout on exit 0, stderr otherwise.
+fn run_cli(
+    args: Vec<String>,
+    cwd: Option<&str>,
+    then: impl FnOnce(Result<String, String>) + 'static,
+) {
     let argv = Array::new();
     for arg in &args {
         argv.push(&arg.as_str().into());
     }
-    let child = match spawn(&binary_path(), &argv, &Object::new()) {
+    let options: Object = match cwd {
+        Some(cwd) => node(&[("cwd", JsValue::from_str(cwd))]).unchecked_into(),
+        None => Object::new(),
+    };
+    let child = match spawn(&binary_path(), &argv, &options) {
         Ok(child) => child,
         Err(error) => return then(Err(format!("spawn failed: {error:?}"))),
     };
@@ -1214,7 +1150,7 @@ fn run_cli(args: Vec<String>, then: impl FnOnce(Result<String, String>) + 'stati
 
 /// Re-reads the plugin list from the CLI and redraws the view.
 fn refresh_plugins() {
-    run_cli(list_args(), |result| {
+    run_cli(list_args(), None, |result| {
         match result.and_then(|json| plugin_items(&json)) {
             Ok(items) => publish_plugins(items),
             Err(error) => plugin_log(&format!("plugins: list failed: {error}\n")),
@@ -1224,7 +1160,7 @@ fn refresh_plugins() {
 
 /// Runs a CLI action, then refreshes the view whatever its outcome.
 fn run_action(args: Vec<String>) {
-    run_cli(args, |result| {
+    run_cli(args, None, |result| {
         if let Err(error) = result {
             plugin_log(&format!("plugins: {error}\n"));
         }

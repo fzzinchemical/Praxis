@@ -67,6 +67,12 @@ enum Command {
     /// Install, list, enable, disable or remove plugins (SPEC §12).
     #[command(subcommand)]
     Plugin(PluginCommand),
+    /// List this workspace's saved sessions, newest first. Starts no model or MCP server.
+    Sessions {
+        /// Print a JSON array of `{id, title, started, last_active}`.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -181,6 +187,34 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
                 let data = data.display();
                 println!("Kept its data at {data}. Pass --delete-data to remove it too.");
             }
+        }
+    }
+    Ok(0)
+}
+
+/// `harness sessions`: reads the session logs only, so the sidebar never starts a model or MCP server.
+fn sessions_command(json: bool, workspace: &Path) -> Result<u8> {
+    let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
+        eprintln!("Sessions need HOME or XDG_DATA_HOME to read from.");
+        return Ok(EXIT_USAGE);
+    };
+    let sessions = session::list(&dir, workspace)?;
+    if json {
+        let rows: Vec<Value> = sessions
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "id": s.id,
+                    "title": s.title,
+                    "started": s.started,
+                    "last_active": s.last_active,
+                })
+            })
+            .collect();
+        println!("{}", Value::Array(rows));
+    } else {
+        for s in &sessions {
+            println!("{} {}", s.id, sanitize(&s.title));
         }
     }
     Ok(0)
@@ -829,6 +863,7 @@ async fn run(
     match cli.command {
         Some(Command::Models) => return list_models(&provider).await,
         Some(Command::Plugin(command)) => return plugin_command(command),
+        Some(Command::Sessions { json }) => return sessions_command(json, &workspace),
         Some(Command::Acp) | None => {}
     }
     let acp = matches!(cli.command, Some(Command::Acp));

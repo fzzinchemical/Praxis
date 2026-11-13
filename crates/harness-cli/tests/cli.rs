@@ -668,3 +668,23 @@ async fn bare_resume_continues_the_newest_session_of_this_workspace_only() {
     assert!(sent.contains("first here"), "{sent}");
     assert!(!sent.contains("first there"), "{sent}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_json_lists_this_workspace_without_lm_studio() {
+    let dir = workspace();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let saved = run(&server, &dir, &["--model", "m", "first prompt marker"]).await;
+    assert_eq!(saved.status.code(), Some(0), "{}", err(&saved));
+
+    // Nothing listens on port 9, so the listing must not reach LM Studio at all.
+    let output = command("http://127.0.0.1:9", &dir, &["sessions", "--json"])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let rows: Value = serde_json::from_str(&out(&output)).unwrap();
+    assert_eq!(rows.as_array().map(Vec::len), Some(1), "{rows}");
+    assert_eq!(rows[0]["title"], "first prompt marker", "{rows}");
+    assert!(rows[0]["id"].is_string(), "{rows}");
+}
