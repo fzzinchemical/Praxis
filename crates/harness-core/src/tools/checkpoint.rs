@@ -26,14 +26,33 @@ pub(super) struct Checkpoints {
 impl ToolContext {
     /// Keeps originals under `dir` (created `0700`) from now on.
     /// A resumed session reuses the folder, so numbering starts above the copies already there.
+    /// Copies from earlier runs are deleted: their undo steps were in memory and are gone.
     pub fn checkpoint_into(&self, dir: PathBuf) {
-        let highest = fs::read_dir(&dir)
-            .into_iter()
-            .flatten()
-            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u64>().ok())
-            .max()
-            .unwrap_or(0);
         let mut cp = self.checkpoints();
+        let live: Vec<PathBuf> = cp
+            .turns
+            .iter()
+            .flatten()
+            .filter_map(|(_, c)| c.clone())
+            .collect();
+        let mut highest = 0;
+        for entry in fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Some(number) = entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            highest = highest.max(number);
+            let path = entry.path();
+            if live.contains(&path) {
+                continue;
+            }
+            if let Err(e) = fs::remove_file(&path) {
+                tracing::warn!(copy = %path.display(), error = %e, "could not delete an old checkpoint");
+            }
+        }
         cp.dir = Some(dir);
         cp.saved = highest;
     }
@@ -319,6 +338,42 @@ mod tests {
             fs::read_to_string(&file).unwrap(),
             format!("v{CHECKPOINT_TURNS}\n")
         );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resumed_session_deletes_copies_from_earlier_runs_that_undo_cannot_reach() {
+        let root = std::env::temp_dir().join(format!("harness-prune-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "v0\n").unwrap();
+        let checkpoints = root.join("checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        // Copies left by an earlier run; its undo history died with that process.
+        for n in 1..=25 {
+            fs::write(checkpoints.join(n.to_string()), "old\n").unwrap();
+        }
+        let path = file.display().to_string();
+
+        let resumed = ToolContext::new(&workspace).unwrap();
+        resumed.checkpoint_into(checkpoints.clone());
+        let numbered = |dir: &Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .filter_map(|e| e.unwrap().file_name().into_string().ok())
+                .filter(|name| name.parse::<u64>().is_ok())
+                .count()
+        };
+        assert_eq!(numbered(&checkpoints), 0, "old copies must be deleted");
+
+        resumed.begin_turn();
+        read(from_value(json!({"file_path": path})).unwrap(), &resumed).unwrap();
+        let input = json!({"file_path": path, "old_string": "v0\n", "new_string": "v1\n"});
+        edit(from_value(input).unwrap(), &resumed).unwrap();
+        assert_eq!(fs::read_to_string(&file).unwrap(), "v1\n");
+        assert_eq!(resumed.undo().unwrap().len(), 1);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "v0\n");
         fs::remove_dir_all(&root).unwrap();
     }
 }
