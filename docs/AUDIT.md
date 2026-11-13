@@ -252,13 +252,21 @@ hostile content: model output, repository files and tool results are all untrust
 
 ## Follow-ups (gaps left after the fixes)
 
-- [ ] **F1. Item 9's notification-failure path has no test**
+- [x] **F1. Item 9's notification-failure path has no test**
   (`crates/harness-cli/src/acp.rs`, prompt handler)
   - **Problem:** When `send_notification` fails, the turn is now cancelled and the loop keeps
     draining events. No test reaches this path, because closing the connection mid-turn has no
     seam in the test client yet.
   - **Done when:** A test drops the client connection during a turn and shows that the agent
     goes back to its slot.
+  - **Closed without a test (2026-11-13):** The path can't be reached with
+    `agent-client-protocol` 5.0.0. `send_notification` fails only once the outgoing queue has
+    closed, and that happens only when the connection shuts down. The prompt loop runs as a
+    `cx.spawn` task inside the connection driver, and the driver drops it in the same step, so no
+    running task ever sees the error. A probe test confirmed this: with the client's reads broken
+    mid-turn, the connection ended with `client gone`, the loop was dropped, and the error branch
+    never ran. `serve_acp` then returns and the process exits, so no stuck slot outlives the
+    connection. The `cancel` branch stays as a guard in case a later crate version keeps tasks alive.
 
 - [ ] **F2. Item 9's panic test bypasses the protocol**
   (`crates/harness-cli/src/acp.rs`, `a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running`)
