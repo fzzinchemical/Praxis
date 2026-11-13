@@ -44,6 +44,43 @@ pub fn enter_sends(key: &str, shift: bool, composing: bool) -> bool {
     key == "Enter" && !shift && !composing
 }
 
+/// A command or skill the agent announced (`available_commands_update`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Command {
+    /// `<plugin>:<command>`, or a standalone skill's name.
+    pub name: String,
+    pub description: String,
+    /// The plugin name, or the skill's directory for a standalone skill.
+    pub source: String,
+}
+
+/// Commands whose name contains what follows a leading `/`, grouped by source in first-seen
+/// order. Empty once the prompt has a space: the command is typed and the rest is its argument.
+// shortcut: substring match, not ranked; upgrade if long plugin lists make the best match hard to find.
+pub fn suggestions<'a>(commands: &'a [Command], prompt: &str) -> Vec<(&'a str, Vec<&'a Command>)> {
+    let Some(query) = prompt.strip_prefix('/') else {
+        return Vec::new();
+    };
+    if query.contains(char::is_whitespace) {
+        return Vec::new();
+    }
+    let query = query.to_lowercase();
+    let mut groups: Vec<(&'a str, Vec<&'a Command>)> = Vec::new();
+    for command in commands
+        .iter()
+        .filter(|c| c.name.to_lowercase().contains(&query))
+    {
+        match groups
+            .iter_mut()
+            .find(|(source, _)| *source == command.source)
+        {
+            Some((_, items)) => items.push(command),
+            None => groups.push((command.source.as_str(), vec![command])),
+        }
+    }
+    groups
+}
+
 /// What the agent is doing, for the status line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
@@ -129,6 +166,59 @@ mod tests {
         assert!(!enter_sends("Enter", true, false));
         assert!(!enter_sends("Enter", false, true));
         assert!(!enter_sends("a", false, false));
+    }
+
+    fn command(name: &str, source: &str) -> Command {
+        Command {
+            name: name.into(),
+            description: format!("{name} does things"),
+            source: source.into(),
+        }
+    }
+
+    #[test]
+    fn a_slash_lists_every_command_grouped_by_source_in_first_seen_order() {
+        let commands = [
+            command("ponytail:lite", "ponytail"),
+            command("deploy", "/home/u/.claude/skills"),
+            command("ponytail:full", "ponytail"),
+        ];
+        let groups = suggestions(&commands, "/");
+        let names: Vec<(&str, Vec<&str>)> = groups
+            .iter()
+            .map(|(source, items)| (*source, items.iter().map(|c| c.name.as_str()).collect()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("ponytail", vec!["ponytail:lite", "ponytail:full"]),
+                ("/home/u/.claude/skills", vec!["deploy"]),
+            ]
+        );
+    }
+
+    #[test]
+    fn what_follows_the_slash_filters_by_substring_ignoring_case() {
+        let commands = [command("ponytail:lite", "ponytail"), command("deploy", "d")];
+        let names = |prompt| -> Vec<String> {
+            suggestions(&commands, prompt)
+                .iter()
+                .flat_map(|(_, items)| items.iter().map(|c| c.name.clone()))
+                .collect()
+        };
+        assert_eq!(names("/lit"), ["ponytail:lite"]);
+        assert_eq!(names("/PONY"), ["ponytail:lite"]);
+        assert_eq!(names("/ploy"), ["deploy"]);
+        assert!(names("/zzz").is_empty());
+    }
+
+    #[test]
+    fn no_suggestions_unless_the_prompt_starts_with_a_slash_and_the_name_is_still_being_typed() {
+        let commands = [command("deploy", "d")];
+        assert!(suggestions(&commands, "deploy").is_empty());
+        assert!(suggestions(&commands, "please /deploy").is_empty());
+        assert!(suggestions(&commands, "/deploy ").is_empty());
+        assert!(suggestions(&commands, "/deploy now").is_empty());
     }
 
     #[test]

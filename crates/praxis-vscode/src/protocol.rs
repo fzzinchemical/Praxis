@@ -650,6 +650,19 @@ fn update(update: &Value) -> Reaction {
         Some("usage_update") => {
             show(json!({"type": "usage", "used": update["used"], "size": update["size"]}))
         }
+        Some("available_commands_update") => {
+            let commands: Vec<Value> = update["availableCommands"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|c| {
+                    json!({"name": c["name"], "description": c["description"],
+                    "source": c["_meta"]["source"]})
+                })
+                .collect();
+            show(json!({"type": "commands", "commands": commands}))
+        }
         _ => Reaction::default(),
     }
 }
@@ -992,6 +1005,19 @@ mod tests {
         assert_eq!(
             client.on_line(failed).show,
             Some(json!({"type": "done", "reason": "error: boom"}))
+        );
+    }
+
+    #[test]
+    fn available_commands_reach_the_panel_with_their_source() {
+        let (mut client, _) = Client::start("/work");
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"available_commands_update","availableCommands":[{"name":"ponytail:lite","description":"Lite mode","_meta":{"source":"ponytail"}},{"name":"deploy","description":"Ship it","_meta":{"source":"/home/u/.claude/skills/deploy"}}]}}}"#;
+        assert_eq!(
+            client.on_line(line).show,
+            Some(json!({"type": "commands", "commands": [
+                {"name": "ponytail:lite", "description": "Lite mode", "source": "ponytail"},
+                {"name": "deploy", "description": "Ship it", "source": "/home/u/.claude/skills/deploy"}
+            ]}))
         );
     }
 

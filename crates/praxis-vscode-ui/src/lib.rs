@@ -16,7 +16,6 @@ use web_sys::{
     Document, DragEvent, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement,
     HtmlOptionElement, HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent,
 };
-
 #[wasm_bindgen]
 extern "C" {
     #[derive(Clone)]
@@ -54,6 +53,130 @@ struct Ui {
     model: HtmlSelectElement,
     /// The permission mode picker, enabled under the same rule as the model picker.
     mode: HtmlSelectElement,
+    input: HtmlTextAreaElement,
+    /// Commands the agent announced for this session, and the autocomplete list over them.
+    commands: Vec<view::Command>,
+    menu: Element,
+    /// Whether the list is open (closed by Escape, reopened by typing) and its highlighted row.
+    menu_open: bool,
+    selected: usize,
+}
+
+fn parse_commands(message: &Value) -> Vec<view::Command> {
+    message["commands"]
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some(view::Command {
+                        name: item["name"].as_str()?.to_owned(),
+                        description: item["description"].as_str().unwrap_or_default().to_owned(),
+                        source: item["source"].as_str().unwrap_or_default().to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+impl Ui {
+    /// Names of the rows the list shows, in the order the arrow keys walk them.
+    fn menu_names(&self) -> Vec<String> {
+        view::suggestions(&self.commands, &self.input.value())
+            .into_iter()
+            .flat_map(|(_, items)| items.into_iter().map(|c| c.name.clone()))
+            .collect()
+    }
+
+    /// Rebuilds the list from the prompt. Text goes in through the DOM, so command names and
+    /// descriptions from the agent are never parsed as markup.
+    fn render_menu(&self) -> Result<(), JsValue> {
+        let groups = if self.menu_open {
+            view::suggestions(&self.commands, &self.input.value())
+        } else {
+            Vec::new()
+        };
+        self.menu.set_text_content(None);
+        let mut row = 0;
+        for (source, items) in &groups {
+            let group = self.document.create_element("div")?;
+            group.set_attribute("role", "group")?;
+            group.set_attribute("aria-label", source)?;
+            let title = self.document.create_element("div")?;
+            title.set_class_name("command-source");
+            title.set_text_content(Some(source));
+            group.append_child(&title)?;
+            for command in items {
+                let option = self.document.create_element("button")?;
+                option.set_attribute("type", "button")?;
+                option.set_attribute("role", "option")?;
+                option.set_attribute("data-command", &command.name)?;
+                option.set_attribute("aria-selected", &(row == self.selected).to_string())?;
+                option.set_class_name("command");
+                let name = self.document.create_element("span")?;
+                name.set_text_content(Some(&format!("/{}", command.name)));
+                let description = self.document.create_element("span")?;
+                description.set_class_name("command-description");
+                description.set_text_content(Some(&command.description));
+                option.append_child(&name)?;
+                option.append_child(&description)?;
+                group.append_child(&option)?;
+                row += 1;
+            }
+            self.menu.append_child(&group)?;
+        }
+        if groups.is_empty() {
+            self.menu.set_attribute("hidden", "")
+        } else {
+            self.menu.remove_attribute("hidden")
+        }
+    }
+
+    /// Puts `/<name> ` in the prompt and closes the list.
+    fn insert(&mut self, name: &str) -> Result<(), JsValue> {
+        self.input.set_value(&format!("/{name} "));
+        self.menu_open = false;
+        self.render_menu()?;
+        self.input.focus()
+    }
+
+    /// Handles a key while the list is open. Returns whether the key was used, so the caller
+    /// can stop it reaching the Enter-to-send handler.
+    fn menu_key(&mut self, event: &KeyboardEvent) -> Result<bool, JsValue> {
+        let names = self.menu_names();
+        if !self.menu_open || names.is_empty() {
+            return Ok(false);
+        }
+        let key = event.key();
+        let count = names.len();
+        let chosen = names[self.selected.min(count - 1)].clone();
+        let used = match key.as_str() {
+            "ArrowDown" => {
+                self.selected = (self.selected + 1) % count;
+                true
+            }
+            "ArrowUp" => {
+                self.selected = (self.selected + count - 1) % count;
+                true
+            }
+            "Escape" => {
+                self.menu_open = false;
+                true
+            }
+            "Tab" if !event.shift_key() => {
+                self.insert(&chosen)?;
+                true
+            }
+            _ if view::enter_sends(&key, event.shift_key(), event.is_composing()) => {
+                self.insert(&chosen)?;
+                true
+            }
+            _ => false,
+        };
+        self.render_menu()?;
+        Ok(used)
+    }
 }
 
 /// A disabled control carries the attribute, which browsers and screen readers both honour.
@@ -91,6 +214,7 @@ pub fn start() -> Result<(), JsValue> {
     let chips = by_id(&document, "chips")?;
     let model: HtmlSelectElement = by_id(&document, "model")?.dyn_into()?;
     let mode: HtmlSelectElement = by_id(&document, "mode")?.dyn_into()?;
+    let menu = by_id(&document, "commands")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         status_line: by_id(&document, "status")?,
@@ -114,6 +238,11 @@ pub fn start() -> Result<(), JsValue> {
         problems: problems.clone(),
         model: model.clone(),
         mode: mode.clone(),
+        input: input.clone(),
+        commands: Vec::new(),
+        menu: menu.clone(),
+        menu_open: false,
+        selected: 0,
     }));
 
     let state = ui.clone();
@@ -128,6 +257,42 @@ pub fn start() -> Result<(), JsValue> {
         }
     });
     window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())?;
+
+    // Registered before the Enter handler below: a key the list uses must not also send the prompt.
+    let state = ui.clone();
+    let on_menu_key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        // A DOM failure here only leaves the list as it was; the panel stays usable.
+        if let Ok(true) = state.borrow_mut().menu_key(&event) {
+            event.prevent_default();
+            event.stop_immediate_propagation();
+        }
+    });
+    input.add_event_listener_with_callback("keydown", on_menu_key.as_ref().unchecked_ref())?;
+    on_menu_key.forget();
+
+    let state = ui.clone();
+    let on_input = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+        let mut ui = state.borrow_mut();
+        ui.menu_open = true;
+        ui.selected = 0;
+        let _ = ui.render_menu();
+    });
+    input.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref())?;
+    on_input.forget();
+
+    let state = ui.clone();
+    let on_pick = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        if let Ok(Some(option)) = target.closest("[data-command]")
+            && let Some(name) = option.get_attribute("data-command")
+        {
+            let _ = state.borrow_mut().insert(&name);
+        }
+    });
+    menu.add_event_listener_with_callback("click", on_pick.as_ref().unchecked_ref())?;
+    on_pick.forget();
 
     // Enter goes through the form's submit path, so the Send handler stays the only send logic.
     let submit_form = form.clone();
@@ -417,6 +582,11 @@ impl Ui {
                 self.append("p", "notice", notice)?;
             }
             // A replayed prompt: plain text, and the next reply starts a new message.
+            "commands" => {
+                self.commands = parse_commands(message);
+                self.selected = 0;
+                self.render_menu()?;
+            }
             "user" => {
                 self.message = None;
                 self.append("p", "user", text("text"))?;

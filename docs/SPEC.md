@@ -798,6 +798,7 @@ sequenceDiagram
 | `ToolStarted` | `tool_call` (`toolCallId`, `title`, `kind`, `status`) |
 | `ToolFinished` | `tool_call_update` (`status`, `content`) |
 | `Usage` | `usage_update` (`used`, `size`) |
+| Commands | `available_commands_update` after `session/new` and `session/load`: each user-invocable command as `name` (`<plugin>:<name>`), `description`, `_meta.source` (plugin, or the directory of a standalone skill). Sent only when the list is non-empty. The panel's `/` autocomplete filters it. |
 | `Notice` | `notice`, if the client has `session.notices`; otherwise a message chunk |
 | `Compaction` | `compaction_update`, if the client has `session.compaction` |
 

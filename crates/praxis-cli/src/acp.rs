@@ -6,6 +6,7 @@ use agent_client_protocol::{
 };
 use praxis_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome, title};
 use praxis_core::permissions::Mode;
+use praxis_core::plugin::Skill;
 use praxis_core::provider::Message;
 use praxis_core::session::{self, SessionLog};
 use praxis_core::tools::EditorReader;
@@ -53,6 +54,8 @@ struct Server<M> {
     new_agent: NewAgent,
     models: M,
     sessions_dir: PathBuf,
+    /// Plugin and standalone commands announced after each `session/new` and `session/load`.
+    commands: Vec<Skill>,
     sessions: Mutex<HashMap<String, Slot>>,
     /// Whether the client advertised `fs.readTextFile` at `initialize`.
     client_reads: AtomicBool,
@@ -221,15 +224,45 @@ impl<M: Models> Server<M> {
     }
 }
 
+/// Hides `user-invocable: false` skills. The source is the plugin (the part of `<plugin>:<name>`)
+/// or, for a standalone skill, its directory, and goes in `_meta` so the panel can group by it.
+/// None when nothing is user-invocable, so a session without commands replays as it did before.
+fn commands_update(
+    session: impl Into<v1::SessionId>,
+    commands: &[Skill],
+) -> Option<v1::SessionNotification> {
+    let list: Vec<_> = commands
+        .iter()
+        .filter(|s| s.user_invocable)
+        .map(|s| {
+            let source = match s.name.split_once(':') {
+                Some((plugin, _)) => plugin.to_owned(),
+                None => s.dir.display().to_string(),
+            };
+            let meta = serde_json::Map::from_iter([("source".into(), Value::String(source))]);
+            v1::AvailableCommand::new(&s.name, &s.description).meta(meta)
+        })
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    Some(v1::SessionNotification::new(
+        session,
+        v1::SessionUpdate::AvailableCommandsUpdate(v1::AvailableCommandsUpdate::new(list)),
+    ))
+}
+
 pub fn agent(
     new_agent: NewAgent,
     sessions_dir: PathBuf,
     models: impl Models,
+    commands: Vec<Skill>,
 ) -> impl ConnectTo<Client> {
     let server = Arc::new(Server {
         new_agent,
         models,
         sessions_dir,
+        commands,
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
     });
@@ -275,6 +308,9 @@ pub fn agent(
                 .open(None, &req.cwd, &cx)
             {
                 Ok((id, _, _)) => {
+                    if let Some(note) = commands_update(id.clone(), &for_new.commands) {
+                        cx.send_notification(note)?;
+                    }
                     let options = Some(for_new.config_options(&id));
                     responder.respond(v1::NewSessionResponse::new(id).config_options(options))
                 }
@@ -292,6 +328,9 @@ pub fn agent(
                                 .respond_with_error(Error::invalid_params().data(e.to_string()));
                         }
                     };
+                if let Some(note) = commands_update(req.session_id.clone(), &for_load.commands) {
+                    cx.send_notification(note)?;
+                }
                 // The client rebuilds the conversation from these before the load answer.
                 for update in prior.into_iter().flat_map(replay) {
                     cx.send_notification(v1::SessionNotification::new(
@@ -810,6 +849,14 @@ mod tests {
     }
 
     fn praxis(server: &MockServer, dir: &Path) -> impl ConnectTo<Client> {
+        praxis_with(server, dir, Vec::new())
+    }
+
+    fn praxis_with(
+        server: &MockServer,
+        dir: &Path,
+        commands: Vec<Skill>,
+    ) -> impl ConnectTo<Client> {
         let (url, workspace) = (server.uri(), dir.to_owned());
         let new_agent: NewAgent = Box::new(move || {
             let config = AgentConfig {
@@ -829,7 +876,7 @@ mod tests {
             let provider = Arc::new(Provider::new(&url, None)?);
             Ok(Agent::new(provider, tools, config))
         });
-        agent(new_agent, dir.join("sessions"), FakeModels)
+        agent(new_agent, dir.join("sessions"), FakeModels, commands)
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -945,6 +992,7 @@ mod tests {
             new_agent: Box::new(|| unreachable!("no new agent is needed")),
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
+            commands: Vec::new(),
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
         };
@@ -1056,6 +1104,57 @@ mod tests {
         assert_eq!(option[0]["category"], "model");
         assert_eq!(option[0]["currentValue"], "m");
         assert_eq!(option[0]["options"][1]["value"], "other");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_new_session_announces_its_user_invocable_commands_with_their_source() {
+        let dir = temp_dir("commands");
+        let server = fake_server().await;
+        let skill = |name: &str, user_invocable, dir: &str| praxis_core::plugin::Skill {
+            name: name.into(),
+            description: format!("{name} does things"),
+            body: String::new(),
+            model_invocable: true,
+            user_invocable,
+            dir: PathBuf::from(dir),
+        };
+        let commands = vec![
+            skill("ponytail:lite", true, "/plugins/ponytail/skills/lite"),
+            skill("ponytail:quiet", false, "/plugins/ponytail/skills/quiet"),
+            skill("deploy", true, "/home/u/.claude/skills/deploy"),
+        ];
+        let log = Log::default();
+        let on_update = log.clone();
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    push(&on_update, to_value(&note.update).unwrap().to_string());
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(praxis_with(&server, &dir, commands), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(&dir);
+                cx.send_request(session).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let seen = log.lock().unwrap().clone();
+        let update: Value = serde_json::from_str(&seen[0]).unwrap();
+        assert_eq!(update["sessionUpdate"], "available_commands_update");
+        let list = &update["availableCommands"];
+        assert_eq!(list.as_array().unwrap().len(), 2, "{update}");
+        assert_eq!(list[0]["name"], "ponytail:lite");
+        assert_eq!(list[0]["description"], "ponytail:lite does things");
+        assert_eq!(list[0]["_meta"]["source"], "ponytail");
+        assert_eq!(list[1]["name"], "deploy");
+        assert_eq!(list[1]["_meta"]["source"], "/home/u/.claude/skills/deploy");
     }
 
     #[tokio::test(flavor = "multi_thread")]

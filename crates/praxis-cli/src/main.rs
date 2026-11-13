@@ -877,12 +877,16 @@ impl acp::Models for Picker {
     }
 }
 
-async fn serve_acp(new_agent: acp::NewAgent, models: impl acp::Models) -> Result<u8> {
+async fn serve_acp(
+    new_agent: acp::NewAgent,
+    models: impl acp::Models,
+    commands: Vec<Skill>,
+) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
         return Ok(EXIT_USAGE);
     };
-    acp::agent(new_agent, dir, models)
+    acp::agent(new_agent, dir, models, commands)
         .connect_to(agent_client_protocol::Stdio::new())
         .await?;
     Ok(0)
@@ -948,7 +952,12 @@ async fn run(
                 models: Vec::new(),
                 default: String::new(),
             };
-            return serve_acp(Box::new(move || Err(anyhow::anyhow!("{message}"))), picker).await;
+            return serve_acp(
+                Box::new(move || Err(anyhow::anyhow!("{message}"))),
+                picker,
+                Vec::new(),
+            )
+            .await;
         }
         Err(error) => return Err(error.into()),
     };
@@ -1028,7 +1037,7 @@ async fn run(
         })
     };
     if acp {
-        return serve_acp(Box::new(new_agent), picker).await;
+        return serve_acp(Box::new(new_agent), picker, plugins.commands.clone()).await;
     }
     let resume = cli.resume.as_ref().map(Option::as_deref);
     let agent = with_session(new_agent()?, resume, &session_workspace)?;

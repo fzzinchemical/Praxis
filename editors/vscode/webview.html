@@ -12,7 +12,8 @@
 <div id="output" role="log" tabindex="0" aria-live="polite" aria-label="Conversation"></div>
 <form id="prompt-form">
 <label for="prompt" class="visually-hidden">Message</label>
-<textarea id="prompt" rows="2" placeholder="Ask Praxis. Enter sends, Shift+Enter adds a line. Shift+drag files here to attach."></textarea>
+<textarea id="prompt" rows="2" aria-autocomplete="list" aria-controls="commands" placeholder="Ask Praxis. Enter sends, Shift+Enter adds a line. Shift+drag files here to attach."></textarea>
+<div id="commands" class="commands" role="listbox" aria-label="Commands" hidden></div>
 <div id="context-bar" class="context-bar" role="group" aria-label="Attached context">
 <div id="chips" class="chips"></div>
 <button type="button" id="add-file" class="secondary">Add file</button>

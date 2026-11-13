@@ -191,6 +191,47 @@ body.dragging {
   color: var(--vscode-input-placeholderForeground);
 }
 
+/* Shown while a prompt starts with `/` (view::suggestions); `hidden` keeps it out of layout. */
+.commands {
+  border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+  background: var(--vscode-editorWidget-background);
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 6px;
+}
+
+.commands[hidden] {
+  display: none;
+}
+
+.command-source {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  padding: 4px 8px 0;
+}
+
+.command {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--vscode-foreground);
+  display: block;
+  padding: 4px 8px;
+  text-align: left;
+  width: 100%;
+}
+
+.command[aria-selected="true"],
+.command:hover {
+  background: var(--vscode-list-activeSelectionBackground);
+  color: var(--vscode-list-activeSelectionForeground);
+}
+
+.command-description {
+  color: var(--vscode-descriptionForeground);
+  margin-left: 8px;
+}
+
 .context-bar {
   align-items: center;
   display: flex;
