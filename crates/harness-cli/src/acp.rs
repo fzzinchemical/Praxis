@@ -846,6 +846,89 @@ mod tests {
         assert_eq!(switched[1]["currentValue"], "read-only");
     }
 
+    /// Switches the session through `modes` in order, then runs one prompt in which the fake model
+    /// calls `name` with `input`. Returns how many permission requests the client got, and the
+    /// requests the model received.
+    async fn prompt_after_modes(
+        dir: &Path,
+        modes: &[&'static str],
+        name: &str,
+        input: Value,
+    ) -> (usize, Vec<Value>) {
+        let server = fake_server_calling(name, input).await;
+        let asks = Arc::new(Mutex::new(0));
+        let on_ask = asks.clone();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |_req: v1::RequestPermissionRequest, responder, _cx| {
+                    *on_ask.lock().unwrap() += 1;
+                    let chosen = v1::SelectedPermissionOutcome::new("reject_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .connect_with(harness(&server, dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(dir);
+                let session = cx.send_request(session).block_task().await?;
+                for mode in modes {
+                    let set = v1::SetSessionConfigOptionRequest::new(
+                        session.session_id.clone(),
+                        "mode",
+                        *mode,
+                    );
+                    cx.send_request(set).block_task().await?;
+                }
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let bodies = requests
+            .iter()
+            .map(|request| request.body_json::<Value>().unwrap())
+            .collect();
+        let asked = *asks.lock().unwrap();
+        (asked, bodies)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_switch_to_read_only_denies_a_write_on_the_next_turn() {
+        let dir = temp_dir("mode-read-only");
+        let input = json!({"file_path": "ok.txt", "content": "x"});
+        let (asked, requests) = prompt_after_modes(&dir, &["read-only"], "Write", input).await;
+        assert_eq!(asked, 0, "read-only must deny without asking the client");
+        assert!(!dir.join("ok.txt").exists(), "denied write must not run");
+        // The second model request carries the tool result, which names the denial.
+        let told = requests[1]["messages"].to_string();
+        assert!(told.contains("can't run in read-only mode"), "{told}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_switch_to_auto_edit_applies_an_edit_without_asking() {
+        let dir = temp_dir("mode-auto-edit");
+        let input = json!({"file_path": "ok.txt", "content": "x"});
+        let (asked, _) = prompt_after_modes(&dir, &["auto-edit"], "Write", input).await;
+        assert_eq!(asked, 0, "auto-edit must apply the write without asking");
+        assert_eq!(std::fs::read_to_string(dir.join("ok.txt")).unwrap(), "x");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switching_back_to_ask_makes_the_next_edit_ask_again() {
+        let dir = temp_dir("mode-back-to-ask");
+        let input = json!({"file_path": "ok.txt", "content": "x"});
+        let (asked, _) = prompt_after_modes(&dir, &["auto-edit", "ask"], "Write", input).await;
+        assert_eq!(asked, 1, "ask must request permission for the write");
+        assert!(!dir.join("ok.txt").exists(), "rejected write must not run");
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn switching_the_model_sends_the_next_turn_to_it() {
         let dir = temp_dir("models-switch");
