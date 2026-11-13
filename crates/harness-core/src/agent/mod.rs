@@ -502,6 +502,11 @@ impl Agent {
         self.permissions.set_mode(mode);
     }
 
+    /// The permission mode later calls are checked against.
+    pub fn permission_mode(&self) -> crate::permissions::Mode {
+        self.permissions.mode()
+    }
+
     /// Records every later message in `log`, after `prior` from an earlier run of it (SPEC §8).
     /// The session log's id, or empty before one is attached.
     pub fn session_id(&self) -> &str {

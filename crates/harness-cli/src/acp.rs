@@ -5,6 +5,7 @@ use agent_client_protocol::{
     Agent as AcpAgent, Client, ConnectTo, Error, on_receive_notification, on_receive_request,
 };
 use harness_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome};
+use harness_core::permissions::Mode;
 use harness_core::provider::Message;
 use harness_core::session::{self, SessionLog};
 use harness_core::tools::EditorReader;
@@ -42,6 +43,8 @@ struct Slot {
     cancel: CancellationToken,
     /// The picker key of the model the session's turns use.
     model: String,
+    /// The permission mode the session's turns use; session-only, so a new session starts on the config's.
+    mode: Mode,
 }
 
 struct Server<M> {
@@ -55,6 +58,38 @@ struct Server<M> {
 
 /// The session config option the client shows as the model picker (ACP "model" category).
 const MODEL_OPTION: &str = "model";
+
+/// The session config option the client shows as the permission mode picker (ACP "mode" category).
+const MODE_OPTION: &str = "mode";
+
+/// The picker key and label of each mode; the key is what the client sends back.
+fn mode_entry(mode: Mode) -> (&'static str, &'static str) {
+    match mode {
+        Mode::ReadOnly => ("read-only", "Read-only"),
+        Mode::Ask => ("ask", "Ask"),
+        Mode::AutoEdit => ("auto-edit", "Auto-edit"),
+    }
+}
+
+fn mode_from_key(key: &str) -> Option<Mode> {
+    [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit]
+        .into_iter()
+        .find(|mode| mode_entry(*mode).0 == key)
+}
+
+fn mode_option(current: Mode) -> v1::SessionConfigOption {
+    let options = [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit]
+        .map(mode_entry)
+        .map(|(key, label)| v1::SessionConfigSelectOption::new(key, label));
+    let mut option = v1::SessionConfigOption::select(
+        MODE_OPTION,
+        "Permissions",
+        mode_entry(current).0,
+        options.to_vec(),
+    );
+    option.category = Some(v1::SessionConfigOptionCategory::Mode);
+    option
+}
 
 fn model_option(current: &str, keys: &[String]) -> v1::SessionConfigOption {
     let options = keys
@@ -87,6 +122,7 @@ impl<M: Models> Server<M> {
         };
         let id = log.id().to_owned();
         let agent = (self.new_agent)()?;
+        let mode = agent.permission_mode();
         agent
             .tools()
             .checkpoint_into(self.sessions_dir.join(&id).join("checkpoints"));
@@ -102,6 +138,7 @@ impl<M: Models> Server<M> {
             agent,
             cancel,
             model: model.clone(),
+            mode,
         };
         self.sessions().insert(id.clone(), slot);
         Ok((id, prior, model))
@@ -126,10 +163,12 @@ impl<M: Models> Server<M> {
         }
     }
 
-    /// The model option as session `id` currently has it.
-    fn model_option(&self, id: &str) -> Option<v1::SessionConfigOption> {
-        let current = self.sessions().get(id)?.model.clone();
-        Some(model_option(&current, &self.models.keys()))
+    /// The config options as session `id` currently has them; empty for an unknown session.
+    fn config_options(&self, id: &str) -> Vec<v1::SessionConfigOption> {
+        let Some((model, mode)) = self.sessions().get(id).map(|s| (s.model.clone(), s.mode)) else {
+            return Vec::new();
+        };
+        vec![model_option(&model, &self.models.keys()), mode_option(mode)]
     }
 
     fn cancel(&self, id: &str) {
@@ -189,7 +228,7 @@ pub fn agent(
         .on_receive_request(
             async move |_req: v1::NewSessionRequest, responder, cx| match for_new.open(None, &cx) {
                 Ok((id, _, _)) => {
-                    let options = for_new.model_option(&id).map(|option| vec![option]);
+                    let options = Some(for_new.config_options(&id));
                     responder.respond(v1::NewSessionResponse::new(id).config_options(options))
                 }
                 Err(e) => responder.respond_with_internal_error(format!("{e:#}")),
@@ -199,7 +238,7 @@ pub fn agent(
         .on_receive_request(
             async move |req: v1::LoadSessionRequest, responder, cx| {
                 let (prior, option) = match for_load.open(Some(&req.session_id.to_string()), &cx) {
-                    Ok((id, prior, _)) => (prior, for_load.model_option(&id)),
+                    Ok((id, prior, _)) => (prior, for_load.config_options(&id)),
                     Err(e) => {
                         return responder
                             .respond_with_error(Error::invalid_params().data(e.to_string()));
@@ -212,8 +251,7 @@ pub fn agent(
                         update,
                     ))?;
                 }
-                let options = option.map(|option| vec![option]);
-                responder.respond(v1::LoadSessionResponse::new().config_options(options))
+                responder.respond(v1::LoadSessionResponse::new().config_options(Some(option)))
             },
             on_receive_request!(),
         )
@@ -309,6 +347,23 @@ pub fn agent(
                         .respond_with_error(Error::invalid_params().data("not a choice"));
                 };
                 let key = value.to_string();
+                if req.config_id.to_string() == MODE_OPTION {
+                    let Some(mode) = mode_from_key(&key) else {
+                        let message = format!("no mode `{key}`");
+                        return responder.respond_with_error(Error::invalid_params().data(message));
+                    };
+                    let (mut agent, _) = match for_set.begin_turn(&id) {
+                        Ok(turn) => turn,
+                        Err(e) => return responder.respond_with_error(e),
+                    };
+                    agent.set_mode(mode);
+                    if let Some(slot) = for_set.sessions().get_mut(&id) {
+                        slot.mode = mode;
+                    }
+                    for_set.end_turn(&id, agent);
+                    let options = for_set.config_options(&id);
+                    return responder.respond(v1::SetSessionConfigOptionResponse::new(options));
+                }
                 if req.config_id.to_string() != MODEL_OPTION
                     || !for_set.models.keys().contains(&key)
                 {
@@ -333,7 +388,7 @@ pub fn agent(
                                 slot.model = key;
                             }
                             server.end_turn(&id, agent);
-                            let options = server.model_option(&id).into_iter().collect();
+                            let options = server.config_options(&id);
                             responder.respond(v1::SetSessionConfigOptionResponse::new(options))
                         }
                         Err(e) => {
@@ -759,6 +814,36 @@ mod tests {
         assert_eq!(option[0]["category"], "model");
         assert_eq!(option[0]["currentValue"], "m");
         assert_eq!(option[0]["options"][1]["value"], "other");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_permission_mode_is_offered_and_switches_for_the_session() {
+        let dir = temp_dir("mode-switch");
+        let server = fake_server().await;
+        let (opened, switched) = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = v1::NewSessionRequest::new(&dir);
+                let session = cx.send_request(session).block_task().await?;
+                let set = v1::SetSessionConfigOptionRequest::new(
+                    session.session_id.clone(),
+                    "mode",
+                    "read-only",
+                );
+                let reply = cx.send_request(set).block_task().await?;
+                Ok((
+                    to_value(&session.config_options).unwrap(),
+                    to_value(&reply.config_options).unwrap(),
+                ))
+            })
+            .await
+            .unwrap();
+        assert_eq!(opened[1]["id"], "mode");
+        assert_eq!(opened[1]["currentValue"], "ask");
+        assert_eq!(opened[1]["options"][0]["value"], "read-only");
+        assert_eq!(switched[1]["currentValue"], "read-only");
     }
 
     #[tokio::test(flavor = "multi_thread")]

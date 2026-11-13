@@ -148,6 +148,11 @@ impl Permissions {
         self.policy.mode = mode;
     }
 
+    /// The mode later calls are checked against.
+    pub(crate) fn mode(&self) -> Mode {
+        self.policy.mode
+    }
+
     /// Closed by default: a tool that isn't listed here never runs.
     pub(crate) fn decide(&self, tool: &str, input: &Value) -> Decision {
         self.decide_inner(tool, input, None)

@@ -339,6 +339,14 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
                     .and_then(|client| client.set_model(&key));
                 panel.send(line);
             }
+            Some(FromPanel::PermissionMode(key)) => {
+                let mut panel = state.borrow_mut();
+                let line = panel
+                    .client
+                    .as_mut()
+                    .and_then(|client| client.set_mode(&key));
+                panel.send(line);
+            }
             Some(FromPanel::Permission(id, option)) => {
                 let mut panel = state.borrow_mut();
                 let line = panel
@@ -690,6 +698,9 @@ fn react(state: &Shared, reaction: Reaction) {
     }
     if let Some(models) = reaction.models {
         panel.webview.post_message(&models.to_string());
+    }
+    if let Some(modes) = reaction.modes {
+        panel.webview.post_message(&modes.to_string());
     }
     if let Some(review) = reaction.review
         && let Err(error) = open_review(&review, &panel.output)

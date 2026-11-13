@@ -536,7 +536,7 @@ flowchart TB
   - **Do:** SPEC §11 "Configuration surfaces": which keys live in the chat panel, in VS Code settings and in file-only `config.toml`, and why security-relevant keys are never VS Code settings.
   - **Done when:** SPEC §11 has the three-bucket table and the precedence note, and the rule is checked against the settings list in T5.15.
 
-- [ ] **T5.14 Session controls in chat panel** (§11) · *Should*
+- [x] **T5.14 Session controls in chat panel** (§11) · *Should*
   - **Needs:** T5.3.
   - **Do:** permission mode (read-only, ask, auto-edit) and agent picker next to the existing model select. Session-only: never written to config.
   - **Done when:** tests confirm a mode or agent change reaches the next turn only in that session, and a new session or restart falls back to config defaults.
