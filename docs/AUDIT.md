@@ -268,20 +268,23 @@ hostile content: model output, repository files and tool results are all untrust
     never ran. `serve_acp` then returns and the process exits, so no stuck slot outlives the
     connection. The `cancel` branch stays as a guard in case a later crate version keeps tasks alive.
 
-- [ ] **F2. Item 9's panic test bypasses the protocol**
+- [x] **F2. Item 9's panic test bypasses the protocol**
   (`crates/harness-cli/src/acp.rs`, `a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running`)
   - **Problem:** The test calls `settle_turn` directly with a `JoinError`. It does not prove that
     the prompt handler sends the client an error, because a turn can't be made to panic through
     `session/prompt`.
   - **Done when:** A test makes a turn panic through `session/prompt` and gets an error response.
 
-- [ ] **F3. Tests for items 3, 9, 10 and 11 were never seen failing on the old code**
+- [x] **F3. Tests for items 3, 9, 10 and 11 were never seen failing on the old code**
   - **Problem:** Each fix and its test went in together, or the first test run failed to compile.
     So nothing shows that these tests catch the original bug.
   - **Done when:** Each test fails with its fix reverted (check locally, no commit needed), and
     the result is noted here.
+  - **Result (2026-11-13):** All four fail with their fix reverted: item 3 (`left: ["c1"]`,
+    `right: ["c1", "c2", "c3"]`), item 9 ("a prompt is already running"), item 10 ("a closed
+    session must refuse prompts"), item 11 (the error doesn't name `gone/b.txt`).
 
-- [ ] **F4. Checkpoint copies and session logs from earlier runs are never deleted**
+- [x] **F4. Checkpoint copies and session logs from earlier runs are never deleted**
   (`crates/harness-core/src/tools/checkpoint.rs`, `crates/harness-core/src/session.rs`)
   - **Problem:** Item 13 keeps copies only for the last 20 turns, but only within one process. A
     resumed session starts with an empty turn list, so copies from earlier runs stay on disk. Logs
@@ -291,13 +294,13 @@ hostile content: model output, repository files and tool results are all untrust
   - **Done when:** A test resumes a session whose folder holds more than 20 old copies, and the
     oldest ones are gone after the next turn.
 
-- [ ] **F5. A failed `/undo` doesn't say which files it did restore**
+- [x] **F5. A failed `/undo` doesn't say which files it did restore**
   (`crates/harness-core/src/tools/checkpoint.rs` `undo`)
   - **Problem:** When some restores fail, `undo` returns only the error, which names the failed
     files. The user isn't told which files were restored.
   - **Done when:** The error (or the CLI and ACP message) lists the restored files too.
 
-- [ ] **F6. A hooks test may hang under heavy load**
+- [x] **F6. A hooks test may hang under heavy load**
   (`crates/harness-core/src/hooks.rs` tests)
   - **Problem:** During the parallel fix work (load average about 100), one `cargo test -p
     harness-core` run seemed to hang in a hooks test, and passed on a rerun. This was not
@@ -450,3 +453,108 @@ and the eval runner runs the agent under bwrap plus Landlock.
 **Not checked:** `harness-vscode-ui/src/lib.rs` beyond the markdown path, the compaction
 summary request, `scripts/prove-evals`. `./scripts/verify` was not run, and none of the round 2
 findings were reproduced with a test. They come from reading the code.
+
+---
+
+# Round 3 (2026-11-13)
+
+Round 3 reviewed the round 2 fix commits (`5eae6a9`..`48f646c`) and parts not read before: the
+CLI startup flow (`harness-cli/src/main.rs` `run`, `ready_model`, `plugin_command`), the VS Code
+protocol and review wiring (`harness-vscode/src/protocol.rs`, `lib.rs` `react`, `open_review`,
+`editor_text`, `refresh_sessions`), and the VS Code setting scopes in `package.json`. Same
+rules: one item per branch, write the test first, tick the box here.
+
+## Should fix
+
+- [x] **21. Every finished turn starts a whole `harness acp`, MCP servers included, just to list sessions**
+  (`crates/harness-vscode/src/lib.rs:711-718`, `:1012`; `crates/harness-cli/src/main.rs` `run`)
+  - **What this is:** The sidebar lists sessions by starting a separate `harness acp` and sending
+    `session/list`. `react` calls `refresh_sessions` after every `done` message, so this happens
+    after every turn.
+  - **Problem:** `harness acp` runs the full startup before it answers. It loads the config,
+    calls `ready_model`, which loads a model when `agent.auto_load = true`, and connects every
+    MCP server: one process each, with up to 10 s `CONNECT_TIMEOUT`, and pinning. So with three
+    stdio MCP servers, each turn starts three more server processes that are killed again at
+    once. The sidebar also waits for the slowest server. Listing sessions needs none of this:
+    it only reads `~/.local/share/harness/sessions`.
+  - **Fix:** Add `harness sessions --json`, which prints `session::list(dir, cwd)` like
+    `plugin list --json` does, and have `refresh_sessions` run it the way the Plugins view runs
+    its CLI. Then delete `protocol::list_request`, `listing_on_line` and the listing child
+    wiring. This removes code.
+  - **Done when:** A CLI test in `crates/harness-cli/tests/cli.rs` runs `harness sessions
+    --json` with no LM Studio reachable and gets the sessions of the temp workspace. A native
+    test in `harness-vscode` maps that JSON to `SessionItem`s.
+  - **If we skip it:** Turns end more slowly, MCP servers are started over and over (with their
+    side effects), and a sidebar refresh can load a model.
+
+- [x] **22. Clean files whose text VS Code normalizes are refused as "unsaved changes"**
+  (`crates/harness-vscode/src/lib.rs:790-804` `editor_text`,
+  `crates/harness-core/src/tools/files.rs` `refuse_unsaved_buffer`)
+  - **What this is:** For an open document, the extension answers `fs/read_text_file` with
+    `document.getText()`. Items 5 and 18 refuse `Edit`/`Write` when that text differs from the
+    bytes on disk.
+  - **Problem:** VS Code's text differs from the disk even when nothing is unsaved. It drops a
+    UTF-8 BOM, and it changes mixed line endings into one style when it loads the file. With
+    such a file open in a tab, every `Edit` and `Write` says "has unsaved changes in the
+    editor; ask the user to save it". Saving doesn't help, because the document isn't dirty,
+    so VS Code writes nothing. The agent can't change that file while the tab is open.
+  - **Fix:** In `editor_text`, return `getText()` only when `document.isDirty`; otherwise read
+    the disk as the fallback already does. Then "differs from disk" really means "unsaved".
+  - **Done when:** A native test of the extracted choice (dirty → buffer, clean → disk) in
+    `harness-vscode`. Optionally an ACP test where the client serves a BOM-less copy of a clean
+    BOM file and `Edit` succeeds.
+  - **If we skip it:** The agent is stuck on some files for reasons the user can't see or fix.
+
+- [x] **23. One broken plugin empties the whole Plugins view, so it can't be removed there**
+  (`crates/harness-cli/src/main.rs:122-136`)
+  - **What this is:** `harness plugin list --json` feeds the VS Code Plugins tree. For each
+    installed plugin it calls `store.get` and `plugin.runs`, each with `?`.
+  - **Problem:** If one plugin fails to load (a broken `plugin.json`, a hook file with bad
+    JSON, a component path that no longer exists after an update), the whole command fails.
+    The tree then shows only an error, and the Remove and Disable actions, which work per item,
+    can't be reached for any plugin, the broken one included. The plain `plugin list` doesn't
+    load plugins, so it still works.
+  - **Fix:** On a load error, still print the entry, with `"error": "<message>"` and an empty
+    `can_run`. Show it in the tree as an item that has the Remove action.
+  - **Done when:** A test in `crates/harness-cli/tests/plugin_cli.rs` installs two plugins,
+    breaks one's manifest, and gets both from `plugin list --json`, the broken one with an
+    `error`.
+  - **If we skip it:** One bad plugin update locks the user out of plugin management in VS Code.
+
+## Nice to have
+
+- [x] **24. `Write` now reads the whole old file every time, with no size cap, even without an editor**
+  (`crates/harness-core/src/tools/files.rs:184`)
+  - **What this is:** Item 18 added `fs::read(&path)` before every `Write` over an existing
+    file, to compare it with the editor buffer.
+  - **Problem:** It runs in the CLI too, where there is no editor to compare against. It uses
+    `fs::read`, not `read_bytes`, so the 64 MB cap and the regular-file check are skipped.
+    Overwriting a large generated file reads all of it into memory for nothing.
+  - **Fix:** Read the disk only when `editor_text` returns `Some`: ask the editor first, then
+    compare. Use `read_bytes` for the read.
+  - **Done when:** A unit test, or the reasoning in the review, shows that a `Write` with no
+    editor reader makes no read call. A test with a fake reader still refuses a dirty buffer.
+  - **If we skip it:** Wasted I/O, and a large file could use a lot of memory.
+
+---
+
+**Round 3 verdict:** No must-fix this round. Fix 21 first: it costs time on every turn and
+starts processes nobody asked for, and its fix deletes code. Then 22, which is a false refusal
+that items 5 and 18 brought in.
+
+**Lean:** item 21 deletes the session-listing protocol path (`list_request`, `listing_on_line`,
+the listing child): about -60 lines in `harness-vscode`, plus about +20 for the CLI command.
+
+**Checked and fine:** subagents now get the parent's live permissions (15). Log locking,
+together with dropping the old slot on reload (16), works. Path folding (17) keeps symlink names
+visible to deny rules, and `..` that leaves the workspace still ends in the tool's refusal.
+`trust.json` locking (19) holds the lock across the read-modify-write. Copies are deleted after
+undo (20). The review diffs are untitled documents, so the files on disk are never touched before
+approval. `harness.binaryPath` and `harness.lmstudio.baseUrl` are machine-scoped. Model output
+reaches the panel only through escaped markdown. Without a terminal, project config widening
+and changed MCP tools both stay inactive.
+
+**Not checked:** `harness-vscode-ui/src/lib.rs` DOM code, the compaction summary request,
+`scripts/prove-evals`, `harness-vscode/src/plugins.rs`. `./scripts/verify` was not run, and none
+of the round 3 findings were reproduced with a test. The BOM and EOL behaviour in item 22 is
+VS Code's documented text model behaviour; it was not tried in a running editor.
