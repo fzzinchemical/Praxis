@@ -362,6 +362,8 @@ impl Agent {
                 }
             }
             let mut child = Agent::new(Arc::clone(&self.provider), Arc::clone(&self.tools), config);
+            // The child inherits the parent's live mode and session grants, not just config.policy.
+            child.permissions = self.permissions.clone();
             child.limits = Some((def.tools.clone(), def.disallowed_tools.clone()));
             child.tool_schemas = self
                 .tool_schemas

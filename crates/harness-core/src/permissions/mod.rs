@@ -124,7 +124,7 @@ struct Subjects {
     target: Option<Result<PathBuf, String>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct Permissions {
     policy: Policy,
     workspace: PathBuf,

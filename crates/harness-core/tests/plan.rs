@@ -8,6 +8,7 @@
 use harness_core::agent::profile::ModelProfile;
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use harness_core::permissions::{Mode, Policy};
+use harness_core::plugin::{AgentDef, Skill};
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
 use serde_json::{Value, json};
@@ -68,12 +69,21 @@ fn temp_dir(kind: &str) -> PathBuf {
 
 /// An agent whose model makes one call per turn, in order, then answers with text.
 async fn make_agent(workspace: &Path, mode: Mode, calls: &[(&str, Value)]) -> (MockServer, Agent) {
-    let server = MockServer::start().await;
     // Each turn is a tool call and then the text reply that follows its result.
     let bodies = calls
         .iter()
         .flat_map(|(name, args)| [tool_reply(name, args), text_reply("ok")])
         .collect();
+    make_agent_with_replies(workspace, mode, bodies).await
+}
+
+/// An agent whose model answers with `bodies` in order, one reply per request.
+async fn make_agent_with_replies(
+    workspace: &Path,
+    mode: Mode,
+    bodies: Vec<String>,
+) -> (MockServer, Agent) {
+    let server = MockServer::start().await;
     Mock::given(matchers::method("POST"))
         .respond_with(Script {
             bodies,
@@ -185,4 +195,39 @@ async fn carrying_out_a_plan_needs_the_developers_switch_back() {
     let (_, asked, refused) = run_turn(agent, true).await;
     assert_eq!((asked, refused), (0, 0));
     assert!(target.exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_subagent_inherits_plan_mode_from_its_parent() {
+    let workspace = temp_dir("ws");
+    let target = workspace.join("made.txt");
+    let scout = AgentDef {
+        skill: Skill {
+            name: "kit:scout".into(),
+            description: "Writes things".into(),
+            body: "You write.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: None,
+        disallowed_tools: Vec::new(),
+        max_turns: None,
+        model: None,
+    };
+    // The parent delegates, then the child tries to write, then both finish with text.
+    let bodies = vec![
+        tool_reply(
+            "Agent",
+            &json!({"subagent_type": "kit:scout", "prompt": "write it"}),
+        ),
+        tool_reply("Write", &json!({"file_path": target, "content": "x"})),
+        text_reply("ok"),
+        text_reply("ok"),
+    ];
+    let (_server, agent) = make_agent_with_replies(&workspace, Mode::AutoEdit, bodies).await;
+    let mut agent = agent.with_agents(vec![scout]);
+    agent.set_mode(Mode::ReadOnly);
+    let _ = run_turn(agent, true).await;
+    assert!(!target.exists(), "the subagent wrote during plan mode");
 }
