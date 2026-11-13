@@ -901,12 +901,12 @@ flowchart LR
   - **Needs:** T5.12.
   - **Done when:** a "Delete" action on a session in the Sessions view asks for confirmation, removes that session's log file and only it (no path outside the session directory, id validated), and refreshes the list; deleting the open session closes its panel first.
 
-- [ ] **T10.5 Classify chats** `HUMAN` decides the scheme (§8) · *Could*
+- [x] **T10.5 Classify chats** `HUMAN` decides the scheme (§8) · *Could*
   - **Needs:** T10.4.
   - **Decided (2026-11-13, project owner):** folders. A chat can be put in a named folder; stored in a side file next to the logs, so the logs stay unchanged.
   - **Done when:** the chosen classification can be set from the Sessions view, survives a restart, and groups or filters the list; old logs without it still load.
 
-- [ ] **T10.6 Plugin commands in the panel** (§11, §12) · *Should*
+- [x] **T10.6 Plugin commands in the panel** (§11, §12) · *Should*
   - **Needs:** T6.2, T9.4.
   - **Goal:** like Claude Code, the panel lists available commands grouped by source ("From the ponytail plugin: off, lite, full, ultra"), each a button that runs or inserts `/<plugin>:<command>`. See [the Claude Code example](img/claude-code-plugin-commands.png).
   - **Done when:** after `session/new` or `session/load`, the agent sends ACP `available_commands_update` listing user-invocable commands and skills with their source; the panel renders them grouped by plugin or directory; clicking one inserts it in the prompt box; typing `/` in the prompt box opens an autocomplete list filtered as the user types (arrow keys, Enter or Tab accepts, Escape closes); commands marked `user-invocable: false` are absent; keyboard reachable with labelled buttons.
@@ -919,7 +919,7 @@ flowchart LR
   - **Options were:** which of these to add, since some loosen SPEC §10: a `praxis.permissions.mode` VS Code setting (user or machine scope only, so a workspace can't raise it); "always allow" for a `Bash` command prefix when the sandbox is on; a full-access mode that allows `Bash` and MCP without asking, still under the hard denials.
   - **Done when:** each chosen option has a test in `tests/security.rs` showing the hard denials of §10 still hold under it, and a workspace setting can't turn it on.
 
-- [ ] **T10.8 Show what subagents are doing** (§11, §12) · *Should*
+- [x] **T10.8 Show what subagents are doing** (§11, §12) · *Should*
   - **Needs:** T6.5, T8.9.
   - **Problem:** the `Agent` tool forwards a subagent's tool calls and permission prompts as if they were the parent's, and drops its text (`forward` in `agent/mod.rs`), so the user can't tell which agent is doing what.
   - **Goal:** like Claude Code, each `Agent` call is a collapsible block under its tool call showing the subagent's type, model, task, live tool calls, current step and final status; collapsed by default, with a one-line summary such as "Explore · 6 tool calls · running".
@@ -937,8 +937,9 @@ flowchart LR
   - **Decided (2026-11-13, project owner):** an editor tab, like VS Code's extension details page.
   - **Done when:** selecting a plugin item opens a read-only editor tab with its README (rendered with the panel's safe `markdown`) and its commands, skills and agents with their descriptions; a plugin without a README still shows its commands; plugin text is untrusted, so raw HTML stays escaped (test).
 
-- [ ] **T10.10 Turns stop after one tool round** (§4, §11)
+- [x] **T10.10 Turns stop after one tool round** (§4, §11)
   - **Needs:** none.
   - **Bug:** real Beta 1 session logs in VS Code end each turn right after a tool result, with no further model reply recorded, so the user had to type "retry". Only cancellation, the loop detector, a failed-call limit or the request limit return there (`run_requests` in `agent/mod.rs`); the logged user setting was `maxTurnRequests = 25`. Reproduce first.
   - **Done when:** the cause is found and covered by a failing ACP test on the fake server, and a turn with a tool call ends with the model's reply.
+  - **Closed without a fix (2026-11-13):** not reproduced on the fake server; every return after a tool round logs or shows a notice. The owner confirmed the logs came from an experiment where the model ran the wrong commands, not from a harness fault.
 
