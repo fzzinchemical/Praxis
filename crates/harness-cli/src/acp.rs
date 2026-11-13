@@ -643,18 +643,29 @@ mod tests {
 
     /// A fake LM Studio that calls `name` with `args`, then says "done".
     async fn fake_server_calling(name: &str, input: Value) -> MockServer {
+        fake_server_script(&[(name, input)]).await
+    }
+
+    /// A fake LM Studio that makes each call in turn, one model request per call, then says "done".
+    async fn fake_server_script(calls: &[(&str, Value)]) -> MockServer {
         let server = MockServer::start().await;
-        let args = input.to_string();
-        let write = sse(&[
-            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c1",
-                "function": {"name": name, "arguments": args}}]}, "finish_reason": null}]}),
-            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
-        ]);
-        let done = sse(&[
+        let mut bodies: Vec<String> = calls
+            .iter()
+            .enumerate()
+            .map(|(i, (name, input))| {
+                sse(&[
+                    json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": format!("c{i}"),
+                        "function": {"name": name, "arguments": input.to_string()}}]},
+                        "finish_reason": null}]}),
+                    json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+                ])
+            })
+            .collect();
+        bodies.push(sse(&[
             json!({"choices": [{"delta": {"content": "done"}, "finish_reason": null}]}),
             json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
-        ]);
-        for body in [write, done] {
+        ]));
+        for body in bodies {
             Mock::given(method("POST"))
                 .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
                 .up_to_n_times(1)
@@ -1258,6 +1269,76 @@ mod tests {
         assert!(output.contains("unsaved buffer"), "{output}");
         assert!(!output.contains("on disk"), "{output}");
         assert_eq!(asked, [dir.join("a.txt").display().to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn edit_refuses_a_dirty_buffer_and_says_to_save_it() {
+        let dir = temp_dir("edit-dirty");
+        std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
+        let server = fake_server_script(&[
+            ("Read", json!({"file_path": "a.txt"})),
+            (
+                "Edit",
+                json!({"file_path": "a.txt", "old_string": "on disk", "new_string": "edited"}),
+            ),
+        ])
+        .await;
+        let (on_read, on_ask, on_update) = (Log::default(), Log::default(), Log::default());
+        let output = on_update.clone();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |req: v1::ReadTextFileRequest, responder, _cx| {
+                    push(&on_read, req.path.display().to_string());
+                    responder.respond(v1::ReadTextFileResponse::new("unsaved buffer"))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |req: v1::RequestPermissionRequest, responder, _cx| {
+                    push(
+                        &on_ask,
+                        req.tool_call.fields.title.clone().unwrap_or_default(),
+                    );
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    if update["sessionUpdate"] == "tool_call_update" {
+                        let text = update["content"][0]["content"]["text"].as_str();
+                        push(&on_update, text.unwrap_or_default().to_owned());
+                    }
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"fs": {"readTextFile": true}}
+                }))
+                .unwrap();
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let output = output.lock().unwrap().join("");
+        assert!(output.contains("unsaved changes in the editor"), "{output}");
+        assert!(!output.contains("Read it again"), "{output}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

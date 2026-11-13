@@ -206,6 +206,16 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         return refuse(format!("Read {shown} before editing it."));
     };
     let bytes = read_bytes(&path)?;
+    // Writing to disk under a different editor buffer would lose the user's unsaved edits.
+    // shortcut: refuse outright; buffer edits need fs/write_text_file, upgrade when that exists.
+    if ctx
+        .editor_text(&path)
+        .is_some_and(|buffer| buffer.as_bytes() != bytes)
+    {
+        return refuse(format!(
+            "{shown} has unsaved changes in the editor; ask the user to save it."
+        ));
+    }
     if hash_of(&bytes) != seen {
         return refuse(format!(
             "{shown} changed since you read it. Read it again before editing."
