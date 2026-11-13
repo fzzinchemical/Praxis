@@ -189,13 +189,15 @@ pub fn write(input: WriteInput, ctx: &ToolContext) -> Result<ToolOutput, ToolErr
     }
     store(&path, &input.content, ctx)?;
     let lines = input.content.lines().count();
-    Ok(ToolOutput::ok(
+    let mut output = ToolOutput::ok(
         format!("Wrote {} ({lines} lines).", path.display()),
         json!({
             "filePath": path,
             "type": if existed { "update" } else { "create" },
         }),
-    ))
+    );
+    ctx.add_problems(&mut output, &path);
+    Ok(output)
 }
 
 /// The first file line resembling `old`'s first line, ignoring surrounding whitespace.
@@ -250,7 +252,7 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         &text.replace(&input.old_string, &input.new_string),
         ctx,
     )?;
-    Ok(ToolOutput::ok(
+    let mut output = ToolOutput::ok(
         format!(
             "Edited {shown}: {count} replacement(s), {} line(s) became {}.",
             input.old_string.lines().count(),
@@ -262,7 +264,9 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
             "newString": input.new_string,
             "replaceAll": replace_all,
         }),
-    ))
+    );
+    ctx.add_problems(&mut output, &path);
+    Ok(output)
 }
 
 /// What a `Write` or `Edit` would leave in a file, shown for review before the call runs.
@@ -399,6 +403,41 @@ mod tests {
             "expected a refusal, got {result:?}"
         );
         assert_eq!(fs::read_to_string(&target).unwrap(), "on disk\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_write_reports_the_editors_errors_and_caps_their_lines() {
+        let (dir, _, ctx) = workspace_with("bad.rs", b"");
+        let problems: Vec<String> = (1..=25).map(|n| format!("line {n}: bad")).collect();
+        ctx.report_diagnostics(super::super::DiagnosticsReader(Box::new(
+            move |_: &Path| Some(problems.clone()),
+        )));
+
+        let output = write(
+            WriteInput {
+                file_path: "bad.rs".to_owned(),
+                content: "fn".to_owned(),
+            },
+            &ctx,
+        )
+        .unwrap();
+
+        assert!(
+            output.content.contains("\n- line 20: bad"),
+            "{}",
+            output.content
+        );
+        assert!(
+            !output.content.contains("line 21: bad"),
+            "{}",
+            output.content
+        );
+        assert!(
+            output.content.ends_with("... and 5 more"),
+            "{}",
+            output.content
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 }

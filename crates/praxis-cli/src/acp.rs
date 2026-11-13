@@ -12,7 +12,7 @@ use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
 use praxis_core::provider::{Message, ToolCall};
 use praxis_core::session::{self, Entry, SessionLog};
-use praxis_core::tools::EditorReader;
+use praxis_core::tools::{DiagnosticsReader, EditorReader};
 use praxis_core::tools::{FileDiff, ToolOutput};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -20,6 +20,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
@@ -64,6 +65,8 @@ struct Server<M> {
     sessions: Mutex<HashMap<String, Slot>>,
     /// Whether the client advertised `fs.readTextFile` at `initialize`.
     client_reads: AtomicBool,
+    /// Whether the client advertised `_meta.praxis.diagnostics` at `initialize` (SPEC §11).
+    client_diagnostics: AtomicBool,
 }
 
 /// Prompt text that makes the test build panic its turn task, where no tool can catch it.
@@ -71,6 +74,10 @@ struct Server<M> {
 const CRASH_PROMPT: &str = "crash this turn";
 /// Extension notification (`_`-prefixed, SPEC §11) that stops one subagent: `sessionId`, `toolCallId`.
 const STOP_SUBAGENT: &str = "_praxis/cancel_subagent";
+/// Extension request the agent sends after an edit: `sessionId`, `path`. Answered with `problems`.
+const DIAGNOSTICS: &str = "_praxis/diagnostics";
+/// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
+const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 
 /// The session config option the client shows as the model picker (ACP "model" category).
 const MODEL_OPTION: &str = "model";
@@ -152,6 +159,14 @@ impl<M: Models> Server<M> {
             .checkpoint_into(self.sessions_dir.join(&id).join("checkpoints"));
         if self.client_reads.load(Ordering::Relaxed) {
             agent.tools().read_from_editor(editor_reader(
+                cx.clone(),
+                id.clone(),
+                agent.tools().workspace().to_path_buf(),
+                client_cwd.to_path_buf(),
+            ));
+        }
+        if self.client_diagnostics.load(Ordering::Relaxed) {
+            agent.tools().report_diagnostics(diagnostics_reader(
                 cx.clone(),
                 id.clone(),
                 agent.tools().workspace().to_path_buf(),
@@ -288,6 +303,7 @@ pub fn agent(
         commands,
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
+        client_diagnostics: AtomicBool::new(false),
     });
     let (
         for_init,
@@ -316,6 +332,16 @@ pub fn agent(
             async move |req: v1::InitializeRequest, responder, _cx| {
                 let reads = req.client_capabilities.fs.read_text_file;
                 for_init.client_reads.store(reads, Ordering::Relaxed);
+                let diagnostics = req
+                    .client_capabilities
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("praxis"))
+                    .and_then(|praxis| praxis["diagnostics"].as_bool())
+                    .unwrap_or(false);
+                for_init
+                    .client_diagnostics
+                    .store(diagnostics, Ordering::Relaxed);
                 let list = v1::SessionListCapabilities::new();
                 let close = v1::SessionCloseCapabilities::new();
                 let sessions = v1::SessionCapabilities::new().list(list).close(close);
@@ -601,6 +627,45 @@ fn editor_reader(
             tokio::runtime::Handle::current().block_on(cx.send_request(request).block_task());
         answer.ok().map(|reply| reply.content)
     }))
+}
+
+/// Asks the client for a file's error problems after an edit (SPEC §11). Runs on the tool's
+/// blocking thread, like `editor_reader`, and gives up after `DIAGNOSTICS_WAIT`.
+/// shortcut: a late, failed or malformed answer means no problem lines, never an edit error.
+fn diagnostics_reader(
+    cx: ConnectionTo<Client>,
+    session: String,
+    workspace: PathBuf,
+    client_cwd: PathBuf,
+) -> DiagnosticsReader {
+    DiagnosticsReader(Box::new(move |path| {
+        let path = client_path(&workspace, &client_cwd, path);
+        let request =
+            UntypedMessage::new(DIAGNOSTICS, json!({"sessionId": session, "path": path})).ok()?;
+        let answer = tokio::runtime::Handle::current().block_on(async {
+            tokio::time::timeout(DIAGNOSTICS_WAIT, cx.send_request(request).block_task()).await
+        });
+        let reply = answer.ok()?.ok()?;
+        Some(problem_lines(&reply))
+    }))
+}
+
+/// The error lines of a `_praxis/diagnostics` answer, as `line N: message`. The message is
+/// editor text, so line breaks are flattened to keep one problem per line.
+fn problem_lines(reply: &Value) -> Vec<String> {
+    reply["problems"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|problem| {
+            if problem["severity"] != "error" {
+                return None;
+            }
+            let line = problem["line"].as_u64()?;
+            let message = problem["message"].as_str()?.replace(['\r', '\n'], " ");
+            Some(format!("line {line}: {message}"))
+        })
+        .collect()
 }
 
 /// Maps a canonical workspace path to the client's spelling of its folder, since the client looks
@@ -1347,6 +1412,7 @@ mod tests {
             commands: Vec::new(),
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
+            client_diagnostics: AtomicBool::new(false),
         };
         let url = "http://127.0.0.1:1".to_owned();
         let tools = Arc::new(ToolContext::new(&dir).unwrap());
@@ -2344,6 +2410,105 @@ mod tests {
             "{body}"
         );
         assert!(body.contains("let x = 1;"), "{body}");
+    }
+
+    /// Runs one `Write` of `ok.txt`. A client that advertised diagnostics answers
+    /// `_praxis/diagnostics` with one error and one warning. Returns the model's second request
+    /// (it carries the tool result) and the diagnostics requests the client saw.
+    async fn write_with_diagnostics(dir: &Path, advertise: bool) -> (String, Vec<Value>) {
+        let server = fake_server().await;
+        let seen = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let on_diagnostics = seen.clone();
+        let caps = if advertise {
+            json!({"_meta": {"praxis": {"diagnostics": true}}})
+        } else {
+            json!({})
+        };
+        let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+            "protocolVersion": 1,
+            "clientCapabilities": caps
+        }))
+        .unwrap();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |_req: v1::RequestPermissionRequest, responder, _cx| {
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |req: UntypedMessage, responder, _cx| {
+                    on_diagnostics.lock().unwrap().push(json!({
+                        "method": req.method(),
+                        "params": req.params(),
+                    }));
+                    responder.respond(json!({"problems": [
+                        {"line": 3, "severity": "error", "message": "expected `;`\nor `}`"},
+                        {"line": 4, "severity": "warning", "message": "unused variable"},
+                    ]}))
+                },
+                on_receive_request!(),
+            )
+            .connect_with(praxis(&server, dir), async |cx| {
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(dir))
+                    .block_task()
+                    .await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body = requests[1].body_json::<Value>().unwrap().to_string();
+        let asked = seen.lock().unwrap().clone();
+        (body, asked)
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_that_reports_diagnostics_gets_an_edits_errors_in_its_result() {
+        let dir = temp_dir("diagnostics-on");
+        let (body, asked) = write_with_diagnostics(&dir, true).await;
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["method"], "_praxis/diagnostics");
+        assert_eq!(
+            asked[0]["params"]["path"],
+            dir.join("ok.txt").display().to_string()
+        );
+        assert!(body.contains("Wrote"), "{body}");
+        assert!(
+            body.contains("Errors the editor reports for this file"),
+            "{body}"
+        );
+        assert!(body.contains("line 3: expected `;` or `}`"), "{body}");
+        assert!(!body.contains("unused variable"), "{body}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_client_without_diagnostics_gets_the_plain_edit_result() {
+        let dir = temp_dir("diagnostics-off");
+        let (body, asked) = write_with_diagnostics(&dir, false).await;
+        assert!(asked.is_empty(), "{asked:?}");
+        assert!(body.contains("Wrote"), "{body}");
+        assert!(!body.contains("Errors the editor reports"), "{body}");
+    }
+
+    #[test]
+    fn problem_lines_keep_only_errors_and_one_line_each() {
+        let reply = json!({"problems": [
+            {"line": 2, "severity": "error", "message": "a\r\nb"},
+            {"line": 5, "severity": "warning", "message": "c"},
+            {"severity": "error", "message": "no line"},
+        ]});
+        assert_eq!(problem_lines(&reply), vec!["line 2: a  b".to_owned()]);
+        assert!(problem_lines(&json!({})).is_empty());
     }
 
     #[test]

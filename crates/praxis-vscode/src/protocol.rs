@@ -212,6 +212,8 @@ pub struct Reaction {
     pub review: Option<Review>,
     /// A file the agent asked for, which the host answers with `file_reply` (SPEC §11).
     pub read: Option<FileRead>,
+    /// A file whose error problems the agent asked for after an edit, answered by `diagnostics_reply`.
+    pub diagnostics: Option<FileRead>,
     /// The model picker's state, sent after `show`.
     pub models: Option<Value>,
     /// The permission mode picker's state, sent after `show`.
@@ -314,6 +316,17 @@ fn review_of(tool_call: &Value) -> Option<Review> {
 pub struct FileRead {
     pub id: Value,
     pub path: String,
+}
+
+/// The answer to `_praxis/diagnostics`: only the error-severity problems, so the agent reads
+/// what it needs (SPEC §11).
+pub fn diagnostics_reply(id: Value, items: &[Problem]) -> String {
+    let problems: Vec<Value> = items
+        .iter()
+        .filter(|item| item.severity == "error")
+        .map(|item| json!({"line": item.line, "severity": item.severity, "message": item.message}))
+        .collect();
+    json!({"jsonrpc": "2.0", "id": id, "result": {"problems": problems}}).to_string()
 }
 
 /// The answer to `fs/read_text_file`. `None` means the host could not read the file.
@@ -467,7 +480,8 @@ impl Client {
         match (message["method"].as_str(), &message["id"]) {
             (Some("session/update"), _) => update(&message["params"]["update"]),
             (Some("session/request_permission"), id) => self.permission(id, &message["params"]),
-            (Some("fs/read_text_file"), id) => self.read_file(id, &message["params"]),
+            (Some("fs/read_text_file"), id) => self.read_file(id, &message["params"], false),
+            (Some("_praxis/diagnostics"), id) => self.read_file(id, &message["params"], true),
             (Some(_), _) => Reaction::default(),
             (None, id) => self.response(id.as_u64(), &message["result"]),
         }
@@ -504,8 +518,9 @@ impl Client {
         }
     }
 
-    /// Refuses paths outside the workspace; the host reads anything inside, unsaved text first.
-    fn read_file(&self, id: &Value, params: &Value) -> Reaction {
+    /// Refuses paths outside the workspace. The host answers `fs/read_text_file` with the text,
+    /// unsaved first, and `_praxis/diagnostics` with the file's problems.
+    fn read_file(&self, id: &Value, params: &Value, diagnostics: bool) -> Reaction {
         let path = params["path"].as_str().unwrap_or_default();
         if !inside(&self.cwd, path) {
             // shortcut: a symlink inside the workspace can point outside and the host follows it;
@@ -517,12 +532,20 @@ impl Client {
                 ..Reaction::default()
             };
         }
-        Reaction {
-            read: Some(FileRead {
-                id: id.clone(),
-                path: path.to_owned(),
-            }),
-            ..Reaction::default()
+        let request = Some(FileRead {
+            id: id.clone(),
+            path: path.to_owned(),
+        });
+        if diagnostics {
+            Reaction {
+                diagnostics: request,
+                ..Reaction::default()
+            }
+        } else {
+            Reaction {
+                read: request,
+                ..Reaction::default()
+            }
         }
     }
 
@@ -611,7 +634,8 @@ pub fn initialize() -> String {
     request(
         INITIALIZE,
         "initialize",
-        json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true}}}),
+        json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true},
+            "_meta": {"praxis": {"diagnostics": true}}}}),
     )
 }
 
@@ -1307,6 +1331,42 @@ mod tests {
             assert_eq!(refusal["id"], 9);
             assert_eq!(refusal["error"]["code"], -32602);
         }
+    }
+
+    #[test]
+    fn diagnostics_are_asked_inside_the_workspace_and_answer_only_errors() {
+        let mut client = session();
+        let ask = |path: &str| {
+            json!({"jsonrpc": "2.0", "id": "d1", "method": "_praxis/diagnostics",
+                "params": {"sessionId": "s1", "path": path}})
+            .to_string()
+        };
+        assert_eq!(
+            client.on_line(&ask("/work/src/a.rs")).diagnostics,
+            Some(FileRead {
+                id: json!("d1"),
+                path: "/work/src/a.rs".into()
+            })
+        );
+        assert_eq!(client.on_line(&ask("/etc/passwd")).diagnostics, None);
+        let items = [
+            Problem {
+                line: 3,
+                severity: "error",
+                message: "expected `;`".into(),
+            },
+            Problem {
+                line: 4,
+                severity: "warning",
+                message: "unused".into(),
+            },
+        ];
+        let reply: Value = serde_json::from_str(&diagnostics_reply(json!("d1"), &items)).unwrap();
+        assert_eq!(
+            reply,
+            json!({"jsonrpc": "2.0", "id": "d1", "result": {"problems":
+                [{"line": 3, "severity": "error", "message": "expected `;`"}]}})
+        );
     }
 
     #[test]

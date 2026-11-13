@@ -10,8 +10,8 @@ mod protocol;
 use js_sys::{Array, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, install_args, list_args, plugin_items, verb_args};
 use protocol::{
-    Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
-    folder_args, folder_names, session_items,
+    Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection,
+    SessionItem, folder_args, folder_names, session_items,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -25,6 +25,13 @@ const VIEW_COLUMN_BESIDE: i32 = -2;
 const RESTART: &str = "Restart";
 const CHAT_TITLE: &str = "Praxis";
 const REVEAL: &str = "Show chat";
+
+#[wasm_bindgen]
+extern "C" {
+    /// The host's global timer; `callback` runs once after `ms` milliseconds.
+    #[wasm_bindgen(js_name = setTimeout)]
+    fn set_timeout(callback: &JsValue, ms: u32) -> JsValue;
+}
 
 #[wasm_bindgen]
 extern "C" {
@@ -862,7 +869,31 @@ fn react(state: &Shared, mut reaction: Reaction) {
         let text = editor_text(&read.path);
         panel.send([protocol::file_reply(read.id, text.as_deref())]);
     }
+    if let Some(request) = reaction.diagnostics {
+        answer_diagnostics(state, request);
+    }
     panel.send(reaction.send);
+}
+
+/// How long `_praxis/diagnostics` waits, so the language servers have reacted to the edit.
+const DIAGNOSTICS_WAIT_MS: u32 = 2000;
+
+/// Answers `_praxis/diagnostics` once `DIAGNOSTICS_WAIT_MS` has passed, without holding the panel.
+// shortcut: a fixed wait instead of waiting for VS Code's diagnostics to settle; upgrade if edits report stale errors.
+fn answer_diagnostics(state: &Shared, request: FileRead) {
+    let state = state.clone();
+    let on_timer = Closure::once_into_js(move |_: JsValue| {
+        let items = problems_of(&request.path)
+            .map(|problems| problems.items)
+            .unwrap_or_default();
+        state
+            .borrow()
+            .send([protocol::diagnostics_reply(request.id, &items)]);
+    });
+    let timer = Promise::new(&mut |resolve, _| {
+        set_timeout(resolve.as_ref(), DIAGNOSTICS_WAIT_MS);
+    });
+    let _ = timer.unchecked_into::<Thenable>().then_once(&on_timer);
 }
 
 /// Opens VS Code's diff editor on a proposed change. Both sides are untitled documents, so the

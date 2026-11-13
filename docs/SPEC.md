@@ -379,7 +379,7 @@ Behaviour:
 
 - **Paths** are absolute in `tool_input`. Resolve relative paths against the workspace before hooks see them.
 - **`Edit`** fails if `old_string` is missing or, without `replace_all`, not unique. Say which, and include a near match if one exists, since weak models often get whitespace wrong. Require the file to have been read earlier in the session, and refuse if it changed since that read, so a developer's concurrent edit is never overwritten.
-- **`Write` and `Edit` results** stay short (path and lines changed) and never repeat file content to the model. Hooks still receive the full `structured` value.
+- **`Write` and `Edit` results** stay short (path and lines changed) and never repeat file content to the model. With an editor that reports diagnostics (§11), a result also ends with that file's error lines, at most 20, labelled as editor text and never as instructions. Hooks still receive the full `structured` value.
 - **`Write` and `Edit`** write through a temp file and atomic rename, and preserve file mode. Checkpoint first (§8).
 - **`Grep`** defaults `output_mode` to `content` (matching lines with line numbers), unlike Claude Code's `files_with_matches`: with file names only, small models grep again to find where to read, and get stopped as a loop.
 - **`Read`** returns line-numbered text, refuses binary files, and applies a default line limit. Never filter or minify its content, because `Edit` needs an exact match.
@@ -790,6 +790,7 @@ sequenceDiagram
 | Implement | `initialize`, `authenticate` (no-op: no auth methods), `session/new`, `session/load`, `session/list`, `session/prompt`, `session/cancel`, `session/set_mode` |
 | Send | `session/update`, `session/request_permission` |
 | Use if advertised | `fs/read_text_file` (so `Read` sees unsaved editor buffers) |
+| Use if advertised in `_meta.praxis.diagnostics` | `_praxis/diagnostics` after a `Write` or `Edit`: the client answers `{problems}`, and the error lines of the file are appended to the tool result (T11.3) |
 
 | `AgentEvent` | `session/update` variant |
 |---|---|
