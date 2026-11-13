@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.1.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.2.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -146,21 +146,23 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 1.2.0-beta
+
+From the [Beta 1 feedback](docs/TASKS.md#m10-beta-1-feedback):
+
+- Reopened chats show the agent's replies and tool calls, not just your messages.
+- Models load without asking (`agent.auto_load = false` to be asked first).
+- A turn stopped by its request limit says which setting raises it.
+- Chats can be deleted and moved into folders from the Sessions view.
+- Type `/` in the chat to pick a plugin or skill command.
+- Clicking a plugin in the sidebar opens its README, commands, skills and agents.
+- `praxis.permissions.mode` in VS Code (user settings only) and a `full-access` mode that runs `Bash` and MCP tools without asking, still under the hard denials.
+- Each subagent shows as a collapsible block with its tool calls, context use and changed files, and can be stopped on its own.
+
 ### Known issues
 
-Tracked in [M10](docs/TASKS.md#m10-beta-1-feedback).
-
-- Reopening an old chat in VS Code shows only your messages, not the agent's replies or tool calls (T10.1).
-- Models load without asking by default. Set `agent.auto_load = false` in `config.toml` to be asked first (T10.2).
-- When a turn hits its request limit, VS Code doesn't say how to raise it. Set `praxis.agent.maxTurnRequests` in VS Code settings or `agent.max_turn_requests` in `config.toml` (default 50) (T10.3).
-- The agent asks for approval on almost every action, and `Bash` approvals can't be remembered (T10.7).
-
-### Planned features
-
-- Delete chats from the Sessions view (T10.4), then classify them (T10.5).
-- Plugin and skill commands listed in the chat panel, grouped by plugin, as in Claude Code (T10.6).
-- Settings to make the agent ask less and give it more access (T10.7).
-- See what subagents are doing: a collapsible block per subagent with its live tool calls and status (T10.8).
+- A reopened chat shows every tool result as completed, even failed ones.
+- Two VS Code windows moving chats into folders at the same moment can lose one move.
 
 ## Development
 
