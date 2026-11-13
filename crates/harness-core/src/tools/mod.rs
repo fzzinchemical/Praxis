@@ -119,10 +119,6 @@ pub struct ToolContext {
     tmp_dir: PathBuf,
     tmp_created: Mutex<bool>,
     checkpoints: Mutex<checkpoint::Checkpoints>,
-    /// Last full `Read` per range: the file hash it showed and the turn it was in (T2.10).
-    reads: Mutex<HashMap<files::RangeKey, (u64, u64)>>,
-    /// Counts agent turns, for `Unchanged since turn N`.
-    turn: AtomicU64,
 }
 
 impl ToolContext {
@@ -150,8 +146,6 @@ impl ToolContext {
             tmp_dir: new_temp_path("tmp"),
             tmp_created: Mutex::default(),
             checkpoints: Mutex::default(),
-            reads: Mutex::default(),
-            turn: AtomicU64::new(0),
         })
     }
 
@@ -226,39 +220,6 @@ impl ToolContext {
 
     pub fn workspace(&self) -> &Path {
         &self.workspace
-    }
-
-    /// Called once a `Read`'s output is masked or dropped from history: repeating that read
-    /// then returns the content again, not a stub that points at output the model no longer has.
-    pub fn forget_read(&self, input: &Value) {
-        let Ok(input) = serde_json::from_value::<files::ReadInput>(input.clone()) else {
-            return;
-        };
-        if let Ok(path) = self.resolve_read(&input.file_path) {
-            self.reads().remove(&input.range(&path));
-        }
-    }
-
-    /// Called when compaction replaces history: every recorded read may now point at lost output.
-    pub fn forget_reads(&self) {
-        self.reads().clear();
-    }
-
-    fn reads(&self) -> std::sync::MutexGuard<'_, HashMap<files::RangeKey, (u64, u64)>> {
-        self.reads.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The turn of the last full read of `range`, if the file still has the hash that read showed.
-    fn read_turn(&self, range: &files::RangeKey, hash: u64) -> Option<u64> {
-        match self.reads().get(range) {
-            Some(&(seen, turn)) if seen == hash => Some(turn),
-            _ => None,
-        }
-    }
-
-    fn record_read(&self, range: files::RangeKey, hash: u64) {
-        let turn = self.turn.load(Ordering::Relaxed);
-        self.reads().insert(range, (hash, turn));
     }
 
     fn remember(&self, path: &Path, hash: u64) {

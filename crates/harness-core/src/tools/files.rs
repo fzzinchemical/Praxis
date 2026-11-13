@@ -18,7 +18,7 @@ const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadInput {
-    pub(super) file_path: String,
+    file_path: String,
     /// First line to return, counting from 1.
     offset: Option<usize>,
     /// How many lines to return. Defaults to 2000.
@@ -77,17 +77,6 @@ fn text_of<'a>(bytes: &'a [u8], path: &Path) -> Result<&'a str, ToolError> {
     }
 }
 
-impl ReadInput {
-    /// The range this call asks for: the file, its first line and its line limit.
-    pub(super) fn range(&self, path: &Path) -> RangeKey {
-        let first = self.offset.unwrap_or(1).max(1);
-        let limit = self.limit.unwrap_or(DEFAULT_LINE_LIMIT);
-        (path.to_owned(), first, limit)
-    }
-}
-
-pub(super) type RangeKey = (PathBuf, usize, usize);
-
 pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     let path = ctx.resolve_read(&input.file_path)?;
     // An open editor buffer, unsaved edits included, beats the file on disk (SPEC §11).
@@ -96,18 +85,7 @@ pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         None => read_bytes(&path)?,
     };
     let text = text_of(&bytes, &path)?;
-    let hash = hash_of(&bytes);
-    // Only a change from what the agent last saw counts: its own writes update that hash too.
-    let changed_outside = ctx.last_seen(&path).is_some_and(|seen| seen != hash);
-    ctx.remember(&path, hash);
-    let range = input.range(&path);
-    if let Some(turn) = ctx.read_turn(&range, hash).filter(|_| !changed_outside) {
-        return Ok(ToolOutput::ok(
-            format!("Unchanged since turn {turn}."),
-            json!({ "filePath": path, "totalLines": text.lines().count() }),
-        ));
-    }
-    ctx.record_read(range, hash);
+    ctx.remember(&path, hash_of(&bytes));
 
     let total = text.lines().count();
     let first = input.offset.unwrap_or(1).max(1);
@@ -120,13 +98,6 @@ pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
     if first > 1 || last < total {
         content.push_str(&format!(
             "(lines {first}-{last} of {total}; use offset and limit for more)\n"
-        ));
-    }
-    if changed_outside {
-        // shortcut: the notice waits for the next Read of the file; watching files would catch it sooner.
-        content.push_str(&format!(
-            "Note: {} changed outside this session since it was last read.\n",
-            path.display()
         ));
     }
     Ok(ToolOutput::ok(

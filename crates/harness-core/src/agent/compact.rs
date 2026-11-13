@@ -43,8 +43,6 @@ impl Agent {
         if self.prompt_tokens() <= enough {
             return;
         }
-        // Summaries and stubs replace output that repeat reads would point at.
-        self.tools.forget_reads();
         if self.summarise(turn).await || turn.cancel.is_cancelled() {
             return;
         }
@@ -101,9 +99,6 @@ impl Agent {
                 continue;
             }
             if let Ok(input) = serde_json::from_str(&call.arguments) {
-                if call.name == "Read" {
-                    self.tools.forget_read(&input);
-                }
                 self.refetchable.push((call.name.clone(), input));
             }
         }

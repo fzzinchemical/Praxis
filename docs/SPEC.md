@@ -483,7 +483,7 @@ Applied once, when a result is first recorded, so they never rewrite history. Th
 | Per-test pass lines, when the run has a summary | Errors, warnings and stack traces |
 | `make` enter and leave directory lines | Anything from `Read`, which is never filtered |
 
-**Repeat reads (T2.10)** of an unchanged range return a stub: `Unchanged since turn N.` If that earlier output has been masked, or the file has changed, return the content in full. If a file the model has read changes outside the agent, append a one-line notice saying so.
+**Cut (2026-11-13):** T2.10 cut 46% success against 64% without it, for 4% fewer prompt tokens (`evals/results/qwen3.5-4b.t2-10*.json`). Repeat reads return the full content again, and no outside-change notice is added.
 
 ### Tools at scale
 

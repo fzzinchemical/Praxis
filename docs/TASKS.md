@@ -262,9 +262,11 @@ flowchart LR
   - **Done when:** scoreboard is committed and compared with the T1.9 and T0.2 baselines. **If it doesn't clearly beat them, stop and discuss before M3.**
   - **Result (2026-11-12):** M2 doesn't clearly beat OpenCode on pass rate (4b 6/13 vs 8/13, gemma 10/13 each) but is about 4.5× faster on 4b. Discussed, and the owner accepted M2 as it stands ([ADR 0006](adr/0006-build-after-baseline.md)).
 
-- [ ] **T2.10 Repeat reads and stale files** (§7) · *Should*
+- [x] ~~**T2.10 Repeat reads and stale files**~~ (§7) · *Should* · **Cut (2026-11-13)**
   - **Needs:** T2.4.
   - **Done when:** tests cover the stub for an unchanged range, full content once masked or changed, and the notice when a file changes outside the agent; evals show fewer tokens processed without lower success or more turns.
+  - **Result (2026-11-13):** qwen3.5-4b, 13 tasks × 3 runs, seed 42: success 46% (18/39) against 64% (25/39) without it, prompt tokens sent −3.8% (1.98M against 2.06M), turns 14.4 against 14.8, loop stops 2 against 0. Losses on seeded-bug-duration (3/3 → 0/3) and injection-code-comment (3/3 → 0/3), where runs ended after 3 turns; add-cli-flag hit the loop detector on repeated `Read` of the same file (`evals/results/qwen3.5-4b.t2-10.json`, `evals/results/qwen3.5-4b.t2-10-base.json`).
+  - **Decision (2026-11-13):** the owner cut it. The code was reverted from main; the commits stay in history (`7dc3ba6`, `6bcaa98`).
 
 - [x] **T2.11 Output filters** (§7) · *Should*
   - **Needs:** T2.4.

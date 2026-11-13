@@ -195,65 +195,6 @@ async fn read_returns_numbered_lines_within_the_requested_range() {
 }
 
 #[tokio::test]
-async fn a_repeat_read_of_an_unchanged_range_returns_a_stub() {
-    let f = Fixture::new();
-    f.file("a.txt", "one\ntwo\n");
-    f.ctx.begin_turn();
-    f.read("a.txt").await;
-    f.ctx.begin_turn();
-    let again = f.read("a.txt").await;
-    assert!(!again.is_error);
-    assert_eq!(again.content, "Unchanged since turn 1.");
-}
-
-#[tokio::test]
-async fn a_repeat_read_of_another_range_returns_the_content() {
-    let f = Fixture::new();
-    f.file("a.txt", "one\ntwo\n");
-    f.ctx.begin_turn();
-    f.call("Read", json!({ "file_path": "a.txt", "limit": 1 }))
-        .await;
-    let whole = f.read("a.txt").await;
-    ok(&whole, "     2\ttwo\n");
-}
-
-#[tokio::test]
-async fn a_read_whose_output_was_masked_returns_the_content_again() {
-    let f = Fixture::new();
-    f.file("a.txt", "one\ntwo\n");
-    f.ctx.begin_turn();
-    f.read("a.txt").await;
-    f.ctx.forget_read(&json!({ "file_path": "a.txt" }));
-    let again = f.read("a.txt").await;
-    ok(&again, "     1\tone\n");
-}
-
-#[tokio::test]
-async fn a_file_changed_outside_the_agent_returns_the_content_with_a_notice() {
-    let f = Fixture::new();
-    f.file("a.txt", "one\n");
-    f.ctx.begin_turn();
-    f.read("a.txt").await;
-    fs::write(f.ws().join("a.txt"), "two\n").unwrap();
-    f.ctx.begin_turn();
-    let again = f.read("a.txt").await;
-    ok(&again, "     1\ttwo\n");
-    ok(&again, "changed outside this session");
-}
-
-#[tokio::test]
-async fn an_edit_by_the_agent_is_not_reported_as_an_outside_change() {
-    let f = Fixture::new();
-    f.file("a.txt", "one\n");
-    f.ctx.begin_turn();
-    f.read("a.txt").await;
-    f.edit("a.txt", "one", "two").await;
-    f.ctx.begin_turn();
-    let again = f.read("a.txt").await;
-    assert!(!again.content.contains("outside"), "{again:?}");
-}
-
-#[tokio::test]
 async fn read_returns_the_unsaved_editor_buffer_instead_of_the_disk_file() {
     let f = Fixture::new();
     f.file("a.txt", "on disk\n");

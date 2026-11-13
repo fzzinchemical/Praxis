@@ -371,47 +371,6 @@ async fn a_delegated_agent_on_anthropic_fails_before_sending_a_request() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_subagent_reads_a_range_the_parent_read_in_full() {
-    let script = vec![
-        tool_reply(&[("c0", "Read", json!({"file_path": "a.txt"}))]),
-        tool_reply(&[(
-            "p1",
-            "Agent",
-            json!({"subagent_type": "kit:scout", "prompt": "look"}),
-        )]),
-        tool_reply(&[("s1", "Read", json!({"file_path": "a.txt"}))]),
-        text_reply("saw it"),
-        text_reply("done"),
-    ];
-    let mut h = Harness::new(script, 50).await;
-    fs::write(h.workspace.join("a.txt"), "hello\n").unwrap();
-    let scout = harness_core::plugin::AgentDef {
-        skill: harness_core::plugin::Skill {
-            name: "kit:scout".into(),
-            description: "Finds things".into(),
-            body: "You scout.".into(),
-            model_invocable: true,
-            user_invocable: true,
-            dir: Default::default(),
-        },
-        tools: Some(vec!["Read".into()]),
-        disallowed_tools: vec![],
-        max_turns: Some(5),
-        model: None,
-    };
-    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
-
-    h.turn("go", CancellationToken::new(), never_asked).await;
-
-    // The subagent never saw the parent's read, so its repeat read must return the content.
-    let child = h.request_messages(3).await;
-    let result = child.iter().find(|m| m["tool_call_id"] == "s1").unwrap()["content"]
-        .as_str()
-        .unwrap();
-    assert!(result.contains("hello"), "{result}");
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn cancelling_mid_tool_ends_cancelled_and_the_next_prompt_has_consistent_history() {
     let mut h = Harness::new(
         vec![
