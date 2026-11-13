@@ -36,6 +36,8 @@ pub enum FromPanel {
     StopSubagent(String),
     /// The user turn the panel asked to rewind to ("Rewind to here"), as the agent numbers it.
     Rewind(u64),
+    /// The file the review asked to revert to its state before the change set.
+    RevertFile(String),
 }
 
 impl FromPanel {
@@ -60,6 +62,7 @@ impl FromPanel {
             "open_change" => Some(Self::OpenChange(value["path"].as_str()?.to_owned())),
             "stop_subagent" => Some(Self::StopSubagent(value["id"].as_str()?.to_owned())),
             "rewind" => Some(Self::Rewind(value["turn"].as_u64()?)),
+            "revert_file" => Some(Self::RevertFile(value["path"].as_str()?.to_owned())),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -349,6 +352,8 @@ const LOAD_SESSION: u64 = 4;
 const SET_MODE: u64 = 5;
 /// Unused by the prompt ids (`next_id` starts above `SET_MODE`), so the rewind answer is never mistaken for one.
 const REWIND: u64 = 3;
+/// The revert answer. Prompt ids count up from `SET_MODE + 1` and never reach this, so it sits far above them.
+const REVERT: u64 = 1 << 40;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -448,6 +453,13 @@ impl Client {
         Some(request(REWIND, "_praxis/rewind", params))
     }
 
+    /// The `_praxis/revert_file` request for one changed file, or `None` while no session is open yet.
+    pub fn revert_file(&self, path: &str) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "path": path});
+        Some(request(REVERT, "_praxis/revert_file", params))
+    }
+
     /// The `_praxis/cancel_subagent` notification for a running subagent, or `None` while no session
     /// is open yet. A notification has no id, so the agent sends no answer.
     pub fn stop_subagent(&self, id: &str) -> Option<String> {
@@ -482,6 +494,7 @@ impl Client {
                     ..Reaction::default()
                 },
                 Some(REWIND) => show(notice(&format!("Could not rewind: {text}"))),
+                Some(REVERT) => show(notice(&format!("Could not revert: {text}"))),
                 Some(SET_MODE) => Reaction {
                     show: Some(notice(&format!("Could not change permissions: {text}"))),
                     modes: self.modes.clone(),
@@ -602,6 +615,7 @@ impl Client {
                 }
             }
             Some(REWIND) => show(json!({"type": "rewound", "turn": result["turn"]})),
+            Some(REVERT) => show(json!({"type": "reverted", "path": result["path"]})),
             Some(SET_MODE) => match picker(result, "mode", "modes") {
                 Some(modes) => {
                     self.modes = Some(modes.clone());
@@ -818,6 +832,38 @@ mod tests {
             shown["text"],
             "Could not rewind: turn 9 can't be rewound to"
         );
+    }
+
+    #[test]
+    fn a_revert_request_names_the_file_and_its_answer_routes_to_the_review() {
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"revert_file","path":"src/a.rs"}"#),
+            Some(FromPanel::RevertFile("src/a.rs".into()))
+        );
+        assert_eq!(FromPanel::parse(r#"{"type":"revert_file"}"#), None);
+
+        let mut client = Client::start("/work").0;
+        assert_eq!(client.revert_file("src/a.rs"), None, "no session yet");
+        client.session = Some("s1".into());
+        let line: Value = serde_json::from_str(&client.revert_file("src/a.rs").unwrap()).unwrap();
+        assert_eq!(line["method"], "_praxis/revert_file");
+        assert_eq!(
+            line["params"],
+            json!({"sessionId": "s1", "path": "src/a.rs"})
+        );
+        assert_eq!(line["id"], REVERT);
+
+        let answer = format!(r#"{{"jsonrpc":"2.0","id":{REVERT},"result":{{"path":"src/a.rs"}}}}"#);
+        assert_eq!(
+            client.on_line(&answer).show,
+            Some(json!({"type": "reverted", "path": "src/a.rs"}))
+        );
+        let refused = format!(
+            r#"{{"jsonrpc":"2.0","id":{REVERT},"error":{{"code":-32602,"data":"src/a.rs has no changes"}}}}"#
+        );
+        let shown = client.on_line(&refused).show.unwrap();
+        assert_eq!(shown["type"], "notice");
+        assert_eq!(shown["text"], "Could not revert: src/a.rs has no changes");
     }
 
     fn sent(reaction: &Reaction) -> Value {

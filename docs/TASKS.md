@@ -511,7 +511,7 @@ flowchart TB
   - **Needs:** T5.3.
   - **Done when:** summaries come from the tool log alone; a test confirms they say so plainly when no tests ran, even if the model claimed otherwise.
 
-- [ ] **T5.8 Change-set review and risk labels** (§9, §11) · *Should*
+- [x] **T5.8 Change-set review and risk labels** (§9, §11) · *Should*
   - **Needs:** T5.4, T3.8.
   - **Done when:** the checklist covers overview, file and chunk with free navigation, and revert per file; tests confirm risk labels never read as a safety verdict.
 

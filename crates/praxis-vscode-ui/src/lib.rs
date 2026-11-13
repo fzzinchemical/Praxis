@@ -111,7 +111,14 @@ struct Ui {
     /// The file and chunk (index into `changed`) the review has open.
     review_file: Option<usize>,
     review_chunk: Option<usize>,
+    /// Files the review reverted, shown as reverted instead of offering the button again.
+    reverted: Vec<String>,
+    /// The review control to focus after the next redraw, as its data attribute and value.
+    focus: Option<(&'static str, String)>,
 }
+
+/// The review buttons that redraw the review in place; focus returns to the one clicked.
+const REVIEW_CONTROLS: [&str; 3] = ["data-review-file", "data-review-chunk", "data-review-step"];
 
 /// The change-set review's files, grouped from its `(file, title, status)` rows.
 fn groups_of(changes: &[(String, String, String)]) -> Vec<view::FileGroup> {
@@ -282,6 +289,8 @@ pub fn start() -> Result<(), JsValue> {
         changed: Vec::new(),
         review_file: None,
         review_chunk: None,
+        reverted: Vec::new(),
+        focus: None,
         document,
         output: output.clone(),
         status: Status {
@@ -538,6 +547,10 @@ pub fn start() -> Result<(), JsValue> {
             api.post_message(&json!({"type": "open_change", "path": path}).to_string());
             return;
         }
+        if let Some(path) = button.get_attribute("data-revert-file") {
+            api.post_message(&json!({"type": "revert_file", "path": path}).to_string());
+            return;
+        }
         let _ = state.borrow_mut().review_click(&button);
     });
     review.add_event_listener_with_callback("click", on_review.as_ref().unchecked_ref())?;
@@ -728,6 +741,17 @@ impl Ui {
                 self.message = None;
                 self.user_bubble(text("text"))?;
             }
+            "reverted" => {
+                if let Some(path) = message["path"].as_str() {
+                    // The button is gone once reverted, so focus moves to the file's own button.
+                    let groups = groups_of(&self.changes());
+                    if let Some(index) = groups.iter().position(|g| g.file == path) {
+                        self.focus = Some(("data-review-file", index.to_string()));
+                    }
+                    self.reverted.push(path.to_owned());
+                    self.render_review()?;
+                }
+            }
             "rewound" => {
                 let turn = message["turn"]
                     .as_u64()
@@ -916,7 +940,7 @@ impl Ui {
 
     /// Rebuilds the change-set review: each file with its chunks and risk labels, then the open
     /// chunk with previous and next steps. Titles, files and labels are set as text, never HTML.
-    fn render_review(&self) -> Result<(), JsValue> {
+    fn render_review(&mut self) -> Result<(), JsValue> {
         let changes = self.changes();
         let groups = groups_of(&changes);
         self.review.set_text_content(None);
@@ -942,6 +966,11 @@ impl Ui {
             )?;
             button.set_attribute("aria-expanded", if open { "true" } else { "false" })?;
             item.append_child(&button)?;
+            if self.reverted.contains(&group.file) {
+                let note = self.document.create_element("p")?;
+                note.set_text_content(Some("Reverted"));
+                item.append_child(&note)?;
+            }
             let mut labels: Vec<&str> = Vec::new();
             for &chunk in &group.chunks {
                 let (file, title, _) = &changes[chunk];
@@ -974,6 +1003,10 @@ impl Ui {
                 item.append_child(&chunks)?;
                 let open_diff = self.button("Open diff", "data-open-change", &group.file)?;
                 item.append_child(&open_diff)?;
+                if !self.reverted.contains(&group.file) {
+                    let revert = self.button("Revert file", "data-revert-file", &group.file)?;
+                    item.append_child(&revert)?;
+                }
             }
             list.append_child(&item)?;
         }
@@ -1000,6 +1033,26 @@ impl Ui {
             detail.append_child(&nav)?;
             self.review.append_child(&detail)?;
         }
+        self.focus_review_control()
+    }
+
+    /// Focuses the review button named by `focus`, once, so a redraw doesn't drop keyboard focus.
+    fn focus_review_control(&mut self) -> Result<(), JsValue> {
+        let Some((name, value)) = self.focus.take() else {
+            return Ok(());
+        };
+        let buttons = self.review.query_selector_all("button")?;
+        for index in 0..buttons.length() {
+            let Some(button) = buttons
+                .item(index)
+                .and_then(|node| node.dyn_into::<HtmlElement>().ok())
+            else {
+                continue;
+            };
+            if button.get_attribute(name).as_deref() == Some(value.as_str()) {
+                return button.focus();
+            }
+        }
         Ok(())
     }
 
@@ -1014,6 +1067,9 @@ impl Ui {
 
     /// Opens the file, chunk or step a review click names, then redraws the review.
     fn review_click(&mut self, button: &Element) -> Result<(), JsValue> {
+        self.focus = REVIEW_CONTROLS
+            .iter()
+            .find_map(|name| button.get_attribute(name).map(|value| (*name, value)));
         let changes = self.changes();
         let groups = groups_of(&changes);
         let number = |name: &str| button.get_attribute(name)?.parse::<usize>().ok();

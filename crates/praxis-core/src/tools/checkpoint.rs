@@ -1,5 +1,6 @@
 //! Per-turn copies of files before `Write` or `Edit` changes them, for `/undo` (SPEC §8).
 
+use super::confine::{check_writable, resolve};
 use super::{ToolContext, ToolError};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io;
@@ -166,6 +167,48 @@ impl ToolContext {
             cp.turns.split_off(at)
         };
         self.restore_steps(steps)
+    }
+
+    /// Puts `raw` back as it was before this change set first touched it, and drops its copies in
+    /// the window. Refused outside the workspace, in protected paths, and for a file with no copy.
+    pub fn revert_file(&self, raw: &str) -> Result<(), ToolError> {
+        let path = resolve(&self.workspace, raw)?;
+        check_writable(&self.workspace, &path)?;
+        let mut guard = self.checkpoints();
+        let cp = &mut *guard;
+        // The first copy in the window is the state before the change set.
+        let Some((_, oldest)) = cp
+            .turns
+            .iter()
+            .flat_map(|step| &step.files)
+            .find(|(p, _)| *p == path)
+        else {
+            return Err(ToolError::Refused(format!(
+                "{} has no changes in this change set.",
+                path.display()
+            )));
+        };
+        restore(&path, oldest.as_deref()).map_err(ToolError::io("revert", &path))?;
+        for step in &mut cp.turns {
+            step.files.retain(|(p, copy)| {
+                if *p != path {
+                    return true;
+                }
+                if let Some(copy) = copy {
+                    match fs::remove_file(copy) {
+                        Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                            tracing::warn!(copy = %copy.display(), error = %e, "could not delete a reverted checkpoint");
+                        }
+                        _ => {}
+                    }
+                }
+                false
+            });
+        }
+        drop(guard);
+        // The model must read the file again before editing it.
+        self.forget(&path);
+        Ok(())
     }
 
     /// Restores every file of `steps`, newest first. Failures stay in the undo history for a later try.
@@ -437,6 +480,60 @@ mod tests {
         assert_eq!(fs::read_to_string(&file).unwrap(), "v1\n");
         assert_eq!(resumed.undo().unwrap().len(), 1);
         assert_eq!(fs::read_to_string(&file).unwrap(), "v0\n");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn revert_file_restores_one_file_to_before_the_window_and_refuses_outside_paths() {
+        let root = std::env::temp_dir().join(format!("praxis-revert-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("a.txt"), "one\n").unwrap();
+        fs::write(workspace.join("b.txt"), "one\n").unwrap();
+        fs::write(root.join("outside.txt"), "one\n").unwrap();
+        let ctx = ToolContext::new(&workspace).unwrap();
+        ctx.checkpoint_into(root.join("checkpoints"));
+        let path = |name: &str| workspace.join(name).display().to_string();
+        let change = |name: &str, old: &str, new: &str| {
+            read(from_value(json!({"file_path": path(name)})).unwrap(), &ctx).unwrap();
+            let input = json!({"file_path": path(name), "old_string": old, "new_string": new});
+            edit(from_value(input).unwrap(), &ctx).unwrap();
+        };
+
+        ctx.begin_turn(1);
+        change("a.txt", "one", "two");
+        change("b.txt", "one", "two");
+        ctx.begin_turn(2);
+        change("a.txt", "two", "three");
+        let input = json!({"file_path": path("sub/new.txt"), "content": "hi"});
+        write(from_value(input).unwrap(), &ctx).unwrap();
+
+        ctx.revert_file("a.txt").unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.join("b.txt")).unwrap(),
+            "two\n"
+        );
+        ctx.revert_file("sub/new.txt").unwrap();
+        assert!(!workspace.join("sub/new.txt").exists());
+        assert!(ctx.revert_file("b.txt").is_ok());
+        assert_eq!(
+            fs::read_to_string(workspace.join("b.txt")).unwrap(),
+            "one\n"
+        );
+        assert!(
+            ctx.revert_file("a.txt").is_err(),
+            "no copy is left to revert to"
+        );
+        assert!(ctx.revert_file("../outside.txt").is_err());
+        assert_eq!(
+            fs::read_to_string(root.join("outside.txt")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(fs::read_dir(root.join("checkpoints")).unwrap().count(), 0);
         fs::remove_dir_all(&root).unwrap();
     }
 

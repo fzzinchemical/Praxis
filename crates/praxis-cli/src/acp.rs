@@ -78,6 +78,8 @@ const STOP_SUBAGENT: &str = "_praxis/cancel_subagent";
 const DIAGNOSTICS: &str = "_praxis/diagnostics";
 /// Extension request the panel sends for "Rewind to here": `sessionId`, `turn`. Answered with `turn`.
 const REWIND: &str = "_praxis/rewind";
+/// Extension request the panel sends for "Revert file": `sessionId`, `path`. Answered with `path`.
+const REVERT: &str = "_praxis/revert_file";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 
@@ -616,6 +618,28 @@ pub fn agent(
         .on_receive_request(
             async move |req: UntypedMessage, responder, _cx| {
                 // Last in the chain, so it only sees methods no handler above took.
+                if req.method() == REVERT {
+                    let params = req.params();
+                    let (Some(session), Some(path)) =
+                        (params["sessionId"].as_str(), params["path"].as_str())
+                    else {
+                        let error =
+                            Error::invalid_params().data("revert needs a sessionId and a path");
+                        return responder.respond_with_error(error);
+                    };
+                    // Like a rewind, a running turn holds the agent, so the revert waits for it.
+                    let (agent, _) = match for_rewind.begin_turn(session) {
+                        Ok(turn) => turn,
+                        Err(e) => return responder.respond_with_error(e),
+                    };
+                    let outcome = agent.revert_file(path);
+                    for_rewind.end_turn(session, agent);
+                    return match outcome {
+                        Ok(()) => responder.respond(json!({"path": path})),
+                        Err(e) => responder
+                            .respond_with_error(Error::invalid_params().data(e.to_string())),
+                    };
+                }
                 if req.method() != REWIND {
                     return responder.respond_with_error(Error::method_not_found());
                 }
@@ -2622,6 +2646,66 @@ mod tests {
         assert_eq!(
             client_path(&workspace, &link, Path::new("/etc/passwd")),
             Path::new("/etc/passwd")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_revert_request_restores_the_file_and_refuses_a_path_outside_the_workspace() {
+        let dir = temp_dir("revert-request");
+        let server = fake_server_bodies(vec![
+            tool_call_body(
+                "c0",
+                "Write",
+                &json!({"file_path": "ok.txt", "content": "x"}),
+            ),
+            text_body("done"),
+        ])
+        .await;
+        let caps = json!({"fs": {"readTextFile": false}});
+        let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+            "protocolVersion": 1,
+            "clientCapabilities": caps
+        }))
+        .unwrap();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |_req: v1::RequestPermissionRequest, responder, _cx| {
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .connect_with(praxis(&server, &dir), async |cx| {
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?
+                    .session_id
+                    .to_string();
+                let prompt = v1::PromptRequest::new(session.clone(), vec!["make ok.txt".into()]);
+                cx.send_request(prompt).block_task().await?;
+                let revert = |path: &str| {
+                    UntypedMessage::new(REVERT, json!({"sessionId": session, "path": path}))
+                };
+                let reverted = cx.send_request(revert("ok.txt")?).block_task().await?;
+                let refused = cx.send_request(revert("../escape.txt")?).block_task().await;
+                Ok((reverted, refused.is_err()))
+            });
+        let (reverted, refused) = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reverted["path"], "ok.txt");
+        assert!(
+            refused,
+            "a path outside the workspace must be an error reply"
+        );
+        assert!(
+            !dir.join("ok.txt").exists(),
+            "the revert must remove the file the turn created"
         );
     }
 

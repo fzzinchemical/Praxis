@@ -739,6 +739,12 @@ impl Agent {
         Ok(files)
     }
 
+    /// Restores `path` to its state before this change set first touched it (see `revert_file`).
+    /// shortcut: the revert is not written to the session log, so a resumed chat still shows the change. Upgrade if resumed chats must match the disk.
+    pub fn revert_file(&self, path: &str) -> Result<(), crate::tools::ToolError> {
+        self.tools.revert_file(path)
+    }
+
     /// Lets the front end stop one running subagent while a turn holds this agent (SPEC §11).
     pub fn subagent_stops(&self) -> SubagentStops {
         self.subagents.clone()
