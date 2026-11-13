@@ -105,6 +105,21 @@ struct Ui {
     /// Whether the list is open (closed by Escape, reopened by typing) and its highlighted row.
     menu_open: bool,
     selected: usize,
+    /// The change-set review's container, and the tool ids of its `Write` and `Edit` calls.
+    review: Element,
+    changed: Vec<String>,
+    /// The file and chunk (index into `changed`) the review has open.
+    review_file: Option<usize>,
+    review_chunk: Option<usize>,
+}
+
+/// The change-set review's files, grouped from its `(file, title, status)` rows.
+fn groups_of(changes: &[(String, String, String)]) -> Vec<view::FileGroup> {
+    let pairs: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|(file, title, _)| (file.as_str(), title.as_str()))
+        .collect();
+    view::group_changes(&pairs)
 }
 
 fn parse_commands(message: &Value) -> Vec<view::Command> {
@@ -263,6 +278,10 @@ pub fn start() -> Result<(), JsValue> {
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         status_line: by_id(&document, "status")?,
+        review: by_id(&document, "changes")?,
+        changed: Vec::new(),
+        review_file: None,
+        review_chunk: None,
         document,
         output: output.clone(),
         status: Status {
@@ -503,6 +522,26 @@ pub fn start() -> Result<(), JsValue> {
     });
     window.add_event_listener_with_callback("drop", on_drop.as_ref().unchecked_ref())?;
     on_drop.forget();
+
+    // The review is redrawn on every change, so its clicks go through its own container.
+    let (state, api) = (ui.clone(), vscode.clone());
+    let review = ui.borrow().review.clone();
+    let on_review = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(button) = event
+            .target()
+            .and_then(|t| t.dyn_into::<Element>().ok())
+            .and_then(|el| el.closest("button").ok().flatten())
+        else {
+            return;
+        };
+        if let Some(path) = button.get_attribute("data-open-change") {
+            api.post_message(&json!({"type": "open_change", "path": path}).to_string());
+            return;
+        }
+        let _ = state.borrow_mut().review_click(&button);
+    });
+    review.add_event_listener_with_callback("click", on_review.as_ref().unchecked_ref())?;
+    on_review.forget();
 
     let state = ui;
     let tick = Closure::<dyn FnMut()>::new(move || state.borrow().show_status());
@@ -841,16 +880,162 @@ impl Ui {
         }
         if let Some(file) = message["file"].as_str() {
             tool.file = Some(file.to_owned());
+            if !self.changed.contains(&id) {
+                self.changed.push(id.clone());
+            }
         }
         status.clone_into(&mut tool.status);
         show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
             tool.pre.set_text_content(Some(output));
         }
-        match tool.parent.clone() {
+        let parent = tool.parent.clone();
+        if self.changed.contains(&id) {
+            self.render_review()?;
+        }
+        match parent {
             Some(parent) => self.refresh_files(&parent),
             None => Ok(()),
         }
+    }
+
+    /// The review's rows in arrival order: file, title and status of each `Write` or `Edit` call.
+    fn changes(&self) -> Vec<(String, String, String)> {
+        self.changed
+            .iter()
+            .filter_map(|id| self.tools.get(id))
+            .map(|tool| {
+                (
+                    tool.file.clone().unwrap_or_default(),
+                    tool.title.clone(),
+                    tool.status.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Rebuilds the change-set review: each file with its chunks and risk labels, then the open
+    /// chunk with previous and next steps. Titles, files and labels are set as text, never HTML.
+    fn render_review(&self) -> Result<(), JsValue> {
+        let changes = self.changes();
+        let groups = groups_of(&changes);
+        self.review.set_text_content(None);
+        if groups.is_empty() {
+            return self.review.set_attribute("hidden", "");
+        }
+        self.review.remove_attribute("hidden")?;
+        let note = self.document.create_element("p")?;
+        note.set_text_content(Some(
+            "Labels point at what a change touches. They do not say whether it is right.",
+        ));
+        self.review.append_child(&note)?;
+        let list = self.document.create_element("ul")?;
+        for (index, group) in groups.iter().enumerate() {
+            let item = self.document.create_element("li")?;
+            let open = self.review_file == Some(index);
+            let count = group.chunks.len();
+            let noun = if count == 1 { "change" } else { "changes" };
+            let button = self.button(
+                &format!("{} · {count} {noun}", group.file),
+                "data-review-file",
+                &index.to_string(),
+            )?;
+            button.set_attribute("aria-expanded", if open { "true" } else { "false" })?;
+            item.append_child(&button)?;
+            let mut labels: Vec<&str> = Vec::new();
+            for &chunk in &group.chunks {
+                let (file, title, _) = &changes[chunk];
+                for label in view::risk_labels(file, title) {
+                    if !labels.contains(&label) {
+                        labels.push(label);
+                    }
+                }
+            }
+            if !labels.is_empty() {
+                let line = self.document.create_element("p")?;
+                line.set_text_content(Some(&labels.join(", ")));
+                item.append_child(&line)?;
+            }
+            if open {
+                let chunks = self.document.create_element("ul")?;
+                for &chunk in &group.chunks {
+                    let (_, title, status) = &changes[chunk];
+                    let button = self.button(
+                        &format!("{title} ({status})"),
+                        "data-review-chunk",
+                        &chunk.to_string(),
+                    )?;
+                    let pressed = self.review_chunk == Some(chunk);
+                    button.set_attribute("aria-pressed", if pressed { "true" } else { "false" })?;
+                    let row = self.document.create_element("li")?;
+                    row.append_child(&button)?;
+                    chunks.append_child(&row)?;
+                }
+                item.append_child(&chunks)?;
+                let open_diff = self.button("Open diff", "data-open-change", &group.file)?;
+                item.append_child(&open_diff)?;
+            }
+            list.append_child(&item)?;
+        }
+        self.review.append_child(&list)?;
+        if let Some((file, title, status)) = self.review_chunk.and_then(|c| changes.get(c)) {
+            let detail = self.document.create_element("div")?;
+            let heading = self.document.create_element("p")?;
+            heading.set_text_content(Some(&format!("{title} ({status}) in {file}")));
+            let labels = view::risk_labels(file, title);
+            let line = self.document.create_element("p")?;
+            let text = if labels.is_empty() {
+                "No labels".to_owned()
+            } else {
+                labels.join(", ")
+            };
+            line.set_text_content(Some(&text));
+            let nav = self.document.create_element("div")?;
+            let previous = self.button("Previous change", "data-review-step", "-1")?;
+            let next = self.button("Next change", "data-review-step", "1")?;
+            nav.append_child(&previous)?;
+            nav.append_child(&next)?;
+            detail.append_child(&heading)?;
+            detail.append_child(&line)?;
+            detail.append_child(&nav)?;
+            self.review.append_child(&detail)?;
+        }
+        Ok(())
+    }
+
+    /// A button whose `attribute` holds the value its click reads back.
+    fn button(&self, text: &str, attribute: &str, value: &str) -> Result<Element, JsValue> {
+        let button = self.document.create_element("button")?;
+        button.set_attribute("type", "button")?;
+        button.set_attribute(attribute, value)?;
+        button.set_text_content(Some(text));
+        Ok(button)
+    }
+
+    /// Opens the file, chunk or step a review click names, then redraws the review.
+    fn review_click(&mut self, button: &Element) -> Result<(), JsValue> {
+        let changes = self.changes();
+        let groups = groups_of(&changes);
+        let number = |name: &str| button.get_attribute(name)?.parse::<usize>().ok();
+        if let Some(file) = number("data-review-file") {
+            self.review_file = (self.review_file != Some(file)).then_some(file);
+            self.review_chunk = None;
+        } else if let Some(chunk) = number("data-review-chunk") {
+            self.review_chunk = Some(chunk);
+            self.review_file = groups.iter().position(|g| g.chunks.contains(&chunk));
+        } else if let Some(step) = button
+            .get_attribute("data-review-step")
+            .and_then(|s| s.parse::<isize>().ok())
+        {
+            let last = changes.len().saturating_sub(1);
+            let chunk = self
+                .review_chunk
+                .map_or(0, |c| c.saturating_add_signed(step))
+                .min(last);
+            self.review_chunk = Some(chunk);
+            self.review_file = groups.iter().position(|g| g.chunks.contains(&chunk));
+        }
+        self.render_review()
     }
 
     /// Rebuilds an `Agent` call's changed-files buttons from its calls, so a file lists once its
