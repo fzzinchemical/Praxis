@@ -2,11 +2,16 @@
 
 use crate::provider::Message;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+/// Session id -> folder name, beside the logs. A side file keeps the logs themselves unchanged.
+const FOLDERS_FILE: &str = "folders.json";
+const FOLDER_NAME_MAX: usize = 64;
 
 /// An open `<dir>/<id>.jsonl`. Logs hold source code and tool output, so only the owner can read them.
 pub struct SessionLog {
@@ -34,6 +39,8 @@ pub struct SessionInfo {
     pub last_active: u64,
     /// The first user prompt, trimmed; empty if the log has none yet.
     pub title: String,
+    /// The folder the session was moved to, if any.
+    pub folder: Option<String>,
 }
 
 impl SessionLog {
@@ -105,6 +112,7 @@ pub fn list(dir: &Path, workspace: &Path) -> io::Result<Vec<SessionInfo>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
+    let folders = read_folders(dir);
     let mut sessions: Vec<SessionInfo> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
@@ -113,16 +121,80 @@ pub fn list(dir: &Path, workspace: &Path) -> io::Result<Vec<SessionInfo>> {
             // shortcut: a log that fails to read is skipped, not reported, so one bad file can't hide the rest.
             info(dir, &id, &wanted).ok().flatten()
         })
+        .map(|s| SessionInfo {
+            folder: folders.get(&s.id).cloned(),
+            ..s
+        })
         .collect();
     sessions.sort_by_key(|s| std::cmp::Reverse(s.last_active));
     Ok(sessions)
 }
 
-/// Removes one session's log. The lock keeps it from going while another window still writes to it.
+/// Removes one session's log and its folder entry. The lock keeps it from going while another window still writes to it.
 pub fn delete(dir: &Path, id: &str) -> io::Result<()> {
     let file = open(dir, id, false)?;
     lock(&file, id)?;
-    fs::remove_file(path(dir, id)?)
+    fs::remove_file(path(dir, id)?)?;
+    let mut folders = read_folders(dir);
+    if folders.remove(id).is_some() {
+        write_folders(dir, &folders)?;
+    }
+    Ok(())
+}
+
+/// Moves a session into the folder `name`. An empty name (after trimming) takes it out of its folder.
+/// Names are trimmed, at most 64 characters, and free of control characters.
+pub fn set_folder(dir: &Path, id: &str, name: &str) -> io::Result<()> {
+    if !path(dir, id)?.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no session `{id}`"),
+        ));
+    }
+    let name = name.trim();
+    let mut folders = read_folders(dir);
+    if name.is_empty() {
+        folders.remove(id);
+    } else {
+        if name.chars().count() > FOLDER_NAME_MAX || name.chars().any(char::is_control) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "folder names are at most {FOLDER_NAME_MAX} characters with no control characters"
+                ),
+            ));
+        }
+        folders.insert(id.to_owned(), name.to_owned());
+    }
+    write_folders(dir, &folders)
+}
+
+/// Every session's folder. A missing or unreadable file reads as no folders, so sessions still list.
+/// shortcut: the next folder change rewrites a corrupt file from scratch, so its old entries are lost. Upgrade by keeping the bad file aside.
+fn read_folders(dir: &Path) -> BTreeMap<String, String> {
+    fs::read_to_string(dir.join(FOLDERS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Writes the folder file through a temp file and a rename, so a crash never leaves it half-written.
+fn write_folders(dir: &Path, folders: &BTreeMap<String, String>) -> io::Result<()> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let text = serde_json::to_string(folders).map_err(io::Error::other)?;
+    let temp = dir.join(format!("{FOLDERS_FILE}.{}.tmp", std::process::id()));
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)?;
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(temp, dir.join(FOLDERS_FILE))
 }
 
 /// `None` if the log's header names another workspace or is missing.
@@ -151,6 +223,7 @@ fn info(dir: &Path, id: &str, workspace: &str) -> io::Result<Option<SessionInfo>
         started: session.started,
         last_active,
         title: title.trim().to_owned(),
+        folder: None,
     }))
 }
 

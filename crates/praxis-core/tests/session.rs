@@ -228,3 +228,86 @@ fn deleting_an_id_naming_another_path_removes_nothing_outside() {
     assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
     fs::remove_file(&outside).unwrap();
 }
+
+/// The session's folder as `list` reports it, read fresh from the files on disk.
+fn folder_of(sessions: &Path, workspace: &Path, id: &str) -> Option<String> {
+    session::list(sessions, workspace)
+        .unwrap()
+        .into_iter()
+        .find(|s| s.id == id)
+        .and_then(|s| s.folder)
+}
+
+#[test]
+fn a_session_moved_to_a_folder_lists_under_it_and_keeps_it_after_a_restart() {
+    let ws = workspace();
+    let sessions = dir();
+    let filed = log_in(&sessions, &ws, "file me");
+    let unfiled = log_in(&sessions, &ws, "leave me");
+
+    session::set_folder(&sessions, &filed, "  Work  ").unwrap();
+
+    assert_eq!(folder_of(&sessions, &ws, &filed), Some("Work".to_owned()));
+    assert_eq!(folder_of(&sessions, &ws, &unfiled), None);
+}
+
+#[test]
+fn an_empty_folder_name_removes_the_session_from_its_folder() {
+    let ws = workspace();
+    let sessions = dir();
+    let id = log_in(&sessions, &ws, "move me back");
+    session::set_folder(&sessions, &id, "Work").unwrap();
+
+    session::set_folder(&sessions, &id, "   ").unwrap();
+
+    assert_eq!(folder_of(&sessions, &ws, &id), None);
+}
+
+#[test]
+fn folder_names_are_limited_to_64_printable_characters() {
+    let ws = workspace();
+    let sessions = dir();
+    let id = log_in(&sessions, &ws, "name me");
+
+    assert!(session::set_folder(&sessions, &id, &"x".repeat(65)).is_err());
+    assert!(session::set_folder(&sessions, &id, "bad\nname").is_err());
+    assert!(session::set_folder(&sessions, &id, &"x".repeat(64)).is_ok());
+    assert_eq!(folder_of(&sessions, &ws, &id), Some("x".repeat(64)));
+}
+
+#[test]
+fn a_corrupt_folder_file_reads_as_no_folders() {
+    let ws = workspace();
+    let sessions = dir();
+    let id = log_in(&sessions, &ws, "still listed");
+    fs::write(sessions.join("folders.json"), "{ not json").unwrap();
+
+    assert_eq!(ids(&sessions, &ws), vec![id.clone()]);
+    assert_eq!(folder_of(&sessions, &ws, &id), None);
+}
+
+#[test]
+fn deleting_a_session_removes_its_folder_entry() {
+    let ws = workspace();
+    let sessions = dir();
+    let gone = log_in(&sessions, &ws, "delete me");
+    let kept = log_in(&sessions, &ws, "keep me");
+    session::set_folder(&sessions, &gone, "Scratch").unwrap();
+    session::set_folder(&sessions, &kept, "Work").unwrap();
+
+    session::delete(&sessions, &gone).unwrap();
+
+    let folders = fs::read_to_string(sessions.join("folders.json")).unwrap();
+    assert!(!folders.contains(&gone));
+    assert_eq!(folder_of(&sessions, &ws, &kept), Some("Work".to_owned()));
+}
+
+#[test]
+fn setting_a_folder_refuses_ids_outside_the_session_path_rules() {
+    let sessions = dir();
+    fs::create_dir_all(&sessions).unwrap();
+
+    assert!(session::set_folder(&sessions, "../folders", "Work").is_err());
+    assert!(session::set_folder(&sessions, "", "Work").is_err());
+    assert!(!sessions.join("folders.json").exists());
+}

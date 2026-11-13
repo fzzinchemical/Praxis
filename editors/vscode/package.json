@@ -15,6 +15,7 @@
       { "command": "praxis.openSession", "title": "Praxis: Open Session" },
       { "command": "praxis.refreshSessions", "title": "Praxis: Refresh Sessions", "icon": "$(refresh)" },
       { "command": "praxis.deleteSession", "title": "Praxis: Delete Session" },
+      { "command": "praxis.moveSessionToFolder", "title": "Praxis: Move Session to Folder" },
       { "command": "praxis.enablePlugin", "title": "Praxis: Enable Plugin" },
       { "command": "praxis.disablePlugin", "title": "Praxis: Disable Plugin" },
       { "command": "praxis.removePlugin", "title": "Praxis: Remove Plugin" },
@@ -38,6 +39,7 @@
         { "command": "praxis.refreshPlugins", "when": "view == praxis.plugins", "group": "navigation" }
       ],
       "view/item/context": [
+        { "command": "praxis.moveSessionToFolder", "when": "view == praxis.sessions && viewItem == session", "group": "1_move" },
         { "command": "praxis.deleteSession", "when": "view == praxis.sessions && viewItem == session", "group": "2_remove" },
         { "command": "praxis.enablePlugin", "when": "view == praxis.plugins && viewItem == plugin-disabled", "group": "1_state" },
         { "command": "praxis.disablePlugin", "when": "view == praxis.plugins && viewItem == plugin-enabled", "group": "1_state" },
@@ -46,6 +48,7 @@
       "commandPalette": [
         { "command": "praxis.openSession", "when": "false" },
         { "command": "praxis.deleteSession", "when": "false" },
+        { "command": "praxis.moveSessionToFolder", "when": "false" },
         { "command": "praxis.enablePlugin", "when": "false" },
         { "command": "praxis.disablePlugin", "when": "false" },
         { "command": "praxis.removePlugin", "when": "false" }

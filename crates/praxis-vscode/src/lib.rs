@@ -10,7 +10,7 @@ use js_sys::{Array, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
-    session_items,
+    folder_args, folder_names, session_items,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -314,6 +314,11 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     command(&context, "praxis.deleteSession", |item| {
         if let Some(id) = item_id(&item) {
             delete_session(id);
+        }
+    })?;
+    command(&context, "praxis.moveSessionToFolder", |item| {
+        if let Some(id) = item_id(&item) {
+            move_to_folder(id);
         }
     })?;
     command(&context, "praxis.refreshSessions", |_| refresh_sessions())
@@ -927,7 +932,7 @@ fn create_sessions_view(output: &OutputChannel) {
     let provider = node(&[
         ("onDidChangeTreeData", emitter.event()),
         ("getTreeItem", callback(|item| item)),
-        ("getChildren", callback(|_| children().into())),
+        ("getChildren", callback(|element| children(&element).into())),
     ]);
     // The view lives as long as the host; the returned handle needs no keeping.
     let _ = create_tree_view("praxis.sessions", &node(&[("treeDataProvider", provider)]));
@@ -955,14 +960,44 @@ fn node(fields: &[(&str, JsValue)]) -> JsValue {
     object.into()
 }
 
-/// The view's root items: a failed listing first, then one per session, or a line saying there are none.
-fn children() -> Array {
+/// The children of the view root, or of the folder `element` names. A folder holds the sessions filed in it.
+fn children(element: &JsValue) -> Array {
+    let nodes = match item_id(element)
+        .as_deref()
+        .and_then(|id| id.strip_prefix(FOLDER_PREFIX))
+    {
+        Some(folder) => folder_children(folder),
+        None => root_children(),
+    };
+    let array = Array::new();
+    for node in &nodes {
+        array.push(node);
+    }
+    array
+}
+
+/// Prefixes a folder tree item's id, so `getChildren` can tell a folder from a session.
+const FOLDER_PREFIX: &str = "folder:";
+
+/// The root items: a failed listing first, then the folders and the sessions in no folder, or a line
+/// saying there are none.
+fn root_children() -> Vec<JsValue> {
     let (problem, mut nodes): (Option<String>, Vec<JsValue>) = SIDEBAR.with(|sidebar| {
         sidebar
             .borrow()
             .as_ref()
             .map(|sidebar| {
-                let nodes = sidebar.items.iter().map(session_node).collect();
+                let mut nodes: Vec<JsValue> = folder_names(&sidebar.items)
+                    .iter()
+                    .map(|name| folder_node(name))
+                    .collect();
+                nodes.extend(
+                    sidebar
+                        .items
+                        .iter()
+                        .filter(|item| item.folder.is_none())
+                        .map(session_node),
+                );
                 (sidebar.problem.clone(), nodes)
             })
             .unwrap_or_default()
@@ -987,11 +1022,62 @@ fn children() -> Array {
             JsValue::from_str("No sessions in this workspace yet"),
         )]));
     }
-    let array = Array::new();
-    for node in &nodes {
-        array.push(node);
-    }
-    array
+    nodes
+}
+
+/// The sessions filed in `folder`, newest first as the listing gives them.
+fn folder_children(folder: &str) -> Vec<JsValue> {
+    SIDEBAR.with(|sidebar| {
+        sidebar
+            .borrow()
+            .as_ref()
+            .map(|sidebar| {
+                sidebar
+                    .items
+                    .iter()
+                    .filter(|item| item.folder.as_deref() == Some(folder))
+                    .map(session_node)
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// A folder as an expanded tree item, so the sessions in it show at once.
+fn folder_node(name: &str) -> JsValue {
+    node(&[
+        ("id", JsValue::from_str(&format!("{FOLDER_PREFIX}{name}"))),
+        ("label", JsValue::from_str(name)),
+        ("contextValue", JsValue::from_str("folder")),
+        // vscode.TreeItemCollapsibleState.Expanded
+        ("collapsibleState", JsValue::from_f64(2.0)),
+    ])
+}
+
+/// Asks for a folder name, then moves the session through the CLI. An empty name removes it from its
+/// folder, and cancelling the box does nothing.
+fn move_to_folder(id: String) {
+    let options = node(&[
+        (
+            "prompt",
+            JsValue::from_str("Folder name. Leave empty to take the session out of its folder."),
+        ),
+        ("placeHolder", JsValue::from_str("Folder")),
+    ]);
+    let on_name = Closure::once_into_js(move |name: JsValue| {
+        let Some(args) = name.as_string().and_then(|name| folder_args(&id, &name)) else {
+            return;
+        };
+        run_cli(args, None, |result| {
+            if let Err(error) = result {
+                sessions_log(&format!("sessions: move failed: {error}\n"));
+            }
+            refresh_sessions();
+        });
+    });
+    let _ = show_input_box(&options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_name);
 }
 
 /// A session as a tree item whose click runs `praxis.openSession` with its id.

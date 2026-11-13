@@ -3,6 +3,7 @@
 //! Lines are framed by hand with `serde_json` rather than the `agent-client-protocol` crate (SPEC §11).
 
 use serde_json::{Value, json};
+use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 /// A message from the webview. The webview is untrusted, so anything else is dropped.
@@ -216,6 +217,8 @@ pub struct Reaction {
 pub struct SessionItem {
     pub id: String,
     pub label: String,
+    /// The folder the session was moved to, if any.
+    pub folder: Option<String>,
 }
 
 /// Maps `praxis sessions --json`, already newest first and limited to one workspace, to sidebar
@@ -241,18 +244,41 @@ pub fn session_items(json: &str) -> Result<Vec<SessionItem>, String> {
             Ok(SessionItem {
                 id: id.to_owned(),
                 label: label.to_owned(),
+                folder: row["folder"].as_str().map(str::to_owned),
             })
         })
         .collect()
 }
 
-/// The CLI args that delete one session, or `None` if the id is not in the session id format
-/// (`{nanos}-{pid}`, digits only). Checked here before anything is spawned; the CLI checks again.
+/// The folders the sessions are in, each once, sorted.
+pub fn folder_names(items: &[SessionItem]) -> Vec<String> {
+    let names: BTreeSet<&str> = items.iter().filter_map(|i| i.folder.as_deref()).collect();
+    names.into_iter().map(str::to_owned).collect()
+}
+
+/// Only ids in the session format (`{nanos}-{pid}`, digits only) may reach the CLI. The CLI checks again.
+fn is_session_id(id: &str) -> bool {
+    id.starts_with(|c: char| c.is_ascii_digit())
+        && id.chars().all(|c| c.is_ascii_digit() || c == '-')
+}
+
+/// The CLI args that delete one session, or `None` if the id is not in the session id format.
 /// `--delete=<id>` keeps an id that starts with `-` from being read as a flag.
 pub fn delete_args(id: &str) -> Option<Vec<String>> {
-    let valid = id.starts_with(|c: char| c.is_ascii_digit())
-        && id.chars().all(|c| c.is_ascii_digit() || c == '-');
-    valid.then(|| vec!["sessions".to_owned(), format!("--delete={id}")])
+    is_session_id(id).then(|| vec!["sessions".to_owned(), format!("--delete={id}")])
+}
+
+/// The CLI args that move one session into `name` (empty removes it from its folder), or `None`
+/// for a malformed id. The CLI accepts `NAME` even when it starts with `-`.
+pub fn folder_args(id: &str, name: &str) -> Option<Vec<String>> {
+    is_session_id(id).then(|| {
+        vec![
+            "sessions".to_owned(),
+            "--folder".to_owned(),
+            id.to_owned(),
+            name.to_owned(),
+        ]
+    })
 }
 
 /// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
@@ -1233,13 +1259,55 @@ mod tests {
                 SessionItem {
                     id: "new".to_owned(),
                     label: "second".to_owned(),
+                    folder: None,
                 },
                 SessionItem {
                     id: "old".to_owned(),
                     label: "Untitled session".to_owned(),
+                    folder: None,
                 },
             ])
         );
+    }
+
+    #[test]
+    fn sessions_json_carries_each_session_folder() {
+        let items = session_items(
+            r#"[{"id":"a","title":"t","folder":"Work"},{"id":"b","title":"t","folder":null}]"#,
+        );
+        let folders: Vec<Option<String>> = items.unwrap().into_iter().map(|i| i.folder).collect();
+        assert_eq!(folders, [Some("Work".to_owned()), None]);
+    }
+
+    #[test]
+    fn folder_names_are_listed_once_each_in_order() {
+        let item = |folder: Option<&str>| SessionItem {
+            id: "x".to_owned(),
+            label: "x".to_owned(),
+            folder: folder.map(str::to_owned),
+        };
+        let items = [
+            item(Some("Work")),
+            item(None),
+            item(Some("Home")),
+            item(Some("Work")),
+        ];
+        assert_eq!(folder_names(&items), ["Home", "Work"]);
+    }
+
+    #[test]
+    fn moving_a_session_passes_only_well_formed_ids_to_the_cli() {
+        assert_eq!(
+            folder_args("1700000000-42", "-Work"),
+            Some(vec![
+                "sessions".to_owned(),
+                "--folder".to_owned(),
+                "1700000000-42".to_owned(),
+                "-Work".to_owned(),
+            ])
+        );
+        assert_eq!(folder_args("../secret", "Work"), None);
+        assert_eq!(folder_args("", "Work"), None);
     }
 
     #[test]

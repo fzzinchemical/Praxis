@@ -69,12 +69,21 @@ enum Command {
     Plugin(PluginCommand),
     /// List this workspace's saved sessions, newest first. Starts no model or MCP server.
     Sessions {
-        /// Print a JSON array of `{id, title, started, last_active}`.
+        /// Print a JSON array of `{id, title, started, last_active, folder}`.
         #[arg(long)]
         json: bool,
         /// Delete this session's log instead of listing. Refused while it is open elsewhere.
         #[arg(long, value_name = "ID", conflicts_with = "json")]
         delete: Option<String>,
+        /// Move session ID into folder NAME instead of listing; an empty NAME removes it from its folder.
+        #[arg(
+            long,
+            num_args = 2,
+            value_names = ["ID", "NAME"],
+            allow_hyphen_values = true,
+            conflicts_with_all = ["json", "delete"]
+        )]
+        folder: Option<Vec<String>>,
     },
 }
 
@@ -201,13 +210,25 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
 }
 
 /// `praxis sessions`: reads the session logs only, so the sidebar never starts a model or MCP server.
-fn sessions_command(json: bool, delete: Option<String>, workspace: &Path) -> Result<u8> {
+fn sessions_command(
+    json: bool,
+    delete: Option<String>,
+    folder: Option<Vec<String>>,
+    workspace: &Path,
+) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("Sessions need HOME or XDG_DATA_HOME to read from.");
         return Ok(EXIT_USAGE);
     };
     if let Some(id) = delete {
         session::delete(&dir, &id)?;
+        return Ok(0);
+    }
+    if let Some(args) = folder {
+        let [id, name] = args.as_slice() else {
+            return Ok(EXIT_USAGE);
+        };
+        session::set_folder(&dir, id, name)?;
         return Ok(0);
     }
     let sessions = session::list(&dir, workspace)?;
@@ -220,6 +241,7 @@ fn sessions_command(json: bool, delete: Option<String>, workspace: &Path) -> Res
                     "title": s.title,
                     "started": s.started,
                     "last_active": s.last_active,
+                    "folder": s.folder,
                 })
             })
             .collect();
@@ -875,8 +897,12 @@ async fn run(
     match cli.command {
         Some(Command::Models) => return list_models(&provider).await,
         Some(Command::Plugin(command)) => return plugin_command(command),
-        Some(Command::Sessions { json, delete }) => {
-            return sessions_command(json, delete, &workspace);
+        Some(Command::Sessions {
+            json,
+            delete,
+            folder,
+        }) => {
+            return sessions_command(json, delete, folder, &workspace);
         }
         Some(Command::Acp) | None => {}
     }

@@ -707,4 +707,36 @@ async fn sessions_json_lists_this_workspace_without_lm_studio() {
     assert_eq!(rows.as_array().map(Vec::len), Some(1), "{rows}");
     assert_eq!(rows[0]["title"], "first prompt marker", "{rows}");
     assert!(rows[0]["id"].is_string(), "{rows}");
+    assert!(rows[0]["folder"].is_null(), "{rows}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sessions_folder_moves_a_session_and_json_reports_it() {
+    let dir = workspace();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let saved = run(&server, &dir, &["--model", "m", "file me"]).await;
+    assert_eq!(saved.status.code(), Some(0), "{}", err(&saved));
+    let listing = command("http://127.0.0.1:9", &dir, &["sessions", "--json"])
+        .output()
+        .await
+        .unwrap();
+    let rows: Value = serde_json::from_str(&out(&listing)).unwrap();
+    let id = rows[0]["id"].as_str().unwrap().to_owned();
+
+    let moved = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["sessions", "--folder", &id, "-Work"],
+    )
+    .output()
+    .await
+    .unwrap();
+
+    assert_eq!(moved.status.code(), Some(0), "{}", err(&moved));
+    let listing = command("http://127.0.0.1:9", &dir, &["sessions", "--json"])
+        .output()
+        .await
+        .unwrap();
+    let rows: Value = serde_json::from_str(&out(&listing)).unwrap();
+    assert_eq!(rows[0]["folder"], "-Work", "{rows}");
 }
