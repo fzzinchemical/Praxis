@@ -600,3 +600,10 @@ lose one move; acceptable for one user.
 
 **Not checked:** `praxis-vscode-ui/src/lib.rs` beyond the new tool-block and menu code, the
 `.vsix` packaging, and VS Code behaviour in a running editor.
+
+# Round 5: beta 1.2 re-check (2026-11-13)
+
+Reviewed the round 4 fixes (`fda1c12`, `30ac87e`) and the panel code round 4 left out
+(`praxis-vscode-ui/src/lib.rs`: tool blocks, subagent usage, changed files, Stop button, command
+menu). With call ids now unique per subagent, the panel's id-keyed tool map holds. No new
+findings, so the beta 1.2 audit loop ends here.
