@@ -1463,7 +1463,15 @@ mod tests {
     /// Runs one prompt with a client that answers the permission request with `answer`, or
     /// cancels the turn there, and returns the session id and what the client saw, in order.
     async fn prompt_once(dir: &Path, answer: &'static str) -> (String, Vec<String>) {
-        let server = fake_server().await;
+        prompt_against(fake_server().await, dir, answer).await
+    }
+
+    /// `prompt_once` against any fake server, so a test can script the model's replies.
+    async fn prompt_against(
+        server: MockServer,
+        dir: &Path,
+        answer: &'static str,
+    ) -> (String, Vec<String>) {
         let log = Log::default();
         let (on_ask, on_update) = (log.clone(), log.clone());
         let mut id = String::new();
@@ -2073,6 +2081,61 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_read_only_tool_round_then_a_text_reply_ends_the_turn_with_the_text() {
+        let dir = temp_dir("glob-then-text");
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let server = fake_server_script(&[("Glob", json!({"pattern": "*.txt"}))]).await;
+        let (id, seen) = prompt_against(server, &dir, "allow_once").await;
+        assert_eq!(
+            seen,
+            [
+                "tool_call",
+                "tool_call_update completed",
+                "agent_message_chunk",
+                "EndTurn",
+            ]
+        );
+        let log =
+            std::fs::read_to_string(dir.join("sessions").join(format!("{id}.jsonl"))).unwrap();
+        assert!(log.contains("\"done\""), "{log}");
+    }
+
+    /// Scripted replies: the first calls Glob with split arguments and null content, then `second`.
+    async fn glob_then(second: String) -> MockServer {
+        let server = MockServer::start().await;
+        let first = sse(&[
+            json!({"choices": [{"delta": {"role": "assistant", "content": null,
+                "reasoning_content": "looking"}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "c0",
+                "function": {"name": "Glob", "arguments": "{\"pattern\""}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {"tool_calls": [{"index": 0,
+                "function": {"arguments": ": \"*.txt\"}"}}]}, "finish_reason": null}]}),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+        ]);
+        for body in [first, second] {
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/event-stream"))
+                .up_to_n_times(1)
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_tool_round_then_an_empty_reply_is_logged_and_ends_the_turn() {
+        let dir = temp_dir("glob-then-empty");
+        std::fs::write(dir.join("a.txt"), "x").unwrap();
+        let empty = sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]);
+        let (id, seen) = prompt_against(glob_then(empty).await, &dir, "allow_once").await;
+        assert_eq!(seen.last().map(String::as_str), Some("EndTurn"), "{seen:?}");
+        let log =
+            std::fs::read_to_string(dir.join("sessions").join(format!("{id}.jsonl"))).unwrap();
+        let last = log.lines().last().unwrap_or_default();
+        assert!(last.contains("\"role\":\"assistant\""), "{log}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
