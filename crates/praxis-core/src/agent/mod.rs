@@ -26,6 +26,7 @@ use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
+use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
@@ -186,6 +187,10 @@ pub struct Agent {
     compact_next: bool,
     /// Messages a summary removed. Generated call ids count these so they never repeat.
     summarised_messages: usize,
+    /// User turns begun so far, numbered from 1 as `rewind_to_turn` takes them.
+    turns: usize,
+    /// Turns from the resumed log. Their file copies died with the earlier run, so they can't be rewound.
+    resumed_turns: usize,
     /// How to get masked output back, as a tool name and the arguments a call must include.
     refetchable: Vec<(String, Value)>,
     refetches: u32,
@@ -298,6 +303,8 @@ impl Agent {
             scoped_rules,
             compact_next: false,
             summarised_messages: 0,
+            turns: 0,
+            resumed_turns: 0,
             refetchable: Vec::new(),
             refetches: 0,
             first_token_ms: Vec::new(),
@@ -584,6 +591,8 @@ impl Agent {
 
     pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
         self.history.extend(prior);
+        self.turns = self.user_messages().count();
+        self.resumed_turns = self.turns;
         self.session = Some(log);
         self.answer_orphan_calls();
         self
@@ -677,6 +686,59 @@ impl Agent {
         &self.tools
     }
 
+    fn user_messages(&self) -> impl Iterator<Item = &str> {
+        self.history.iter().filter_map(|m| match m {
+            Message::User { content } => Some(content.as_str()),
+            _ => None,
+        })
+    }
+
+    /// The turns `rewind_to_turn` accepts, oldest first, each with its prompt. Empty once a summary
+    /// has replaced older history, since the summary is not a turn of its own.
+    /// shortcut: rewinding stops for good after the first summary of a session. Upgrade by tracking turn starts through compaction.
+    pub fn rewindable_turns(&self) -> Vec<(usize, &str)> {
+        if self.summarised_messages > 0 {
+            return Vec::new();
+        }
+        self.user_messages()
+            .enumerate()
+            .map(|(i, prompt)| (i + 1, prompt))
+            .filter(|(turn, _)| *turn > self.resumed_turns)
+            .collect()
+    }
+
+    /// Restores the files and the history to just before user turn `turn`, as `rewindable_turns`
+    /// numbers it, and logs the rewind so a resumed chat matches. Bash effects are not undone.
+    pub fn rewind_to_turn(&mut self, turn: usize) -> io::Result<Vec<PathBuf>> {
+        let rewindable = self.rewindable_turns().iter().any(|(n, _)| *n == turn);
+        if !rewindable {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("turn {turn} can't be rewound to"),
+            ));
+        }
+        let start = self
+            .history
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| matches!(m, Message::User { .. }))
+            .nth(turn - 1)
+            .map(|(i, _)| i);
+        let Some(start) = start else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("turn {turn} is gone"),
+            ));
+        };
+        let files = self.tools.rewind_to(turn)?;
+        self.history.truncate(start);
+        self.turns = turn - 1;
+        if let Some(log) = &mut self.session {
+            log.append_rewind(turn)?;
+        }
+        Ok(files)
+    }
+
     /// Lets the front end stop one running subagent while a turn holds this agent (SPEC §11).
     pub fn subagent_stops(&self) -> SubagentStops {
         self.subagents.clone()
@@ -690,7 +752,8 @@ impl Agent {
         events: &mpsc::Sender<AgentEvent>,
         cancel: CancellationToken,
     ) {
-        self.tools.begin_turn();
+        self.turns += 1;
+        self.tools.begin_turn(self.turns);
         let content = match self.note_changed_facts() {
             Some(note) => format!("{note}\n\n{prompt}"),
             None => prompt,

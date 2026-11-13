@@ -14,13 +14,21 @@ const CHECKPOINT_TURNS: usize = 20;
 
 pub const UNDO_NOTE: &str = "Only Write and Edit changes are undone; Bash effects are not.";
 
+/// One chat turn's undo step: each file it changed, with its saved copy or `None` if the turn created it.
+#[derive(Debug)]
+struct Step {
+    turn: usize,
+    files: Vec<(PathBuf, Option<PathBuf>)>,
+}
+
 #[derive(Debug, Default)]
 pub(super) struct Checkpoints {
     /// `None` until a session gives us somewhere private to keep copies.
     dir: Option<PathBuf>,
-    /// Per turn: each changed file and its saved copy, or `None` if the turn created it.
-    turns: Vec<Vec<(PathBuf, Option<PathBuf>)>>,
+    turns: Vec<Step>,
     saved: u64,
+    /// The newest turn whose copies the window deleted. That turn and older ones can't be rewound.
+    expired_through: usize,
 }
 
 impl ToolContext {
@@ -32,7 +40,7 @@ impl ToolContext {
         let live: Vec<PathBuf> = cp
             .turns
             .iter()
-            .flatten()
+            .flat_map(|step| &step.files)
             .filter_map(|(_, c)| c.clone())
             .collect();
         let mut highest = 0;
@@ -57,21 +65,29 @@ impl ToolContext {
         cp.saved = highest;
     }
 
-    /// Starts a new undo step. Turns that changed nothing don't count as one.
-    /// Turns beyond `CHECKPOINT_TURNS` are dropped, and their copies deleted.
-    pub fn begin_turn(&self) {
-        let mut cp = self.checkpoints();
-        if cp.turns.last().is_none_or(|turn| !turn.is_empty()) {
-            cp.turns.push(Vec::new());
+    /// Starts undo step `turn`, the 1-based number of the chat turn. Turns that changed nothing
+    /// don't count as a step. Steps beyond `CHECKPOINT_TURNS` are dropped, and their copies deleted.
+    pub fn begin_turn(&self, turn: usize) {
+        let mut guard = self.checkpoints();
+        let cp = &mut *guard;
+        match cp.turns.last_mut() {
+            Some(step) if step.files.is_empty() => step.turn = turn,
+            _ => cp.turns.push(Step {
+                turn,
+                files: Vec::new(),
+            }),
         }
         let expired = cp.turns.len().saturating_sub(CHECKPOINT_TURNS);
-        for (_, copy) in cp.turns.drain(..expired).flatten() {
-            let Some(copy) = copy else { continue };
-            match fs::remove_file(&copy) {
-                Err(e) if e.kind() != io::ErrorKind::NotFound => {
-                    tracing::warn!(copy = %copy.display(), error = %e, "could not delete an old checkpoint");
+        for step in cp.turns.drain(..expired) {
+            cp.expired_through = step.turn;
+            for (_, copy) in step.files {
+                let Some(copy) = copy else { continue };
+                match fs::remove_file(&copy) {
+                    Err(e) if e.kind() != io::ErrorKind::NotFound => {
+                        tracing::warn!(copy = %copy.display(), error = %e, "could not delete an old checkpoint");
+                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
     }
@@ -83,12 +99,15 @@ impl ToolContext {
             return Ok(());
         };
         if cp.turns.is_empty() {
-            cp.turns.push(Vec::new());
+            cp.turns.push(Step {
+                turn: 0,
+                files: Vec::new(),
+            });
         }
         if cp
             .turns
             .last()
-            .is_some_and(|t| t.iter().any(|(p, _)| p == path))
+            .is_some_and(|step| step.files.iter().any(|(p, _)| p == path))
         {
             return Ok(());
         }
@@ -111,8 +130,8 @@ impl ToolContext {
         .map_err(ToolError::io("checkpoint", path))?;
         cp.saved += 1;
         let copy = saved;
-        if let Some(turn) = cp.turns.last_mut() {
-            turn.push((path.to_owned(), copy));
+        if let Some(step) = cp.turns.last_mut() {
+            step.files.push((path.to_owned(), copy));
         }
         Ok(())
     }
@@ -120,40 +139,74 @@ impl ToolContext {
     /// Restores the files the last changing turn wrote and returns their paths, newest first.
     /// Every file is attempted; failures are kept for a later undo and all named in the error.
     pub fn undo(&self) -> io::Result<Vec<PathBuf>> {
-        let turn = {
+        let steps = {
             let mut cp = self.checkpoints();
-            while cp.turns.last().is_some_and(Vec::is_empty) {
-                cp.turns.pop();
-            }
-            cp.turns.pop().unwrap_or_default()
+            let Some(at) = cp.turns.iter().rposition(|step| !step.files.is_empty()) else {
+                return Ok(Vec::new());
+            };
+            cp.turns.split_off(at)
         };
+        self.restore_steps(steps)
+    }
+
+    /// Restores the files that chat turn `turn` and every later one changed, newest first, and drops
+    /// their undo steps. Fails for a turn whose copies the window already deleted.
+    pub fn rewind_to(&self, turn: usize) -> io::Result<Vec<PathBuf>> {
+        let steps = {
+            let mut cp = self.checkpoints();
+            if cp.dir.is_none() {
+                return Err(io::Error::other("file checkpoints are off"));
+            }
+            if turn <= cp.expired_through {
+                return Err(io::Error::other(format!(
+                    "turn {turn} is older than the last {CHECKPOINT_TURNS} turns"
+                )));
+            }
+            let at = cp.turns.partition_point(|step| step.turn < turn);
+            cp.turns.split_off(at)
+        };
+        self.restore_steps(steps)
+    }
+
+    /// Restores every file of `steps`, newest first. Failures stay in the undo history for a later try.
+    fn restore_steps(&self, steps: Vec<Step>) -> io::Result<Vec<PathBuf>> {
         let mut restored = Vec::new();
         let mut failed = Vec::new();
         let mut failures = Vec::new();
-        for (path, copy) in turn.iter().rev() {
-            match restore(path, copy.as_deref()) {
-                Ok(()) => {
-                    // The model must read the file again before editing it.
-                    self.forget(path);
-                    restored.push(path.clone());
-                    if let Some(copy) = copy {
-                        // The restore already succeeded, so a leftover copy only wastes disk.
-                        if let Err(e) = fs::remove_file(copy) {
-                            tracing::warn!(copy = %copy.display(), error = %e, "could not delete a restored checkpoint");
+        for step in steps.into_iter().rev() {
+            let mut kept = Vec::new();
+            for (path, copy) in step.files.into_iter().rev() {
+                match restore(&path, copy.as_deref()) {
+                    Ok(()) => {
+                        // The model must read the file again before editing it.
+                        self.forget(&path);
+                        if let Some(copy) = &copy {
+                            // The restore already succeeded, so a leftover copy only wastes disk.
+                            if let Err(e) = fs::remove_file(copy) {
+                                tracing::warn!(copy = %copy.display(), error = %e, "could not delete a restored checkpoint");
+                            }
                         }
+                        restored.push(path);
+                    }
+                    Err(e) => {
+                        failures.push(format!("{}: {e}", path.display()));
+                        kept.push((path, copy));
                     }
                 }
-                Err(e) => {
-                    failures.push(format!("{}: {e}", path.display()));
-                    failed.push((path.clone(), copy.clone()));
-                }
+            }
+            if !kept.is_empty() {
+                kept.reverse();
+                failed.push(Step {
+                    turn: step.turn,
+                    files: kept,
+                });
             }
         }
         if failures.is_empty() {
             return Ok(restored);
         }
         failed.reverse();
-        self.checkpoints().turns.push(failed);
+        self.checkpoints().turns.extend(failed);
         // Users need to know which files already changed back, not only which ones failed.
         let done = if restored.is_empty() {
             String::new()
@@ -203,7 +256,7 @@ mod tests {
         ctx.checkpoint_into(root.join("checkpoints"));
         let path = |name: &str| workspace.join(name).display().to_string();
 
-        ctx.begin_turn();
+        ctx.begin_turn(1);
         read(
             from_value(json!({"file_path": path("old.txt")})).unwrap(),
             &ctx,
@@ -214,12 +267,12 @@ mod tests {
             edit(from_value(input).unwrap(), &ctx).unwrap();
         };
         change("one", "two");
-        ctx.begin_turn();
+        ctx.begin_turn(2);
         change("two", "three");
         change("three", "four");
         let input = json!({"file_path": path("sub/new.txt"), "content": "hi"});
         write(from_value(input).unwrap(), &ctx).unwrap();
-        ctx.begin_turn();
+        ctx.begin_turn(3);
 
         assert_eq!(ctx.undo().unwrap().len(), 2);
         assert_eq!(
@@ -249,13 +302,13 @@ mod tests {
         ctx.checkpoint_into(root.join("checkpoints"));
         let path = |name: &str| workspace.join(name).display().to_string();
 
-        ctx.begin_turn();
+        ctx.begin_turn(1);
         for name in ["a.txt", "gone/b.txt"] {
             read(from_value(json!({"file_path": path(name)})).unwrap(), &ctx).unwrap();
             let input = json!({"file_path": path(name), "old_string": "one", "new_string": "two"});
             edit(from_value(input).unwrap(), &ctx).unwrap();
         }
-        ctx.begin_turn();
+        ctx.begin_turn(2);
         fs::remove_dir_all(workspace.join("gone")).unwrap();
 
         let err = ctx.undo().unwrap_err().to_string();
@@ -286,7 +339,7 @@ mod tests {
 
         let first = ToolContext::new(&workspace).unwrap();
         first.checkpoint_into(checkpoints.clone());
-        first.begin_turn();
+        first.begin_turn(1);
         read(
             from_value(json!({"file_path": path("a.txt")})).unwrap(),
             &first,
@@ -297,7 +350,7 @@ mod tests {
 
         let resumed = ToolContext::new(&workspace).unwrap();
         resumed.checkpoint_into(checkpoints);
-        resumed.begin_turn();
+        resumed.begin_turn(1);
         read(
             from_value(json!({"file_path": path("a.txt")})).unwrap(),
             &resumed,
@@ -330,7 +383,7 @@ mod tests {
 
         let turns = CHECKPOINT_TURNS + 1;
         for i in 0..turns {
-            ctx.begin_turn();
+            ctx.begin_turn(i + 1);
             read(from_value(json!({"file_path": path})).unwrap(), &ctx).unwrap();
             let input = json!({"file_path": path, "old_string": format!("v{i}\n"), "new_string": format!("v{}\n", i + 1)});
             edit(from_value(input).unwrap(), &ctx).unwrap();
@@ -377,13 +430,49 @@ mod tests {
         };
         assert_eq!(numbered(&checkpoints), 0, "old copies must be deleted");
 
-        resumed.begin_turn();
+        resumed.begin_turn(1);
         read(from_value(json!({"file_path": path})).unwrap(), &resumed).unwrap();
         let input = json!({"file_path": path, "old_string": "v0\n", "new_string": "v1\n"});
         edit(from_value(input).unwrap(), &resumed).unwrap();
         assert_eq!(fs::read_to_string(&file).unwrap(), "v1\n");
         assert_eq!(resumed.undo().unwrap().len(), 1);
         assert_eq!(fs::read_to_string(&file).unwrap(), "v0\n");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rewind_restores_files_from_turn_n_on_and_refuses_turns_past_the_window() {
+        let root = std::env::temp_dir().join(format!("praxis-rewind-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        let file = workspace.join("a.txt");
+        fs::write(&file, "v0\n").unwrap();
+        let ctx = ToolContext::new(&workspace).unwrap();
+        ctx.checkpoint_into(root.join("checkpoints"));
+        let path = file.display().to_string();
+
+        let turns = CHECKPOINT_TURNS + 1;
+        for i in 0..turns {
+            ctx.begin_turn(i + 1);
+            read(from_value(json!({"file_path": path})).unwrap(), &ctx).unwrap();
+            let input = json!({"file_path": path, "old_string": format!("v{i}\n"), "new_string": format!("v{}\n", i + 1)});
+            edit(from_value(input).unwrap(), &ctx).unwrap();
+        }
+
+        let err = ctx.rewind_to(1).unwrap_err().to_string();
+        assert!(err.contains("older than the last"), "{err}");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            format!("v{turns}\n"),
+            "a refused rewind changes nothing"
+        );
+
+        // Turn 2 changed v1 to v2, so rewinding to it restores v1 and drops turns 2 onward.
+        // Turns 2 to 21 each changed the file once, so twenty restores.
+        assert_eq!(ctx.rewind_to(2).unwrap().len(), CHECKPOINT_TURNS);
+        assert_eq!(fs::read_to_string(&file).unwrap(), "v1\n");
+        assert!(ctx.rewind_to(2).unwrap().is_empty());
+        assert!(ctx.rewind_to(1).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

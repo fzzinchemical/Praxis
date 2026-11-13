@@ -653,6 +653,36 @@ async fn enabled_plugins_add_skills_commands_and_blocking_hooks() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn rewind_restores_the_file_and_the_chat_to_before_the_turn() {
+    let dir = workspace();
+    let kept = dir.join("kept.txt");
+    let undone = dir.join("undone.txt");
+    let server = server(
+        None,
+        Replies(vec![
+            tool_reply("Write", &json!({"file_path": kept, "content": "x"})),
+            text_reply("wrote kept"),
+            tool_reply("Write", &json!({"file_path": undone, "content": "x"})),
+            text_reply("wrote undone"),
+            text_reply("fresh start"),
+        ]),
+    )
+    .await;
+
+    let typed = "y\nfirst\ny\nsecond\ny\n/rewind\n/rewind 2\nthird\n/exit\n";
+    let args = "--config-override agent.auto_load=false --model m";
+    let output = in_terminal(&server.uri(), &dir, args, typed).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", out(&output));
+    assert!(out(&output).contains("2: second"), "{}", out(&output));
+    assert!(kept.exists());
+    assert!(!undone.exists());
+    let chats = requests_to(&server, CHAT).await;
+    let sent = chats.last().unwrap()["messages"].to_string();
+    assert!(sent.contains("third") && !sent.contains("second"), "{sent}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn bare_resume_continues_the_newest_session_of_this_workspace_only() {
     let server = server(
         Some(32768),

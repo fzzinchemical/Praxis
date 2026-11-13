@@ -784,6 +784,12 @@ async fn repl(
             "" => {}
             "/exit" | "/quit" => return Ok(0),
             "/undo" => undo(agent.tools()),
+            command if command == "/rewind" || command.starts_with("/rewind ") => {
+                rewind(
+                    &mut agent,
+                    command.get("/rewind".len()..).unwrap_or_default().trim(),
+                );
+            }
             _ => match plan_command(&line) {
                 Some(PlanCommand::Plan("")) => eprintln!("Usage: /plan <task>"),
                 Some(PlanCommand::Plan(task)) => {
@@ -822,6 +828,37 @@ fn undo(tools: &ToolContext) {
             }
         }
         Err(e) => eprintln!("Undo failed: {e}"),
+    }
+    eprintln!("{}", praxis_core::tools::UNDO_NOTE);
+}
+
+/// `/rewind` lists the turns it can rewind to; `/rewind <n>` restores files and chat to before turn `n`.
+fn rewind(agent: &mut Agent, arg: &str) {
+    if arg.is_empty() {
+        let turns = agent.rewindable_turns();
+        if turns.is_empty() {
+            eprintln!("Nothing to rewind to.");
+        }
+        for (turn, prompt) in turns {
+            let first = prompt.lines().next().unwrap_or_default();
+            let preview: String = first.chars().take(60).collect();
+            eprintln!("{turn}: {}", sanitize(&preview));
+        }
+        eprintln!("Usage: /rewind <n> restores files and chat to before turn <n>.");
+        return;
+    }
+    let Ok(turn) = arg.parse::<usize>() else {
+        eprintln!("Usage: /rewind <n>");
+        return;
+    };
+    match agent.rewind_to_turn(turn) {
+        Ok(files) => {
+            for file in files {
+                eprintln!("Restored {}", sanitize(&file.display().to_string()));
+            }
+            eprintln!("Chat rewound to before turn {turn}.");
+        }
+        Err(e) => eprintln!("Rewind failed: {e}"),
     }
     eprintln!("{}", praxis_core::tools::UNDO_NOTE);
 }

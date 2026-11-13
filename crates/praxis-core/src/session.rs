@@ -87,6 +87,10 @@ impl SessionLog {
             if i == 0 && serde_json::from_str::<HeaderLine>(line).is_ok() {
                 continue;
             }
+            if let Ok(RewindLine { rewind }) = serde_json::from_str(line) {
+                cut_turn(&mut entries, rewind.turn);
+                continue;
+            }
             entries.push(serde_json::from_str(line).map_err(io::Error::other)?);
         }
         if complete < text.len() {
@@ -124,6 +128,14 @@ impl SessionLog {
         })
     }
 
+    /// Records that the chat was rewound to before user turn `turn` (1-based). Replay drops that
+    /// turn and every later one, so a resumed chat shows the shortened history.
+    pub fn append_rewind(&mut self, turn: usize) -> io::Result<()> {
+        self.write_line(&RewindLine {
+            rewind: Rewind { turn },
+        })
+    }
+
     fn write_line(&mut self, entry: &impl Serialize) -> io::Result<()> {
         let mut line = serde_json::to_string(entry).map_err(io::Error::other)?;
         line.push('\n');
@@ -139,6 +151,33 @@ pub struct Entry {
     pub subagent_of: Option<String>,
     #[serde(flatten)]
     pub message: Message,
+}
+
+/// A rewind record. Logs from before rewinds existed have none, so old logs replay unchanged.
+#[derive(Serialize, Deserialize)]
+struct RewindLine {
+    rewind: Rewind,
+}
+
+#[derive(Serialize, Deserialize)]
+struct Rewind {
+    turn: usize,
+}
+
+/// Drops main user turn `turn` (1-based) and everything after it, subagent entries included.
+fn cut_turn(entries: &mut Vec<Entry>, turn: usize) {
+    let is_turn_start =
+        |e: &Entry| e.subagent_of.is_none() && matches!(e.message, Message::User { .. });
+    let start = turn.checked_sub(1).and_then(|n| {
+        entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| is_turn_start(e))
+            .nth(n)
+    });
+    if let Some((at, _)) = start {
+        entries.truncate(at);
+    }
 }
 
 /// The borrowed form of [`Entry`] written to the log, leaving the field out when it is unset.
@@ -322,4 +361,77 @@ fn open(dir: &Path, id: &str, new: bool) -> io::Result<File> {
         .create_new(new)
         .mode(0o600)
         .open(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn user(text: &str) -> Message {
+        Message::User {
+            content: text.to_owned(),
+        }
+    }
+
+    fn reply(text: &str) -> Message {
+        Message::Assistant {
+            content: Some(text.to_owned()),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    fn texts(messages: &[Message]) -> Vec<&str> {
+        messages
+            .iter()
+            .map(|m| match m {
+                Message::User { content } => content.as_str(),
+                Message::Assistant { content, .. } => content.as_deref().unwrap_or_default(),
+                _ => "?",
+            })
+            .collect()
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("praxis-session-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("ws")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn replay_after_a_rewind_drops_the_rewound_turns_and_their_subagent_entries() {
+        let dir = scratch("rewind");
+        let mut log = SessionLog::create(&dir, &dir.join("ws")).unwrap();
+        let id = log.id().to_owned();
+        log.append(&user("one")).unwrap();
+        log.append(&reply("a")).unwrap();
+        log.append(&user("two")).unwrap();
+        log.append_subagent("call", &reply("from subagent"))
+            .unwrap();
+        log.append(&reply("b")).unwrap();
+        log.append_rewind(2).unwrap();
+        log.append(&user("three")).unwrap();
+        drop(log);
+
+        let (_log, messages) = SessionLog::resume(&dir, &id).unwrap();
+
+        assert_eq!(texts(&messages), ["one", "a", "three"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_log_without_rewind_entries_replays_every_message() {
+        let dir = scratch("no-rewind");
+        let mut log = SessionLog::create(&dir, &dir.join("ws")).unwrap();
+        let id = log.id().to_owned();
+        log.append(&user("one")).unwrap();
+        log.append(&reply("a")).unwrap();
+        drop(log);
+
+        let (_log, messages) = SessionLog::resume(&dir, &id).unwrap();
+
+        assert_eq!(texts(&messages), ["one", "a"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }
