@@ -2,7 +2,7 @@
 
 use crate::provider::Message;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -42,6 +42,7 @@ impl SessionLog {
         let now = unix_time(SystemTime::now());
         let id = format!("{}-{}", now.as_nanos(), std::process::id());
         let mut file = open(dir, &id, true)?;
+        lock(&file, &id)?;
         let header = HeaderLine {
             session: Header {
                 workspace: canonical(workspace)?,
@@ -58,6 +59,7 @@ impl SessionLog {
     /// dropped from the file too, so the next record starts on a line of its own.
     pub fn resume(dir: &Path, id: &str) -> io::Result<(Self, Vec<Message>)> {
         let file = open(dir, id, false)?;
+        lock(&file, id)?;
         let text = fs::read_to_string(path(dir, id)?)?;
         let complete = text.rfind('\n').map_or(0, |i| i + 1);
         let mut messages = Vec::new();
@@ -167,6 +169,18 @@ fn path(dir: &Path, id: &str) -> io::Result<PathBuf> {
         ));
     }
     Ok(dir.join(format!("{id}.jsonl")))
+}
+
+/// Holds an exclusive lock on the log for as long as its `File` lives, so two processes can't
+/// append to one session or race for the same checkpoint number.
+fn lock(file: &File, id: &str) -> io::Result<()> {
+    file.try_lock().map_err(|e| match e {
+        TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            format!("session `{id}` is open in another window"),
+        ),
+        TryLockError::Error(e) => e,
+    })
 }
 
 fn open(dir: &Path, id: &str, new: bool) -> io::Result<File> {

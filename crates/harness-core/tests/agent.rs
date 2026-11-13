@@ -696,6 +696,8 @@ async fn resuming_a_session_sends_the_same_history() {
     first
         .turn("go", CancellationToken::new(), never_asked)
         .await;
+    // The first process's log lock must go before a second process can resume it.
+    drop(first.agent.take());
 
     let mut second = Harness::in_workspace(workspace, vec![text_reply("again")], 50).await;
     let (log, prior) = SessionLog::resume(&dir, &id).unwrap();
@@ -708,6 +710,7 @@ async fn resuming_a_session_sends_the_same_history() {
     expected.push(json!({"role": "assistant", "content": "done"}));
     expected.push(json!({"role": "user", "content": "more"}));
     assert_eq!(second.request_messages(0).await, expected);
+    drop(second.agent.take());
     let (_, all) = SessionLog::resume(&dir, &id).unwrap();
     assert_eq!(all.len(), 6, "both turns are logged");
 }
@@ -756,6 +759,7 @@ async fn resuming_a_log_with_unanswered_tool_calls_answers_them_before_the_next_
         content: "done".into(),
     })
     .unwrap();
+    drop(log);
 
     let mut h = Harness::in_workspace(workspace.clone(), vec![text_reply("ok")], 50).await;
     let (log, prior) = SessionLog::resume(&dir, &id).unwrap();
@@ -769,6 +773,7 @@ async fn resuming_a_log_with_unanswered_tool_calls_answers_them_before_the_next_
         .map(|m| m["tool_call_id"].as_str().unwrap())
         .collect();
     assert_eq!(answered, ["c1", "c2", "c3"]);
+    drop(h.agent.take());
     assert!(
         messages[4]["content"]
             .as_str()

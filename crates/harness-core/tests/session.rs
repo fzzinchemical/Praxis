@@ -87,6 +87,7 @@ fn a_truncated_last_line_is_dropped_and_later_records_still_load() {
     let (mut log, messages) = SessionLog::resume(&dir, &id).unwrap();
     assert_eq!(contents(&messages), ["one"]);
     log.append(&user("two")).unwrap();
+    drop(log);
     let (_, messages) = SessionLog::resume(&dir, &id).unwrap();
     assert_eq!(contents(&messages), ["one", "two"]);
 }
@@ -95,9 +96,11 @@ fn a_truncated_last_line_is_dropped_and_later_records_still_load() {
 fn a_corrupt_line_before_the_end_is_an_error() {
     let dir = dir();
     let log = SessionLog::create(&dir, &workspace()).unwrap();
-    let path = dir.join(format!("{}.jsonl", log.id()));
+    let id = log.id().to_owned();
+    drop(log);
+    let path = dir.join(format!("{id}.jsonl"));
     fs::write(&path, "garbage\n{\"role\":\"user\",\"content\":\"x\"}\n").unwrap();
-    assert!(SessionLog::resume(&dir, log.id()).is_err());
+    assert!(SessionLog::resume(&dir, &id).is_err());
 }
 
 #[test]
@@ -166,6 +169,25 @@ fn listing_reports_the_trimmed_first_prompt_and_start_time() {
 
     assert_eq!(info.title, "fix the parser");
     assert!(info.started >= before && info.started <= info.last_active);
+}
+
+#[test]
+fn a_session_open_elsewhere_cannot_be_resumed_again() {
+    let ws = workspace();
+    let sessions = dir();
+    let id = log_in(&sessions, &ws, "hi");
+    let (first, _) = SessionLog::resume(&sessions, &id).unwrap();
+
+    let Err(err) = SessionLog::resume(&sessions, &id) else {
+        panic!("a second resume must fail while the first log is alive");
+    };
+    assert!(
+        err.to_string().contains("is open in another window"),
+        "unexpected error: {err}"
+    );
+
+    drop(first);
+    assert!(SessionLog::resume(&sessions, &id).is_ok());
 }
 
 #[test]
