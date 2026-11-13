@@ -9,13 +9,6 @@ use std::process::Stdio;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
-const EVENTS: [&str; 5] = [
-    "PreToolUse",
-    "PostToolUse",
-    "UserPromptSubmit",
-    "SessionStart",
-    "Stop",
-];
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone)]
@@ -72,8 +65,9 @@ pub fn parse(events: &Value) -> (Vec<Hook>, Vec<String>) {
         );
     };
     for (event, groups) in events {
-        if !EVENTS.contains(&event.as_str()) {
-            warnings.push(format!("hooks: unsupported event `{event}` skipped"));
+        // shortcut: only PreToolUse runs; add each event here when Agent fires it (SPEC §12).
+        if event != "PreToolUse" {
+            warnings.push(format!("hooks: `{event}` doesn't run yet, skipped"));
             continue;
         }
         for group in groups.as_array().into_iter().flatten() {
@@ -135,12 +129,6 @@ pub struct Outcome {
     pub permission: Option<PermissionDecision>,
     pub permission_reason: Option<String>,
     pub updated_input: Option<Value>,
-    pub updated_tool_output: Option<Value>,
-    /// `additionalContext`, or plain stdout on exit 0; callers use it only where SPEC allows.
-    pub context: Option<String>,
-    pub system_message: Option<String>,
-    /// `continue: false` with its `stopReason`.
-    pub stop: Option<String>,
     pub error: Option<String>,
 }
 
@@ -162,11 +150,7 @@ pub fn outcome(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
         }
     }
     let Ok(Value::Object(json)) = serde_json::from_str::<Value>(stdout.trim()) else {
-        let text = stdout.trim();
-        return Outcome {
-            context: (!text.is_empty()).then(|| text.to_owned()),
-            ..Outcome::default()
-        };
+        return Outcome::default();
     };
     let text = |map: &Map<String, Value>, key: &str| {
         map.get(key).and_then(Value::as_str).map(str::to_owned)
@@ -198,11 +182,6 @@ pub fn outcome(code: Option<i32>, stdout: &str, stderr: &str) -> Outcome {
         permission,
         permission_reason,
         updated_input: specific.get("updatedInput").cloned(),
-        updated_tool_output: specific.get("updatedToolOutput").cloned(),
-        context: text(&specific, "additionalContext"),
-        system_message: text(&json, "systemMessage"),
-        stop: (json.get("continue") == Some(&Value::Bool(false)))
-            .then(|| text(&json, "stopReason").unwrap_or_default()),
         error: None,
     }
 }
@@ -302,21 +281,23 @@ mod tests {
                 { "type": "command", "command": "a", "args": ["x"], "timeout": 5 },
                 { "type": "prompt", "prompt": "p" } ] },
                 { "matcher": "(?!x)", "hooks": [{ "type": "command", "command": "b" }] }],
+            "PostToolUse": [{ "matcher": "Write", "hooks": [{ "type": "command", "command": "c" }] }],
             "Notification": [],
         }));
         assert_eq!(hooks.len(), 1);
         assert_eq!(hooks[0].args, Some(vec!["x".to_owned()]));
         assert_eq!(hooks[0].timeout, Duration::from_secs(5));
-        assert_eq!(warnings.len(), 3, "{warnings:?}");
+        assert_eq!(warnings.len(), 4, "{warnings:?}");
+        assert!(
+            warnings.contains(&"hooks: `PostToolUse` doesn't run yet, skipped".to_owned()),
+            "{warnings:?}"
+        );
     }
 
     #[test]
     fn exit_codes() {
         assert_eq!(outcome(Some(0), "", "").block, None);
-        assert_eq!(
-            outcome(Some(0), "hello\n", "").context.as_deref(),
-            Some("hello")
-        );
+        assert_eq!(outcome(Some(0), "hello\n", "").block, None);
         assert_eq!(outcome(Some(2), "", "no\n").block.as_deref(), Some("no"));
         // Exit 2 blocks even when the JSON allows.
         let allow = r#"{"hookSpecificOutput":{"permissionDecision":"allow"}}"#;
@@ -341,13 +322,9 @@ mod tests {
             .to_string(),
             "",
         );
-        assert_eq!(o.stop.as_deref(), Some("done"));
-        assert_eq!(o.system_message.as_deref(), Some("hi"));
         assert_eq!(o.permission, Some(PermissionDecision::Ask));
         assert_eq!(o.permission_reason.as_deref(), Some("check"));
         assert_eq!(o.updated_input, Some(json!({ "a": 1 })));
-        assert_eq!(o.context.as_deref(), Some("ctx"));
-        assert_eq!(o.updated_tool_output, Some(json!("out")));
         assert_eq!(o.block, None);
 
         let decision = |d: &str| {
@@ -390,9 +367,18 @@ mod tests {
         let o = run(&shell, &json!({ "x": 1 }), Path::new("/plug"), &dir).await;
         assert_eq!(o.block.as_deref(), Some(r#"{"x":1} /plug"#));
         // Exec form: `;` is a literal argument, not a shell separator.
-        let exec = hook("/bin/echo", Some(&["${CLAUDE_PLUGIN_ROOT};", "exit 2"]), 5);
+        let exec = hook(
+            "/bin/sh",
+            Some(&[
+                "-c",
+                "printf '%s' \"$1\" >&2; exit 2",
+                "x",
+                "${CLAUDE_PLUGIN_ROOT};",
+            ]),
+            5,
+        );
         let o = run(&exec, &json!({}), Path::new("/plug"), &dir).await;
-        assert_eq!(o.context.as_deref(), Some("/plug; exit 2"));
+        assert_eq!(o.block.as_deref(), Some("/plug;"));
     }
 
     #[tokio::test]
