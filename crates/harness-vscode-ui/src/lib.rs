@@ -13,8 +13,8 @@ use view::{Phase, Status};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
-    Document, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement, HtmlOptionElement,
-    HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent,
+    Document, DragEvent, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement,
+    HtmlOptionElement, HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent,
 };
 
 #[wasm_bindgen]
@@ -224,6 +224,47 @@ pub fn start() -> Result<(), JsValue> {
     by_id(&window.document().ok_or("no document")?, "add-file")?
         .add_event_listener_with_callback("click", on_add.as_ref().unchecked_ref())?;
     on_add.forget();
+
+    // Dropped files arrive as `text/uri-list`; the extension filters them, so no checks here.
+    let body = window
+        .document()
+        .ok_or("no document")?
+        .body()
+        .ok_or("no body")?;
+    let (enter, leave, dropped) = (body.clone(), body.clone(), body);
+    let on_dragover = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        event.prevent_default();
+        let _ = enter.class_list().add_1("dragging");
+    });
+    window.add_event_listener_with_callback("dragover", on_dragover.as_ref().unchecked_ref())?;
+    on_dragover.forget();
+    let on_dragleave = Closure::<dyn FnMut()>::new(move || {
+        let _ = leave.class_list().remove_1("dragging");
+    });
+    window.add_event_listener_with_callback("dragleave", on_dragleave.as_ref().unchecked_ref())?;
+    on_dragleave.forget();
+    let api = vscode.clone();
+    let on_drop = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        event.prevent_default();
+        let _ = dropped.class_list().remove_1("dragging");
+        let Some(data) = event
+            .dyn_into::<DragEvent>()
+            .ok()
+            .and_then(|drag| drag.data_transfer())
+        else {
+            return;
+        };
+        let uri_list = data.get_data("text/uri-list").unwrap_or_default();
+        let text = if uri_list.is_empty() {
+            data.get_data("text/plain").unwrap_or_default()
+        } else {
+            uri_list
+        };
+        let uris: Vec<&str> = text.lines().collect();
+        api.post_message(&json!({"type": "dropped", "uris": uris}).to_string());
+    });
+    window.add_event_listener_with_callback("drop", on_drop.as_ref().unchecked_ref())?;
+    on_drop.forget();
 
     let state = ui;
     let tick = Closure::<dyn FnMut()>::new(move || state.borrow().show_status());

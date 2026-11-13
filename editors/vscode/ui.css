@@ -168,6 +168,11 @@ main {
   border-color: var(--vscode-focusBorder);
 }
 
+body.dragging {
+  outline: 2px dashed var(--vscode-focusBorder);
+  outline-offset: -4px;
+}
+
 #prompt {
   background: transparent;
   border: 0;

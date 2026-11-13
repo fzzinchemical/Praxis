@@ -21,6 +21,8 @@ pub enum FromPanel {
     Cancel,
     /// The "Add file" button: ask the user for files to attach.
     AddFile,
+    /// Raw URIs from a drop onto the panel (`text/uri-list` lines); see `dropped_paths`.
+    Dropped(Vec<String>),
     /// A permission request id (a JSON-RPC number or string) and the chosen option, `None` meaning dismissed.
     Permission(Value, Option<String>),
     /// The model picker's choice, as the agent's model key.
@@ -35,17 +37,15 @@ impl FromPanel {
             "prompt" => Some(Self::Prompt {
                 text: value["text"].as_str()?.to_owned(),
                 file: value["file"].as_str().map(str::to_owned),
-                files: value["files"]
-                    .as_array()
-                    .map(Vec::as_slice)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|file| file.as_str().map(str::to_owned))
-                    .collect::<Option<_>>()?,
+                files: string_array(value["files"].as_array().map_or(&[], Vec::as_slice))?,
                 problems: value["problems"].as_bool().unwrap_or(false),
             }),
             "cancel" => Some(Self::Cancel),
             "add_file" => Some(Self::AddFile),
+            "dropped" => {
+                let uris = string_array(value["uris"].as_array()?)?;
+                Some(Self::Dropped(uris))
+            }
             "model" => Some(Self::Model(value["key"].as_str()?.to_owned())),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
@@ -143,6 +143,52 @@ pub fn active_file(path: Option<&str>) -> Value {
 /// Files the user picked with "Add file".
 pub fn picked_files(files: &[String]) -> Value {
     json!({"type": "picked", "files": files})
+}
+
+/// Local file paths from dropped URIs. Other schemes, comments and bad escapes are skipped.
+pub fn dropped_paths(uris: &[String]) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    for line in uris.iter().map(|uri| uri.trim()) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("file://") else {
+            continue;
+        };
+        // `file:///path` and `file://localhost/path`; any other host is not this machine.
+        let path = rest.strip_prefix("localhost").unwrap_or(rest);
+        if !path.starts_with('/') {
+            continue;
+        }
+        if let Some(path) = percent_decode(path).filter(|path| !paths.contains(path)) {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Decodes `%XX` escapes. `None` for a bad escape or bytes that are not UTF-8.
+fn percent_decode(text: &str) -> Option<String> {
+    let mut out = Vec::with_capacity(text.len());
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte != b'%' {
+            out.push(byte);
+            continue;
+        }
+        let high = (bytes.next()? as char).to_digit(16)?;
+        let low = (bytes.next()? as char).to_digit(16)?;
+        out.push((high * 16 + low) as u8);
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Every element must be a string; anything else makes the whole message invalid.
+fn string_array(items: &[Value]) -> Option<Vec<String>> {
+    items
+        .iter()
+        .map(|item| item.as_str().map(str::to_owned))
+        .collect()
 }
 
 /// What one line from `harness acp` asks the extension to do.
@@ -488,6 +534,48 @@ mod tests {
     }
 
     #[test]
+    fn dropped_uris_keep_local_files_only() {
+        let uris = |list: &[&str]| list.iter().map(|uri| (*uri).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            dropped_paths(&uris(&["file:///work/a.rs", "file://localhost/work/b.rs"])),
+            ["/work/a.rs", "/work/b.rs"]
+        );
+        assert!(
+            dropped_paths(&uris(&[
+                "https://example.com/a.rs",
+                "untitled:Untitled-1",
+                "file://host/x.rs",
+            ]))
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn dropped_uris_decode_percent_escapes() {
+        let uris = ["file:///work/my%20file%C3%A9.rs".to_owned()];
+        assert_eq!(dropped_paths(&uris), ["/work/my fileé.rs"]);
+    }
+
+    #[test]
+    fn dropped_uris_skip_comments_blanks_and_bad_escapes() {
+        let uris = [
+            "# copied from the file manager".to_owned(),
+            String::new(),
+            "file:///work/bad%zz.rs".to_owned(),
+            "file:///work/cut%2".to_owned(),
+            "file:///work/%FF.rs".to_owned(),
+            " file:///work/ok.rs\r".to_owned(),
+        ];
+        assert_eq!(dropped_paths(&uris), ["/work/ok.rs"]);
+    }
+
+    #[test]
+    fn dropped_uris_are_deduplicated() {
+        let uris = ["file:///a.rs".to_owned(), " file:///a.rs ".to_owned()];
+        assert_eq!(dropped_paths(&uris), ["/a.rs"]);
+    }
+
+    #[test]
     fn panel_messages_parse_only_into_known_variants() {
         assert_eq!(
             FromPanel::parse(r#"{"type":"ready"}"#),
@@ -532,9 +620,15 @@ mod tests {
             FromPanel::parse(r#"{"type":"permission","id":7,"option":null}"#),
             Some(FromPanel::Permission(json!(7), None))
         );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"dropped","uris":["file:///a.rs"]}"#),
+            Some(FromPanel::Dropped(vec!["file:///a.rs".to_owned()]))
+        );
         for bad in [
             r#"{"type":"prompt"}"#,
             r#"{"type":"prompt","text":"hi","files":[1]}"#,
+            r#"{"type":"dropped"}"#,
+            r#"{"type":"dropped","uris":["file:///a.rs",1]}"#,
             r#"{"type":"exec"}"#,
             r#"{"type":"permission","id":null,"option":"x"}"#,
             r#"{"type":"permission","id":{"n":7},"option":"x"}"#,

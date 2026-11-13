@@ -277,6 +277,7 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
                 problems,
             }) => send_prompt(&state, &text, file, files, problems),
             Some(FromPanel::AddFile) => add_files(&state),
+            Some(FromPanel::Dropped(uris)) => drop_files(&state, &uris),
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
                 let lines = panel.client.as_mut().map(Client::cancel);
@@ -491,23 +492,42 @@ fn add_files(state: &Shared) {
         if picked.is_undefined() {
             return;
         }
-        let (inside, outside): (Vec<String>, Vec<String>) = Array::from(&picked)
+        let paths = Array::from(&picked)
             .iter()
             .map(|uri| uri.unchecked_into::<Uri>().fs_path())
-            .partition(|path| protocol::inside(&cwd, path));
-        if !outside.is_empty() {
-            webview.notify(&format!(
-                "Not attached, outside the workspace: {}",
-                outside.join(", ")
-            ));
-        }
-        webview.post_message(&protocol::picked_files(&inside).to_string());
+            .collect();
+        attach(&webview, &cwd, paths);
     });
     let failed = failure_logger(&output);
     let _ = show_open_dialog(&options)
         .unchecked_into::<Thenable>()
         .then_once(&on_picked)
         .catch_once(&failed);
+}
+
+/// Files dropped on the panel. The webview is untrusted, so the paths go through the same check as the picker.
+fn drop_files(state: &Shared, uris: &[String]) {
+    let Some(cwd) = workspace_dir() else {
+        return;
+    };
+    let webview = state.borrow().webview.clone();
+    attach(&webview, &cwd, protocol::dropped_paths(uris));
+}
+
+/// Posts the paths inside the workspace as picked files and says which ones were refused.
+fn attach(webview: &Webview, cwd: &str, paths: Vec<String>) {
+    let (inside, outside): (Vec<String>, Vec<String>) = paths
+        .into_iter()
+        .partition(|path| protocol::inside(cwd, path));
+    if !outside.is_empty() {
+        webview.notify(&format!(
+            "Not attached, outside the workspace: {}",
+            outside.join(", ")
+        ));
+    }
+    if !inside.is_empty() {
+        webview.post_message(&protocol::picked_files(&inside).to_string());
+    }
 }
 
 /// The active editor, if it shows a file on disk.
