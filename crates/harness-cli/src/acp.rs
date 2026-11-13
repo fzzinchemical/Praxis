@@ -1529,6 +1529,80 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn write_refuses_a_dirty_buffer_and_says_to_save_it() {
+        let dir = temp_dir("write-dirty");
+        std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
+        let server = fake_server_script(&[
+            ("Read", json!({"file_path": "a.txt"})),
+            (
+                "Write",
+                json!({"file_path": "a.txt", "content": "written\n"}),
+            ),
+        ])
+        .await;
+        let (on_read, on_ask, on_update) = (Log::default(), Log::default(), Log::default());
+        let output = on_update.clone();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |req: v1::ReadTextFileRequest, responder, _cx| {
+                    push(&on_read, req.path.display().to_string());
+                    responder.respond(v1::ReadTextFileResponse::new("unsaved buffer"))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_request(
+                async move |req: v1::RequestPermissionRequest, responder, _cx| {
+                    push(
+                        &on_ask,
+                        req.tool_call.fields.title.clone().unwrap_or_default(),
+                    );
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    if update["sessionUpdate"] == "tool_call_update" {
+                        let text = update["content"][0]["content"]["text"].as_str();
+                        push(&on_update, text.unwrap_or_default().to_owned());
+                    }
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+                    "protocolVersion": 1,
+                    "clientCapabilities": {"fs": {"readTextFile": true}}
+                }))
+                .unwrap();
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let prompt = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let output = output.lock().unwrap().join("");
+        assert!(output.contains("unsaved changes in the editor"), "{output}");
+        assert!(!output.contains("Read it again"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "on disk\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn read_uses_the_disk_when_the_client_does_not_serve_files() {
         let dir = temp_dir("read-disk");
         std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();

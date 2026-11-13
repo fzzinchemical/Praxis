@@ -144,6 +144,22 @@ pub(crate) fn replace_with(
     File::open(dir)?.sync_all()
 }
 
+/// Refuses to overwrite `path` while the editor holds different text, since the write would
+/// lose the user's unsaved edits. `disk` is the file's current content.
+// shortcut: refuse outright; buffer edits need fs/write_text_file, upgrade when that exists.
+fn refuse_unsaved_buffer(path: &Path, disk: &[u8], ctx: &ToolContext) -> Result<(), ToolError> {
+    if ctx
+        .editor_text(path)
+        .is_some_and(|buffer| buffer.as_bytes() != disk)
+    {
+        return Err(ToolError::Refused(format!(
+            "{} has unsaved changes in the editor; ask the user to save it.",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 fn store(path: &Path, content: &str, ctx: &ToolContext) -> Result<(), ToolError> {
     ctx.checkpoint(path)?;
     replace_with(path, |file| file.write_all(content.as_bytes()))
@@ -165,6 +181,10 @@ pub fn write(input: WriteInput, ctx: &ToolContext) -> Result<ToolOutput, ToolErr
         }
         Err(_) => false,
     };
+    if existed {
+        let bytes = fs::read(&path).map_err(ToolError::io("read", &path))?;
+        refuse_unsaved_buffer(&path, &bytes, ctx)?;
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(ToolError::io("create the folder for", &path))?;
     }
@@ -206,16 +226,7 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         return refuse(format!("Read {shown} before editing it."));
     };
     let bytes = read_bytes(&path)?;
-    // Writing to disk under a different editor buffer would lose the user's unsaved edits.
-    // shortcut: refuse outright; buffer edits need fs/write_text_file, upgrade when that exists.
-    if ctx
-        .editor_text(&path)
-        .is_some_and(|buffer| buffer.as_bytes() != bytes)
-    {
-        return refuse(format!(
-            "{shown} has unsaved changes in the editor; ask the user to save it."
-        ));
-    }
+    refuse_unsaved_buffer(&path, &bytes, ctx)?;
     if hash_of(&bytes) != seen {
         return refuse(format!(
             "{shown} changed since you read it. Read it again before editing."
