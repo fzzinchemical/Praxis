@@ -17,9 +17,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
-| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 8 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
+| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 10 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
 
-90 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+92 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -851,6 +851,8 @@ flowchart LR
     T10_6["T10.6<br/>Plugin commands in the panel"]
     T10_7["T10.7<br/>Ask less"]
     T10_8["T10.8<br/>Show subagent activity"]
+    T10_9["T10.9<br/>Plugin details"]
+    T10_10["T10.10<br/>Turns stop early"]
     T3_7(["T3.7"])
     T5_12(["T5.12"])
     T6_2(["T6.2"])
@@ -866,49 +868,52 @@ flowchart LR
     T9_4 -.-> T10_6
     T3_5 -.-> T10_7
     T6_5 -.-> T10_8
+    T10_6 --> T10_9
     T8_9 -.-> T10_8
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8 task
+    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8,T10_9,T10_10 task
     class T10_5,T10_7 human
     class T3_7,T5_12,T6_2,T9_4,T3_5,T6_5,T8_9 other
 ```
 
-- [ ] **T10.1 Replay whole chats** (§8, §11)
+- [x] **T10.1 Replay whole chats** (§8, §11)
   - **Needs:** T3.7, T5.12.
   - **Bug:** reopening an old chat in VS Code shows only the user's messages. Suspects: `replay` in `praxis-cli/src/acp.rs` emits only user text and assistant text (tool calls and their results are dropped), and the panel may ignore `text` messages that arrive outside a live turn.
   - **Done when:** loading a recorded session with user messages, assistant text and tool calls shows, in order, every user message, every assistant reply and each tool call with its title, both in an ACP test and in the panel's message handling test.
 
-- [ ] **T10.2 Auto-load by default** (§5.2)
+- [x] **T10.2 Auto-load by default** (§5.2)
   - **Needs:** none.
   - **Done when:** `agent.auto_load` defaults to `true` in `AgentSettings` and SPEC §5.2; `auto_load = false` still asks (CLI test renamed to set it explicitly); a project config's `auto_load` stays a trust-gate item.
   - **Approval (2026-11-13, project owner):** load models without asking by default.
 
-- [ ] **T10.3 Turn limit names its setting** (§11)
+- [x] **T10.3 Turn limit names its setting** (§11)
   - **Needs:** none.
   - **Note:** the default `agent.max_turn_requests` is already 50, above the requested floor of 25. Keep it at least 25.
   - **Done when:** in VS Code, a turn stopped by `max_turn_requests` shows the limit and how to raise it (`praxis.agent.maxTurnRequests` in VS Code settings or `agent.max_turn_requests` in `config.toml`) instead of the bare stop reason; a test asserts the default is at least 25.
 
-- [ ] **T10.4 Delete chats** (§8) · *Should*
+- [x] **T10.4 Delete chats** (§8) · *Should*
   - **Needs:** T5.12.
   - **Done when:** a "Delete" action on a session in the Sessions view asks for confirmation, removes that session's log file and only it (no path outside the session directory, id validated), and refreshes the list; deleting the open session closes its panel first.
 
 - [ ] **T10.5 Classify chats** `HUMAN` decides the scheme (§8) · *Could*
   - **Needs:** T10.4.
-  - **Decide first:** what "classify" means: rename, pin, tags or folders, and whether it is stored in the session log or a side file.
+  - **Decided (2026-11-13, project owner):** folders. A chat can be put in a named folder; stored in a side file next to the logs, so the logs stay unchanged.
   - **Done when:** the chosen classification can be set from the Sessions view, survives a restart, and groups or filters the list; old logs without it still load.
 
 - [ ] **T10.6 Plugin commands in the panel** (§11, §12) · *Should*
   - **Needs:** T6.2, T9.4.
   - **Goal:** like Claude Code, the panel lists available commands grouped by source ("From the ponytail plugin: off, lite, full, ultra"), each a button that runs or inserts `/<plugin>:<command>`. See [the Claude Code example](img/claude-code-plugin-commands.png).
-  - **Done when:** after `session/new` or `session/load`, the agent sends ACP `available_commands_update` listing user-invocable commands and skills with their source; the panel renders them grouped by plugin or directory; clicking one inserts it in the prompt box; commands marked `user-invocable: false` are absent; keyboard reachable with labelled buttons.
+  - **Done when:** after `session/new` or `session/load`, the agent sends ACP `available_commands_update` listing user-invocable commands and skills with their source; the panel renders them grouped by plugin or directory; clicking one inserts it in the prompt box; typing `/` in the prompt box opens an autocomplete list filtered as the user types (arrow keys, Enter or Tab accepts, Escape closes); commands marked `user-invocable: false` are absent; keyboard reachable with labelled buttons.
+  - **Added (2026-11-13, project owner):** autocomplete while typing.
 
-- [ ] **T10.7 Ask less** `HUMAN` picks the options (§9, §10)
+- [x] **T10.7 Ask less** `HUMAN` picks the options (§9, §10)
   - **Needs:** T3.5.
   - **Problem:** the agent asks for nearly every action. The mode can't be set from VS Code, and a `Bash` approval can't be remembered (`can_always: tool != "Bash"` in `permissions/mod.rs`).
-  - **Decide first:** which of these to add, since some loosen SPEC §10: a `praxis.permissions.mode` VS Code setting (user or machine scope only, so a workspace can't raise it); "always allow" for a `Bash` command prefix when the sandbox is on; a full-access mode that allows `Bash` and MCP without asking, still under the hard denials.
+  - **Decided (2026-11-13, project owner):** the `praxis.permissions.mode` setting and a full-access mode; no `Bash` prefix "always allow".
+  - **Options were:** which of these to add, since some loosen SPEC §10: a `praxis.permissions.mode` VS Code setting (user or machine scope only, so a workspace can't raise it); "always allow" for a `Bash` command prefix when the sandbox is on; a full-access mode that allows `Bash` and MCP without asking, still under the hard denials.
   - **Done when:** each chosen option has a test in `tests/security.rs` showing the hard denials of §10 still hold under it, and a workspace setting can't turn it on.
 
 - [ ] **T10.8 Show what subagents are doing** (§11, §12) · *Should*
@@ -917,3 +922,14 @@ flowchart LR
   - **Goal:** like Claude Code, each `Agent` call is a collapsible block under its tool call showing the subagent's type, model, task, live tool calls, current step and final status; collapsed by default, with a one-line summary such as "Explore · 6 tool calls · running".
   - **Plan:** tag forwarded events with the parent `Agent` call's `ToolCallId`; over ACP, send the subagent's tool calls with that parent id in `_meta` and its text as `tool_call_update` content on the `Agent` call, so plain ACP clients still see a flat list; the panel nests by parent id. Token counts stay the parent's.
   - **Done when:** on the fake server, a parent turn with one subagent emits the subagent's tool calls carrying the parent id and its text only on the `Agent` call; the panel test renders them nested and collapsed; a permission prompt from a subagent names the subagent.
+
+- [ ] **T10.9 Plugin details from the sidebar** (§12) · *Should*
+  - **Needs:** T10.6.
+  - **Asked (2026-11-13, project owner):** clicking a plugin in the sidebar shows its documentation and commands.
+  - **Done when:** selecting a plugin item opens a read-only view with its README (rendered with the panel's safe `markdown`) and its commands, skills and agents with their descriptions; a plugin without a README still shows its commands; plugin text is untrusted, so raw HTML stays escaped (test).
+
+- [ ] **T10.10 Turns stop after one tool round** (§4, §11)
+  - **Needs:** none.
+  - **Bug:** real Beta 1 session logs in VS Code end each turn right after a tool result, with no further model reply recorded, so the user had to type "retry". Only cancellation, the loop detector, a failed-call limit or the request limit return there (`run_requests` in `agent/mod.rs`); the logged user setting was `maxTurnRequests = 25`. Reproduce first.
+  - **Done when:** the cause is found and covered by a failing ACP test on the fake server, and a turn with a tool call ends with the model's reply.
+
