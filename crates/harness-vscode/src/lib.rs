@@ -9,6 +9,7 @@ use js_sys::{Array, Object, Promise, Reflect};
 use protocol::{
     Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
 };
+use serde_json::Value;
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
@@ -403,6 +404,47 @@ fn workspace_dir() -> Option<String> {
     Reflect::get(&uri, &"fsPath".into()).ok()?.as_string()
 }
 
+/// `--config-override` pairs for the settings the user set. Unset ones keep config.toml's values.
+fn config_overrides(config: &Configuration) -> Vec<String> {
+    const KEYS: [(&str, &str); 5] = [
+        ("defaultModel", "default_model"),
+        ("lmstudio.baseUrl", "lmstudio.base_url"),
+        ("agent.maxTurnRequests", "agent.max_turn_requests"),
+        ("context.maskKeepTurns", "context.mask_keep_turns"),
+        ("context.filterOutput", "context.filter_output"),
+    ];
+    let settings: Vec<(&str, Option<Value>)> = KEYS
+        .iter()
+        .map(|(vscode, toml)| (*toml, setting(config, vscode)))
+        .collect();
+    override_args(&settings)
+}
+
+fn setting(config: &Configuration, key: &str) -> Option<Value> {
+    let value = config.get(key);
+    if let Some(text) = value.as_string() {
+        return (!text.is_empty()).then_some(Value::String(text));
+    }
+    if let Some(flag) = value.as_bool() {
+        return Some(Value::Bool(flag));
+    }
+    // shortcut: fractional numbers are dropped; the settings schema's "integer" type rejects them in the UI.
+    let number = value.as_f64()?;
+    (number >= 0.0 && number.fract() == 0.0).then_some(Value::from(number as u64))
+}
+
+/// Renders each set value as `key=<JSON>`, which the CLI reads as a TOML literal (JSON strings are valid TOML).
+fn override_args(settings: &[(&str, Option<Value>)]) -> Vec<String> {
+    settings
+        .iter()
+        .flat_map(|(key, value)| {
+            value
+                .iter()
+                .flat_map(move |v| ["--config-override".to_owned(), format!("{key}={v}")])
+        })
+        .collect()
+}
+
 fn start(state: &Shared) {
     let Some(cwd) = workspace_dir() else {
         state
@@ -770,7 +812,12 @@ fn spawn_acp(cwd: &str) -> Result<ChildProcess, JsValue> {
         .unwrap_or_else(|| "harness".to_owned());
     let options = Object::new();
     Reflect::set(&options, &"cwd".into(), &cwd.into())?;
-    spawn(&binary, &Array::of1(&"acp".into()), &options)
+    let args = Array::new();
+    for arg in config_overrides(&get_configuration("harness")) {
+        args.push(&arg.into());
+    }
+    args.push(&"acp".into());
+    spawn(&binary, &args, &options)
 }
 
 /// The sessions view. Listing runs in its own `harness acp` child, independent of the chat panels.
@@ -955,4 +1002,35 @@ fn refresh_sessions() {
             sidebar.listing = Some(listing);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passes_only_explicitly_set_values_as_toml_literals() {
+        let args = override_args(&[
+            ("default_model", Some(Value::String("qwen3.5-4b".into()))),
+            ("lmstudio.base_url", None),
+            ("agent.max_turn_requests", Some(Value::from(40_u64))),
+            ("context.filter_output", Some(Value::Bool(false))),
+        ]);
+        assert_eq!(
+            args,
+            [
+                "--config-override",
+                r#"default_model="qwen3.5-4b""#,
+                "--config-override",
+                "agent.max_turn_requests=40",
+                "--config-override",
+                "context.filter_output=false",
+            ]
+        );
+    }
+
+    #[test]
+    fn no_settings_means_no_arguments() {
+        assert!(override_args(&[("default_model", None)]).is_empty());
+    }
 }
