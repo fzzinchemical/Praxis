@@ -3,7 +3,7 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-use harness_core::tools::{ToolContext, ToolOutput, execute, proposed_diff, schemas};
+use harness_core::tools::{EditorReader, ToolContext, ToolOutput, execute, proposed_diff, schemas};
 use serde_json::{Value, json};
 use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
@@ -251,6 +251,18 @@ async fn an_edit_by_the_agent_is_not_reported_as_an_outside_change() {
     f.ctx.begin_turn();
     let again = f.read("a.txt").await;
     assert!(!again.content.contains("outside"), "{again:?}");
+}
+
+#[tokio::test]
+async fn read_returns_the_unsaved_editor_buffer_instead_of_the_disk_file() {
+    let f = Fixture::new();
+    f.file("a.txt", "on disk\n");
+    f.ctx.read_from_editor(EditorReader(Box::new(|path: &Path| {
+        path.ends_with("a.txt").then(|| "unsaved edit\n".to_owned())
+    })));
+    let out = f.read("a.txt").await;
+    ok(&out, "     1\tunsaved edit\n");
+    assert!(!out.content.contains("on disk"));
 }
 
 #[tokio::test]

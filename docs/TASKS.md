@@ -482,7 +482,7 @@ flowchart TB
   - **Needs:** T5.3.
   - **Done when:** checklist confirms a `Write` or `Edit` opens the native diff, accept applies it, reject leaves the file unchanged, and the model is told which.
 
-- [ ] **T5.5 Editor context** (§11) · *Should*
+- [x] **T5.5 Editor context** (§11) · *Should*
   - **Needs:** T5.3.
   - **Do:** active file and selection, diagnostics, model picker, `fs/read_text_file` for unsaved buffers.
   - **Done when:** a test or checklist item shows `Read` returns unsaved buffer contents.
