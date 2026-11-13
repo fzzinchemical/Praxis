@@ -14,7 +14,7 @@ use protocol::{
 };
 use serde_json::Value;
 use std::cell::RefCell;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
@@ -130,11 +130,14 @@ extern "C" {
     #[wasm_bindgen(method, js_name = catch)]
     fn catch_once(this: &Thenable, on_err: &JsValue) -> Thenable;
 
+    #[derive(Clone)]
     type WebviewPanel;
     #[wasm_bindgen(method, getter)]
     fn webview(this: &WebviewPanel) -> Webview;
     #[wasm_bindgen(method, js_name = onDidDispose)]
     fn on_did_dispose(this: &WebviewPanel, callback: &JsValue);
+    #[wasm_bindgen(method)]
+    fn dispose(this: &WebviewPanel);
 
     #[derive(Clone)]
     type Webview;
@@ -211,6 +214,8 @@ impl Webview {
 /// One panel and the `praxis acp` process behind it.
 struct Panel {
     webview: Webview,
+    /// The VS Code panel itself, disposed when its session is deleted.
+    handle: WebviewPanel,
     output: OutputChannel,
     child: Option<ChildProcess>,
     /// The child's event listeners; they must be removed before their closures drop.
@@ -260,6 +265,11 @@ fn detach(panel: &mut Panel) {
 
 type Shared = Rc<RefCell<Panel>>;
 
+thread_local! {
+    /// Every chat panel opened, so deleting a session can close the panel showing it.
+    static PANELS: RefCell<Vec<Weak<RefCell<Panel>>>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Entry point VS Code calls. An `Err` is thrown, which fails activation visibly.
 #[wasm_bindgen]
 pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
@@ -278,17 +288,17 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     create_plugins_view(&output);
     refresh_plugins();
     command(&context, "praxis.enablePlugin", |item| {
-        if let Some(name) = plugin_name(&item) {
+        if let Some(name) = item_id(&item) {
             enable_plugin(name);
         }
     })?;
     command(&context, "praxis.disablePlugin", |item| {
-        if let Some(name) = plugin_name(&item) {
+        if let Some(name) = item_id(&item) {
             run_action(verb_args(Verb::Disable, &name));
         }
     })?;
     command(&context, "praxis.removePlugin", |item| {
-        if let Some(name) = plugin_name(&item) {
+        if let Some(name) = item_id(&item) {
             remove_plugin(name);
         }
     })?;
@@ -300,6 +310,11 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     command(&context, "praxis.newSession", move |_| new_session(None))?;
     command(&context, "praxis.openSession", move |id| {
         panel(id.as_string())
+    })?;
+    command(&context, "praxis.deleteSession", |item| {
+        if let Some(id) = item_id(&item) {
+            delete_session(id);
+        }
     })?;
     command(&context, "praxis.refreshSessions", |_| refresh_sessions())
 }
@@ -329,6 +344,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
     let webview = panel.webview();
     let shared: Shared = Rc::new(RefCell::new(Panel {
         webview: webview.clone(),
+        handle: panel.clone(),
         output: output.clone(),
         child: None,
         listeners: None,
@@ -340,6 +356,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         resume,
     }));
 
+    track(&shared);
     let state = shared.clone();
     let on_message = Closure::<dyn FnMut(JsValue)>::new(move |message: JsValue| {
         match message.as_string().as_deref().and_then(FromPanel::parse) {
@@ -986,8 +1003,70 @@ fn session_node(item: &SessionItem) -> JsValue {
     node(&[
         ("id", JsValue::from_str(&item.id)),
         ("label", JsValue::from_str(&item.label)),
+        ("contextValue", JsValue::from_str("session")),
         ("command", command),
     ])
+}
+
+/// Asks, then closes the panel showing the session (its agent stops, so the log is free), removes
+/// the log through the CLI and redraws the list. Only ids in the session format reach the CLI.
+fn delete_session(id: String) {
+    let Some(args) = protocol::delete_args(&id) else {
+        return sessions_log("refusing to delete a session with an unexpected id\n");
+    };
+    confirm(
+        "Delete this session? Its log is removed and cannot be undone.",
+        "Delete",
+        move || {
+            close_panels_of(&id);
+            run_cli(args, None, |result| {
+                if let Err(error) = result {
+                    sessions_log(&format!("sessions: delete failed: {error}\n"));
+                }
+                refresh_sessions();
+            });
+        },
+    );
+}
+
+/// Remembers a panel so deleting its session can find it. Dead entries are dropped here.
+fn track(state: &Shared) {
+    PANELS.with(|panels| {
+        let mut panels = panels.borrow_mut();
+        panels.retain(|panel| panel.strong_count() > 0);
+        panels.push(Rc::downgrade(state));
+    });
+}
+
+/// Disposes every open panel whose session is `id`. Their dispose handler stops the agent.
+fn close_panels_of(id: &str) {
+    let handles: Vec<WebviewPanel> = PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|state| panel_session(&state.borrow()).as_deref() == Some(id))
+            .map(|state| state.borrow().handle.clone())
+            .collect()
+    });
+    // Disposing fires the dispose handler, which borrows the panel, so no borrow may be held here.
+    for handle in handles {
+        handle.dispose();
+    }
+}
+
+/// The session a panel shows: the one it resumed, or the one the agent created or loaded.
+fn panel_session(panel: &Panel) -> Option<String> {
+    let loaded = panel.client.as_ref().and_then(Client::session_id);
+    loaded.or(panel.resume.as_deref()).map(str::to_owned)
+}
+
+fn sessions_log(text: &str) {
+    SIDEBAR.with(|sidebar| {
+        if let Some(sidebar) = sidebar.borrow().as_ref() {
+            sidebar.output.append(text);
+        }
+    });
 }
 
 /// Replaces the view's sessions and asks VS Code to redraw them.
@@ -1122,8 +1201,8 @@ fn plugin_log(text: &str) {
     });
 }
 
-/// The plugin a tree click or context-menu command was run on. From the palette the argument is absent.
-fn plugin_name(item: &JsValue) -> Option<String> {
+/// The tree item a click or context-menu command was run on, by its `id`. From the palette the argument is absent.
+fn item_id(item: &JsValue) -> Option<String> {
     Reflect::get(item, &"id".into()).ok()?.as_string()
 }
 

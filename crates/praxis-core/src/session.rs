@@ -118,6 +118,13 @@ pub fn list(dir: &Path, workspace: &Path) -> io::Result<Vec<SessionInfo>> {
     Ok(sessions)
 }
 
+/// Removes one session's log. The lock keeps it from going while another window still writes to it.
+pub fn delete(dir: &Path, id: &str) -> io::Result<()> {
+    let file = open(dir, id, false)?;
+    lock(&file, id)?;
+    fs::remove_file(path(dir, id)?)
+}
+
 /// `None` if the log's header names another workspace or is missing.
 fn info(dir: &Path, id: &str, workspace: &str) -> io::Result<Option<SessionInfo>> {
     let file = File::open(path(dir, id)?)?;

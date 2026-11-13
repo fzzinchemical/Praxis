@@ -200,3 +200,31 @@ fn resuming_does_not_replay_the_header() {
 
     assert_eq!(contents(&messages), ["hi"]);
 }
+
+#[test]
+fn deleting_a_session_removes_only_its_log() {
+    let ws = workspace();
+    let sessions = dir();
+    let gone = log_in(&sessions, &ws, "delete me");
+    let kept = log_in(&sessions, &ws, "keep me");
+
+    session::delete(&sessions, &gone).unwrap();
+
+    assert_eq!(ids(&sessions, &ws), vec![kept]);
+}
+
+#[test]
+fn deleting_an_id_naming_another_path_removes_nothing_outside() {
+    let sessions = dir();
+    fs::create_dir_all(&sessions).unwrap();
+    let name = format!("victim-{}", std::process::id());
+    let outside = sessions.parent().unwrap().join(format!("{name}.jsonl"));
+    fs::write(&outside, "keep").unwrap();
+
+    assert!(session::delete(&sessions, &format!("../{name}")).is_err());
+    assert!(session::delete(&sessions, "").is_err());
+    assert!(session::delete(&sessions, "a/b").is_err());
+
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "keep");
+    fs::remove_file(&outside).unwrap();
+}

@@ -72,6 +72,9 @@ enum Command {
         /// Print a JSON array of `{id, title, started, last_active}`.
         #[arg(long)]
         json: bool,
+        /// Delete this session's log instead of listing. Refused while it is open elsewhere.
+        #[arg(long, value_name = "ID", conflicts_with = "json")]
+        delete: Option<String>,
     },
 }
 
@@ -198,11 +201,15 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
 }
 
 /// `praxis sessions`: reads the session logs only, so the sidebar never starts a model or MCP server.
-fn sessions_command(json: bool, workspace: &Path) -> Result<u8> {
+fn sessions_command(json: bool, delete: Option<String>, workspace: &Path) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("Sessions need HOME or XDG_DATA_HOME to read from.");
         return Ok(EXIT_USAGE);
     };
+    if let Some(id) = delete {
+        session::delete(&dir, &id)?;
+        return Ok(0);
+    }
     let sessions = session::list(&dir, workspace)?;
     if json {
         let rows: Vec<Value> = sessions
@@ -868,7 +875,9 @@ async fn run(
     match cli.command {
         Some(Command::Models) => return list_models(&provider).await,
         Some(Command::Plugin(command)) => return plugin_command(command),
-        Some(Command::Sessions { json }) => return sessions_command(json, &workspace),
+        Some(Command::Sessions { json, delete }) => {
+            return sessions_command(json, delete, &workspace);
+        }
         Some(Command::Acp) | None => {}
     }
     let acp = matches!(cli.command, Some(Command::Acp));

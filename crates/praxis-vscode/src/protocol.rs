@@ -246,6 +246,15 @@ pub fn session_items(json: &str) -> Result<Vec<SessionItem>, String> {
         .collect()
 }
 
+/// The CLI args that delete one session, or `None` if the id is not in the session id format
+/// (`{nanos}-{pid}`, digits only). Checked here before anything is spawned; the CLI checks again.
+/// `--delete=<id>` keeps an id that starts with `-` from being read as a flag.
+pub fn delete_args(id: &str) -> Option<Vec<String>> {
+    let valid = id.starts_with(|c: char| c.is_ascii_digit())
+        && id.chars().all(|c| c.is_ascii_digit() || c == '-');
+    valid.then(|| vec!["sessions".to_owned(), format!("--delete={id}")])
+}
+
 /// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
 #[derive(Debug, PartialEq)]
 pub struct Review {
@@ -326,6 +335,11 @@ impl Client {
         let (mut client, line) = Self::start(cwd);
         client.loading = Some(session.to_owned());
         (client, line)
+    }
+
+    /// The ACP session this connection holds, once the agent has created or loaded it.
+    pub fn session_id(&self) -> Option<&str> {
+        self.session.as_deref()
     }
 
     /// The `session/prompt` line, or `None` while no session is open yet.
@@ -1232,5 +1246,21 @@ mod tests {
     fn a_malformed_sessions_answer_fails_the_whole_listing() {
         assert!(session_items(r#"{"id":"x"}"#).is_err());
         assert!(session_items(r#"[{"title":"no id"}]"#).is_err());
+    }
+
+    #[test]
+    fn deleting_a_session_passes_only_well_formed_ids_to_the_cli() {
+        assert_eq!(
+            delete_args("1700000000-42"),
+            Some(vec![
+                "sessions".to_owned(),
+                "--delete=1700000000-42".to_owned()
+            ])
+        );
+        assert_eq!(delete_args("../secret"), None);
+        assert_eq!(delete_args("a/b"), None);
+        assert_eq!(delete_args("..\\secret"), None);
+        assert_eq!(delete_args(""), None);
+        assert_eq!(delete_args("--json"), None);
     }
 }
