@@ -1028,6 +1028,7 @@ flowchart LR
   - **Needs:** T5.6.
   - **Asked for:** Continue #917, Claude Code #1234.
   - **Done when:** `praxis acp` is tried from one Neovim ACP client (such as CodeCompanion) with no code changes, and the README lists the ACP clients actually tested. Say so if it wasn't tested.
+  - **Status:** not tested; Neovim isn't installed on the dev machine. Cut from 1.3.0-beta as a *Could* task (2026-11-14).
 
 - [ ] **T11.7 Publish eval results** `HUMAN` schedules the run (§14)
   - **Needs:** T2.10, T2.11.

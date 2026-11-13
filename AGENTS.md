@@ -105,3 +105,4 @@ Known before implementation. Details are in SPEC.
 - In wasm-bindgen 0.2.128 a `getter` on a namespaced free function (`workspace.workspaceFolders`) is emitted as a call and throws. Bind the namespace with `thread_local_v2` and read the property with `Reflect::get` (`praxis-vscode/src/lib.rs`).
 - In `wasm32-unknown-unknown`, `Path::is_absolute()` is always false (the target is neither unix nor windows). Use `has_root()` in the extension crates; native tests cannot catch this.
 - In `agent-client-protocol` 5.0.0, a `cx.spawn` task is dropped when its connection ends, so a running task never sees a `send_notification` error. Don't write tests that expect it to (docs/AUDIT.md F1).
+- Mid-turn memory and scoped rules are recorded as `Message::User` with `MEMORY_MARK`, so count turns with `Message::starts_turn()`, never by counting user messages (rewind, resume, `cut_turn`).
