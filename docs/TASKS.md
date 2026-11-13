@@ -541,12 +541,12 @@ flowchart TB
   - **Do:** permission mode (read-only, ask, auto-edit) and agent picker next to the existing model select. Session-only: never written to config.
   - **Done when:** tests confirm a mode or agent change reaches the next turn only in that session, and a new session or restart falls back to config defaults.
 
-- [ ] **T5.15 VS Code settings** (§11) · *Should*
+- [x] **T5.15 VS Code settings** (§11) · *Should*
   - **Needs:** T5.2.
   - **Do:** `harness.defaultModel`, `harness.lmstudio.baseUrl`, `harness.agent.maxTurnRequests`, `harness.context.maskKeepTurns`, `harness.context.filterOutput` in `editors/vscode/package.json`. Forwarded to the CLI as `--config-override` only when the user set them explicitly. No security-relevant keys (§11).
   - **Done when:** native tests confirm an unset key adds no override, a set key adds exactly one, and `package.json` declares none of the file-only keys.
 
-- [ ] **T5.16 `harness plugin list --json`** (§8, §12) · *Should*
+- [x] **T5.16 `harness plugin list --json`** (§8, §12) · *Should*
   - **Needs:** T6.6.
   - **Do:** a JSON output mode for `harness plugin list` with each plugin's name, source, enabled state and "can run" list, for the extension to read.
   - **Done when:** a CLI test parses the output as JSON and checks the fields against the text output for the same fixture.
