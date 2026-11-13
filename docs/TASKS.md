@@ -18,8 +18,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
 | **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 12 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
+| **M11** | [Beta 1.3.0: community requests](#m11-beta-130-community-requests) | 8 | Ship the most-wanted features of other agents that fit a local, single-GPU harness. |
 
-94 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+102 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -949,3 +950,87 @@ flowchart LR
   - **Done when:** the cause is found and covered by a failing ACP test on the fake server, and a turn with a tool call ends with the model's reply.
   - **Closed without a fix (2026-11-13):** not reproduced on the fake server; every return after a tool round logs or shows a notice. The owner confirmed the logs came from an experiment where the model ran the wrong commands, not from a harness fault.
 
+
+## M11: Beta 1.3.0: community requests
+
+> The most-reacted open requests in other coding agents' issue trackers (Claude Code, Codex, OpenCode, Cline, Crush, Goose, Aider, Continue), surveyed 2026-11-14, filtered to what fits a local, single-GPU harness. Release `1.3.0-beta` also carries the open M5 task T5.8 (change-set review: Claude Code #33932, Codex #2998).
+>
+> **Left out:** a model that auto-approves actions (it runs inference on every action), parallel subagents (one GPU), long-running background processes (they conflict with the sandbox's process-group kill), and status lines, voice and PDF input (low value here). Already done elsewhere: AGENTS.md, hooks, the sandbox, chat management.
+
+```mermaid
+flowchart LR
+    T11_1["T11.1<br/>Find in chat"]
+    T11_2["T11.2<br/>Finish notification"]
+    T11_3["T11.3<br/>Diagnostics after edits"]
+    T11_4["T11.4<br/>Terminal diagnostics"]
+    T11_5["T11.5<br/>Rewind chat and files"]
+    T11_6["T11.6<br/>Neovim check"]
+    T11_7["T11.7<br/>Publish eval results"]
+    T11_8["T11.8<br/>Release 1.3.0-beta"]
+    T5_5(["T5.5"])
+    T5_6(["T5.6"])
+    T5_8(["T5.8"])
+    T3_8(["T3.8"])
+    T10_1(["T10.1"])
+    T2_10(["T2.10"])
+    T2_11(["T2.11"])
+    T5_5 -.-> T11_3
+    T11_3 --> T11_4
+    T3_8 -.-> T11_5
+    T10_1 -.-> T11_5
+    T5_6 -.-> T11_6
+    T2_10 -.-> T11_7
+    T2_11 -.-> T11_7
+    T11_1 --> T11_8
+    T11_2 --> T11_8
+    T11_3 --> T11_8
+    T11_5 --> T11_8
+    T11_7 --> T11_8
+    T5_8 -.-> T11_8
+
+    classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
+    classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
+    classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
+    class T11_1,T11_2,T11_3,T11_5,T11_6 task
+    class T11_4,T11_7,T11_8 human
+    class T5_5,T5_6,T5_8,T3_8,T10_1,T2_10,T2_11 other
+```
+
+- [ ] **T11.1 Find in chat** (§11) · *Should*
+  - **Needs:** none.
+  - **Asked for:** OpenCode #4714.
+  - **Done when:** the chat panel is created with `enableFindWidget: true`, so Ctrl+F searches the conversation; a test on the panel options asserts it.
+
+- [ ] **T11.2 Notify when a turn ends** (§11) · *Could*
+  - **Needs:** none.
+  - **Asked for:** Codex #3962.
+  - **Done when:** a turn that ends while the VS Code window is unfocused shows an information notification with the chat title and stop reason, and clicking it reveals the panel; a focused window shows none. Users silence it through VS Code's own notification settings, so there is no Praxis setting.
+
+- [ ] **T11.3 Diagnostics after edits** (§6, §11) · *Should*
+  - **Needs:** T5.5.
+  - **Asked for:** Codex #8745 (language-server feedback). It lets a small model see its own compile errors without another tool round.
+  - **Done when:** in `praxis acp` with a client that supports it, a completed `Write` or `Edit` result ends with that file's error-severity problems (reusing `problems_of` in `praxis-vscode`, after VS Code's diagnostics settle or about 2 s pass, capped in lines); the CLI and plain ACP clients get unchanged results; diagnostics text is treated as untrusted tool output; a fake-server ACP test covers both cases; an eval run on one model shows no fall in success.
+
+- [ ] **T11.4 Diagnostics in the terminal** `HUMAN` picks the approach (§3, §6) · *Could*
+  - **Needs:** T11.3.
+  - **Options:** a language-server client (a new dependency outside SPEC §3, so the owner must approve it); or a check command set in config (for example `cargo check --message-format short`), run through the `Bash` sandbox after edits, with no new dependency; or neither.
+  - **Done when:** the chosen option gives CLI `Edit` results the same appended errors as T11.3, with a test on the fake server.
+
+- [ ] **T11.5 Rewind chat and files** (§8, §11) · *Should*
+  - **Needs:** T3.8, T10.1.
+  - **Asked for:** Codex #9203 and #11626, Crush #1300. Today `/undo` restores files only.
+  - **Done when:** `/rewind` in the REPL and a "Rewind to here" action on a user message in the panel restore the files to before that turn and cut the history back to it; the session log records the rewind, so a reloaded chat (T10.1) shows the shortened history and old logs still load; turns older than the `CHECKPOINT_TURNS` window can't be picked; the UI says `Bash` effects aren't undone. Each part has a test.
+
+- [ ] **T11.6 Neovim over ACP** (§11) · *Could*
+  - **Needs:** T5.6.
+  - **Asked for:** Continue #917, Claude Code #1234.
+  - **Done when:** `praxis acp` is tried from one Neovim ACP client (such as CodeCompanion) with no code changes, and the README lists the ACP clients actually tested. Say so if it wasn't tested.
+
+- [ ] **T11.7 Publish eval results** `HUMAN` schedules the run (§14)
+  - **Needs:** T2.10, T2.11.
+  - **Why:** the local-model community disagrees on whether a harness can make small models reliable; Praxis can answer with numbers.
+  - **Done when:** the fair rerun is done (3 runs per task, AGENTS.md on for both Praxis and OpenCode, one model at a time); the boards are committed; T2.10 and T2.11 are ticked or reverted according to their result; the README reports success rate and wall time against OpenCode, including the tasks Praxis loses.
+
+- [ ] **T11.8 Release 1.3.0-beta** `HUMAN` approves
+  - **Needs:** T11.1, T11.2, T11.3, T11.5, T11.7, T5.8. Cut *Could* tasks that aren't done instead of waiting for them.
+  - **Done when:** `./scripts/release v1.3.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
