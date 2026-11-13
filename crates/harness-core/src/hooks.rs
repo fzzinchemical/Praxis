@@ -383,8 +383,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_timed_out_hook_is_a_non_blocking_error() {
-        let slow = hook("sleep 5; exit 2", None, 0);
-        let o = run(&slow, &json!({}), Path::new("/"), &std::env::temp_dir()).await;
+        let slow = hook("exec sleep 30", None, 0);
+        let o = tokio::time::timeout(
+            Duration::from_secs(20),
+            run(&slow, &json!({}), Path::new("/"), &std::env::temp_dir()),
+        )
+        .await
+        .expect("run must honour the hook timeout, not hang");
         assert!(o.block.is_none());
         assert!(o.error.unwrap().contains("timed out"));
     }
@@ -393,15 +398,19 @@ mod tests {
     async fn a_hook_that_never_reads_big_stdin_still_times_out() {
         // Larger than the pipe buffer, so an unbounded stdin write would block forever.
         let big = json!({ "data": "x".repeat(1 << 20) });
-        let deaf = hook("sleep 5", None, 1);
+        // The hook sleeps far longer than its 1s timeout, so an honoured timeout is well
+        // below 30s even when a loaded machine delays spawning. `exec` makes sleep the
+        // killed process rather than a shell that leaves it orphaned.
+        let deaf = hook("exec sleep 30", None, 1);
         let started = std::time::Instant::now();
+        // Outer guard: a hang fails the test instead of stalling the suite.
         let o = tokio::time::timeout(
-            Duration::from_secs(4),
+            Duration::from_secs(20),
             run(&deaf, &big, Path::new("/"), &std::env::temp_dir()),
         )
         .await
         .expect("run must honour the hook timeout, not hang on stdin");
         assert!(o.error.unwrap().contains("timed out"));
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(started.elapsed() < Duration::from_secs(10));
     }
 }
