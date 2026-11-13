@@ -97,6 +97,8 @@ struct Ui {
     /// The permission mode picker, enabled under the same rule as the model picker.
     mode: HtmlSelectElement,
     input: HtmlTextAreaElement,
+    /// User turns shown so far, so each bubble's "Rewind to here" knows its turn number.
+    turns: usize,
     /// Commands the agent announced for this session, and the autocomplete list over them.
     commands: Vec<view::Command>,
     menu: Element,
@@ -286,6 +288,7 @@ pub fn start() -> Result<(), JsValue> {
         menu: menu.clone(),
         menu_open: false,
         selected: 0,
+        turns: 0,
     }));
 
     let state = ui.clone();
@@ -397,6 +400,13 @@ pub fn start() -> Result<(), JsValue> {
         };
         if let Some(path) = button.get_attribute("data-open-change") {
             api.post_message(&json!({"type": "open_change", "path": path}).to_string());
+            return;
+        }
+        if let Some(turn) = button
+            .get_attribute("data-turn")
+            .and_then(|t| t.parse::<u64>().ok())
+        {
+            api.post_message(&json!({"type": "rewind", "turn": turn}).to_string());
             return;
         }
         if let Some(id) = button.get_attribute("data-stop-subagent") {
@@ -520,9 +530,46 @@ impl Ui {
         Ok(element)
     }
 
+    /// A user bubble, with the button that rewinds the chat to before it.
+    fn user_bubble(&mut self, prompt: &str) -> Result<(), JsValue> {
+        self.turns += 1;
+        self.append("p", "user", prompt)?;
+        let button: HtmlElement = self.document.create_element("button")?.dyn_into()?;
+        button.set_attribute("type", "button")?;
+        button.set_attribute("data-turn", &self.turns.to_string())?;
+        button.set_text_content(Some("Rewind to here"));
+        self.output.append_child(&button)?;
+        Ok(())
+    }
+
+    /// Drops the chat from user turn `turn` on, then notes that Bash effects stay.
+    fn rewound(&mut self, turn: usize) -> Result<(), JsValue> {
+        let children = self.output.query_selector_all(":scope > *")?;
+        let mut elements = Vec::new();
+        for index in 0..children.length() {
+            if let Some(element) = children
+                .item(index)
+                .and_then(|n| n.dyn_into::<Element>().ok())
+            {
+                elements.push(element);
+            }
+        }
+        let classes: Vec<String> = elements.iter().map(Element::class_name).collect();
+        if let Some(cut) = view::cut_at_turn(&classes, turn) {
+            for element in &elements[cut..] {
+                element.remove();
+            }
+        }
+        self.turns = turn - 1;
+        self.message = None;
+        let note = format!("Rewound to before turn {turn}. Bash effects are not undone.");
+        self.append("p", "notice", &note)?;
+        Ok(())
+    }
+
     fn begin(&mut self, prompt: &str) -> Result<(), JsValue> {
         self.message = None;
-        self.append("p", "user", prompt)?;
+        self.user_bubble(prompt)?;
         self.started = js_sys::Date::now();
         self.ended = None;
         self.status.phase = Phase::ProcessingPrompt;
@@ -640,7 +687,15 @@ impl Ui {
             }
             "user" => {
                 self.message = None;
-                self.append("p", "user", text("text"))?;
+                self.user_bubble(text("text"))?;
+            }
+            "rewound" => {
+                let turn = message["turn"]
+                    .as_u64()
+                    .and_then(|t| usize::try_from(t).ok());
+                if let Some(turn) = turn.filter(|turn| *turn >= 1) {
+                    self.rewound(turn)?;
+                }
             }
             "text" => {
                 self.status.phase = Phase::Generating;

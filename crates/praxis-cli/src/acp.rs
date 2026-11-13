@@ -76,6 +76,8 @@ const CRASH_PROMPT: &str = "crash this turn";
 const STOP_SUBAGENT: &str = "_praxis/cancel_subagent";
 /// Extension request the agent sends after an edit: `sessionId`, `path`. Answered with `problems`.
 const DIAGNOSTICS: &str = "_praxis/diagnostics";
+/// Extension request the panel sends for "Rewind to here": `sessionId`, `turn`. Answered with `turn`.
+const REWIND: &str = "_praxis/rewind";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 
@@ -315,7 +317,9 @@ pub fn agent(
         for_set,
         for_close,
         for_stop,
+        for_rewind,
     ) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -606,6 +610,38 @@ pub fn agent(
             {
                 Ok(()) => responder.respond(v1::CloseSessionResponse::new()),
                 Err(e) => responder.respond_with_error(e),
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |req: UntypedMessage, responder, _cx| {
+                // Last in the chain, so it only sees methods no handler above took.
+                if req.method() != REWIND {
+                    return responder.respond_with_error(Error::method_not_found());
+                }
+                let params = req.params();
+                let (Some(session), Some(turn)) = (
+                    params["sessionId"].as_str(),
+                    params["turn"]
+                        .as_u64()
+                        .and_then(|t| usize::try_from(t).ok()),
+                ) else {
+                    let error = Error::invalid_params().data("rewind needs a sessionId and a turn");
+                    return responder.respond_with_error(error);
+                };
+                // A running turn holds the agent, so `begin_turn` refuses the rewind meanwhile.
+                let (mut agent, _) = match for_rewind.begin_turn(session) {
+                    Ok(turn) => turn,
+                    Err(e) => return responder.respond_with_error(e),
+                };
+                let outcome = agent.rewind_to_turn(turn);
+                for_rewind.end_turn(session, agent);
+                match outcome {
+                    Ok(_) => responder.respond(json!({"turn": turn})),
+                    Err(e) => {
+                        responder.respond_with_error(Error::invalid_params().data(e.to_string()))
+                    }
+                }
             },
             on_receive_request!(),
         )
@@ -2582,6 +2618,73 @@ mod tests {
         assert_eq!(
             client_path(&workspace, &link, Path::new("/etc/passwd")),
             Path::new("/etc/passwd")
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_rewind_request_restores_the_files_and_cuts_the_history_to_before_the_turn() {
+        let dir = temp_dir("rewind-request");
+        let server = fake_server_bodies(vec![
+            tool_call_body(
+                "c0",
+                "Write",
+                &json!({"file_path": "ok.txt", "content": "x"}),
+            ),
+            text_body("done"),
+            text_body("again"),
+        ])
+        .await;
+        let caps = json!({"fs": {"readTextFile": false}});
+        let init = serde_json::from_value::<v1::InitializeRequest>(json!({
+            "protocolVersion": 1,
+            "clientCapabilities": caps
+        }))
+        .unwrap();
+        let run = Client
+            .v1()
+            .on_receive_request(
+                async move |_req: v1::RequestPermissionRequest, responder, _cx| {
+                    let chosen = v1::SelectedPermissionOutcome::new("allow_once");
+                    let outcome = v1::RequestPermissionOutcome::Selected(chosen);
+                    responder.respond(v1::RequestPermissionResponse::new(outcome))
+                },
+                on_receive_request!(),
+            )
+            .connect_with(praxis(&server, &dir), async |cx| {
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?
+                    .session_id
+                    .to_string();
+                let prompt = v1::PromptRequest::new(session.clone(), vec!["make ok.txt".into()]);
+                cx.send_request(prompt).block_task().await?;
+                let rewind = |turn: u64| {
+                    UntypedMessage::new(REWIND, json!({"sessionId": session, "turn": turn}))
+                };
+                let rewound = cx.send_request(rewind(1)?).block_task().await?;
+                let refused = cx.send_request(rewind(9)?).block_task().await;
+                let again = v1::PromptRequest::new(session, vec!["again".into()]);
+                cx.send_request(again).block_task().await?;
+                Ok((rewound, refused.is_err()))
+            });
+        let (rewound, refused) = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(rewound["turn"], 1);
+        assert!(refused, "a turn outside the window must be an error reply");
+        assert!(
+            !dir.join("ok.txt").exists(),
+            "the rewind must restore the file"
+        );
+        let requests = server.received_requests().await.unwrap();
+        let body = requests[2].body_json::<Value>().unwrap().to_string();
+        assert!(body.contains("again"), "{body}");
+        assert!(
+            !body.contains("make ok.txt"),
+            "the rewound turn must be gone: {body}"
         );
     }
 }

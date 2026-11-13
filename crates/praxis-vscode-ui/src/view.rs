@@ -140,9 +140,31 @@ impl Status {
     }
 }
 
+/// The child index that a rewind to user turn `turn` (1-based) cuts the chat at: the `user`
+/// bubble that starts it. None when the chat has no such turn.
+pub fn cut_at_turn(classes: &[String], turn: usize) -> Option<usize> {
+    classes
+        .iter()
+        .enumerate()
+        .filter(|(_, class)| class.as_str() == "user")
+        .map(|(index, _)| index)
+        .nth(turn.checked_sub(1)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rewind_cuts_the_chat_at_the_user_bubble_of_that_turn() {
+        let chat: Vec<String> = ["user", "message", "rewind", "user", "rewind", "notice"]
+            .map(str::to_owned)
+            .into();
+        assert_eq!(cut_at_turn(&chat, 1), Some(0));
+        assert_eq!(cut_at_turn(&chat, 2), Some(3));
+        assert_eq!(cut_at_turn(&chat, 3), None, "no third turn");
+        assert_eq!(cut_at_turn(&chat, 0), None, "turns start at 1");
+    }
 
     #[test]
     fn script_tags_in_model_text_render_inert() {

@@ -812,6 +812,8 @@ Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancell
 
 **Stopping one subagent (T10.12):** the extension notification `_praxis/cancel_subagent` with params `{sessionId, toolCallId}` cancels the subagent running under that `Agent` call and nothing else. Each subagent runs under its own child of the turn's token, so the `Agent` call completes with the text `The user stopped this subagent.` (not an error) and the turn goes on to its end. Unknown ids and finished subagents are ignored. Other extension notifications are ignored too.
 
+**Rewinding to a turn (T11.5):** the extension request `_praxis/rewind` with params `{sessionId, turn}` runs `Agent::rewind_to_turn` (SPEC §8) and answers `{turn}`. An out-of-window turn, or a turn still running, is an error reply and changes nothing. The panel's "Rewind to here" button on a user message sends it, and on success cuts the chat back to that message.
+
 Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-keep-acp-for-the-front-end-protocol.md)):
 
 - **Permission option kinds:** `allow_once`, `allow_always`, `reject_once`, `reject_always`. The answer's `outcome` is `selected` with an `optionId`, or `cancelled`. After `session/cancel`, the client must answer pending requests with `cancelled`.

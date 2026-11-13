@@ -34,6 +34,8 @@ pub enum FromPanel {
     OpenChange(String),
     /// The tool call id of a running subagent the panel asked to stop.
     StopSubagent(String),
+    /// The user turn the panel asked to rewind to ("Rewind to here"), as the agent numbers it.
+    Rewind(u64),
 }
 
 impl FromPanel {
@@ -57,6 +59,7 @@ impl FromPanel {
             "mode" => Some(Self::PermissionMode(value["key"].as_str()?.to_owned())),
             "open_change" => Some(Self::OpenChange(value["path"].as_str()?.to_owned())),
             "stop_subagent" => Some(Self::StopSubagent(value["id"].as_str()?.to_owned())),
+            "rewind" => Some(Self::Rewind(value["turn"].as_u64()?)),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -344,6 +347,8 @@ const NEW_SESSION: u64 = 1;
 const SET_MODEL: u64 = 2;
 const LOAD_SESSION: u64 = 4;
 const SET_MODE: u64 = 5;
+/// Unused by the prompt ids (`next_id` starts above `SET_MODE`), so the rewind answer is never mistaken for one.
+const REWIND: u64 = 3;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -436,6 +441,13 @@ impl Client {
         std::iter::once(cancel.to_string()).chain(answers).collect()
     }
 
+    /// The `_praxis/rewind` request for a user turn, or `None` while no session is open yet.
+    pub fn rewind(&self, turn: u64) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "turn": turn});
+        Some(request(REWIND, "_praxis/rewind", params))
+    }
+
     /// The `_praxis/cancel_subagent` notification for a running subagent, or `None` while no session
     /// is open yet. A notification has no id, so the agent sends no answer.
     pub fn stop_subagent(&self, id: &str) -> Option<String> {
@@ -469,6 +481,7 @@ impl Client {
                     models: self.picker.clone(),
                     ..Reaction::default()
                 },
+                Some(REWIND) => show(notice(&format!("Could not rewind: {text}"))),
                 Some(SET_MODE) => Reaction {
                     show: Some(notice(&format!("Could not change permissions: {text}"))),
                     modes: self.modes.clone(),
@@ -588,6 +601,7 @@ impl Client {
                     ..Reaction::default()
                 }
             }
+            Some(REWIND) => show(json!({"type": "rewound", "turn": result["turn"]})),
             Some(SET_MODE) => match picker(result, "mode", "modes") {
                 Some(modes) => {
                     self.modes = Some(modes.clone());
@@ -774,6 +788,37 @@ impl Lines {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_rewind_request_names_the_turn_and_its_answer_routes_to_the_panel() {
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"rewind","turn":3}"#),
+            Some(FromPanel::Rewind(3))
+        );
+        assert_eq!(FromPanel::parse(r#"{"type":"rewind"}"#), None);
+
+        let mut client = Client::start("/work").0;
+        assert_eq!(client.rewind(3), None, "no session yet");
+        client.session = Some("s1".into());
+        let line: Value = serde_json::from_str(&client.rewind(3).unwrap()).unwrap();
+        assert_eq!(line["method"], "_praxis/rewind");
+        assert_eq!(line["params"], json!({"sessionId": "s1", "turn": 3}));
+
+        let answer = format!(r#"{{"jsonrpc":"2.0","id":{REWIND},"result":{{"turn":3}}}}"#);
+        assert_eq!(
+            client.on_line(&answer).show,
+            Some(json!({"type": "rewound", "turn": 3}))
+        );
+        let refused = format!(
+            r#"{{"jsonrpc":"2.0","id":{REWIND},"error":{{"code":-32602,"data":"turn 9 can't be rewound to"}}}}"#
+        );
+        let shown = client.on_line(&refused).show.unwrap();
+        assert_eq!(shown["type"], "notice");
+        assert_eq!(
+            shown["text"],
+            "Could not rewind: turn 9 can't be rewound to"
+        );
+    }
 
     fn sent(reaction: &Reaction) -> Value {
         serde_json::from_str(reaction.send.as_deref().unwrap_or("null")).unwrap()

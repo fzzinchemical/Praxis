@@ -1018,11 +1018,11 @@ flowchart LR
   - **Cut from 1.3.0-beta** by the owner (2026-11-14).
   - **Done when:** the chosen option gives CLI `Edit` results the same appended errors as T11.3, with a test on the fake server.
 
-- [ ] **T11.5 Rewind chat and files** (§8, §11) · *Should*
+- [x] **T11.5 Rewind chat and files** (§8, §11) · *Should*
   - **Needs:** T3.8, T10.1.
   - **Asked for:** Codex #9203 and #11626, Crush #1300. Today `/undo` restores files only.
   - **Done when:** `/rewind` in the REPL and a "Rewind to here" action on a user message in the panel restore the files to before that turn and cut the history back to it; the session log records the rewind, so a reloaded chat (T10.1) shows the shortened history and old logs still load; turns older than the `CHECKPOINT_TURNS` window can't be picked; the UI says `Bash` effects aren't undone. Each part has a test.
-  - **Status:** part 1 (core, session log, REPL `/rewind`) is done; the panel action remains.
+  - **Status:** done. Part 1 is the core, session log and REPL `/rewind`; the panel's "Rewind to here" is the `_praxis/rewind` request. A turn outside the window gets an error reply, so the panel relies on that rather than hiding the button.
 
 - [ ] **T11.6 Neovim over ACP** (§11) · *Could*
   - **Needs:** T5.6.

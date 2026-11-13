@@ -444,6 +444,11 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
                     .and_then(|client| client.stop_subagent(&id));
                 panel.send(line);
             }
+            Some(FromPanel::Rewind(turn)) => {
+                let panel = state.borrow();
+                let line = panel.client.as_ref().and_then(|client| client.rewind(turn));
+                panel.send(line);
+            }
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
                 let lines = panel.client.as_mut().map(Client::cancel);
