@@ -241,11 +241,16 @@ pub async fn run(hook: &Hook, input: &Value, plugin_root: &Path, project_dir: &P
         Ok(child) => child,
         Err(e) => return error(format!("couldn't start hook `{}`: {e}", hook.command)),
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        // A hook that ignores stdin closes it early; that isn't an error.
-        let _ = stdin.write_all(input.to_string().as_bytes()).await;
-    }
-    match tokio::time::timeout(hook.timeout, child.wait_with_output()).await {
+    // The stdin write sits inside the timeout: a hook that never reads a large input
+    // blocks the write forever. Dropping the future on timeout kills the child.
+    let run_to_end = async move {
+        if let Some(mut stdin) = child.stdin.take() {
+            // A hook that ignores stdin closes it early; that isn't an error.
+            let _ = stdin.write_all(input.to_string().as_bytes()).await;
+        }
+        child.wait_with_output().await
+    };
+    match tokio::time::timeout(hook.timeout, run_to_end).await {
         Ok(Ok(out)) => outcome(
             out.status.code(),
             &String::from_utf8_lossy(&out.stdout),
@@ -396,5 +401,21 @@ mod tests {
         let o = run(&slow, &json!({}), Path::new("/"), &std::env::temp_dir()).await;
         assert!(o.block.is_none());
         assert!(o.error.unwrap().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_never_reads_big_stdin_still_times_out() {
+        // Larger than the pipe buffer, so an unbounded stdin write would block forever.
+        let big = json!({ "data": "x".repeat(1 << 20) });
+        let deaf = hook("sleep 5", None, 1);
+        let started = std::time::Instant::now();
+        let o = tokio::time::timeout(
+            Duration::from_secs(4),
+            run(&deaf, &big, Path::new("/"), &std::env::temp_dir()),
+        )
+        .await
+        .expect("run must honour the hook timeout, not hang on stdin");
+        assert!(o.error.unwrap().contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(3));
     }
 }
