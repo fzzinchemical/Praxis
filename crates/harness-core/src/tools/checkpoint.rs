@@ -84,6 +84,7 @@ impl ToolContext {
     }
 
     /// Restores the files the last changing turn wrote and returns their paths, newest first.
+    /// Every file is attempted; failures are kept for a later undo and all named in the error.
     pub fn undo(&self) -> io::Result<Vec<PathBuf>> {
         let turn = {
             let mut cp = self.checkpoints();
@@ -93,27 +94,49 @@ impl ToolContext {
             cp.turns.pop().unwrap_or_default()
         };
         let mut restored = Vec::new();
-        for (path, copy) in turn.into_iter().rev() {
-            match &copy {
-                Some(copy) => super::files::replace_with(&path, |file| {
-                    io::copy(&mut File::open(copy)?, file).map(drop)
-                })?,
-                None => match fs::remove_file(&path) {
-                    Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
-                    _ => {}
-                },
+        let mut failed = Vec::new();
+        let mut failures = Vec::new();
+        for (path, copy) in turn.iter().rev() {
+            match restore(path, copy.as_deref()) {
+                Ok(()) => {
+                    // The model must read the file again before editing it.
+                    self.forget(path);
+                    restored.push(path.clone());
+                }
+                Err(e) => {
+                    failures.push(format!("{}: {e}", path.display()));
+                    failed.push((path.clone(), copy.clone()));
+                }
             }
-            // The model must read the file again before editing it.
-            self.forget(&path);
-            restored.push(path);
         }
-        Ok(restored)
+        if failures.is_empty() {
+            return Ok(restored);
+        }
+        failed.reverse();
+        self.checkpoints().turns.push(failed);
+        Err(io::Error::other(format!(
+            "Can't restore {}",
+            failures.join("; ")
+        )))
     }
 
     fn checkpoints(&self) -> std::sync::MutexGuard<'_, Checkpoints> {
         self.checkpoints
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+/// Puts `path` back as `copy` was, or removes it when the turn created it.
+fn restore(path: &Path, copy: Option<&Path>) -> io::Result<()> {
+    match copy {
+        Some(copy) => super::files::replace_with(path, |file| {
+            io::copy(&mut File::open(copy)?, file).map(drop)
+        }),
+        None => match fs::remove_file(path) {
+            Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        },
     }
 }
 
@@ -164,6 +187,36 @@ mod tests {
         );
         assert!(ctx.undo().unwrap().is_empty());
         assert!(UNDO_NOTE.contains("Bash effects are not"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn undo_restores_the_other_files_and_names_the_one_it_cannot_restore() {
+        let root =
+            std::env::temp_dir().join(format!("harness-undo-partial-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(workspace.join("gone")).unwrap();
+        fs::write(workspace.join("a.txt"), "one\n").unwrap();
+        fs::write(workspace.join("gone/b.txt"), "one\n").unwrap();
+        let ctx = ToolContext::new(&workspace).unwrap();
+        ctx.checkpoint_into(root.join("checkpoints"));
+        let path = |name: &str| workspace.join(name).display().to_string();
+
+        ctx.begin_turn();
+        for name in ["a.txt", "gone/b.txt"] {
+            read(from_value(json!({"file_path": path(name)})).unwrap(), &ctx).unwrap();
+            let input = json!({"file_path": path(name), "old_string": "one", "new_string": "two"});
+            edit(from_value(input).unwrap(), &ctx).unwrap();
+        }
+        ctx.begin_turn();
+        fs::remove_dir_all(workspace.join("gone")).unwrap();
+
+        let err = ctx.undo().unwrap_err().to_string();
+        assert!(err.contains("gone/b.txt"), "{err}");
+        assert_eq!(
+            fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "one\n"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
