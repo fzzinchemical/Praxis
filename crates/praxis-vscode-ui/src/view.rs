@@ -79,6 +79,22 @@ pub fn subagent_summary(
     }
 }
 
+/// The files a subagent changed: the paths of its completed calls that have one (`Write` and
+/// `Edit`), deduplicated in first-seen order. Each item is a call's path and status.
+pub fn changed_files<'a>(
+    calls: impl IntoIterator<Item = (Option<&'a str>, &'a str)>,
+) -> Vec<&'a str> {
+    let mut files: Vec<&'a str> = Vec::new();
+    for (path, status) in calls {
+        if let Some(path) = path.filter(|_| status == "completed")
+            && !files.contains(&path)
+        {
+            files.push(path);
+        }
+    }
+    files
+}
+
 /// Token counts in thousands, rounded to the nearest; counts under 1000 stay exact.
 fn tokens_k(count: u32) -> String {
     if count < 1000 {
@@ -272,5 +288,18 @@ mod tests {
             context: Some((0, 0)),
         };
         assert_eq!(status.line(0), "Running tool · 0:00 · context 0 / 0");
+    }
+
+    #[test]
+    fn a_subagents_changed_files_are_its_completed_writes_in_first_seen_order() {
+        let calls = [
+            (Some("/w/a.rs"), "completed"),
+            (Some("/w/b.rs"), "failed"),
+            (None, "completed"),
+            (Some("/w/c.rs"), "pending"),
+            (Some("/w/a.rs"), "completed"),
+            (Some("/w/d.rs"), "completed"),
+        ];
+        assert_eq!(changed_files(calls), ["/w/a.rs", "/w/d.rs"]);
     }
 }

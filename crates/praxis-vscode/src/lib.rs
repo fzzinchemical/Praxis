@@ -64,6 +64,9 @@ extern "C" {
         title: &str,
         options: &Object,
     ) -> Promise;
+    // Same command as above, for commands that take one file Uri.
+    #[wasm_bindgen(js_namespace = commands, js_name = executeCommand)]
+    fn execute_uri_command(command: &str, uri: &Uri) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = createOutputChannel)]
     fn create_output_channel(name: &str) -> OutputChannel;
     #[derive(Clone)]
@@ -385,6 +388,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
             }) => send_prompt(&state, &text, file, files, problems),
             Some(FromPanel::AddFile) => add_files(&state),
             Some(FromPanel::Dropped(uris)) => drop_files(&state, &uris),
+            Some(FromPanel::OpenChange(path)) => open_change(&state, &path),
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
                 let lines = panel.client.as_mut().map(Client::cancel);
@@ -660,6 +664,31 @@ fn drop_files(state: &Shared, uris: &[String]) {
     };
     let webview = state.borrow().webview.clone();
     attach(&webview, &cwd, protocol::dropped_paths(uris));
+}
+
+/// Opens a subagent's changed file as VS Code's Git diff, or as the file when git can't show it
+/// (no repository). Paths outside the workspace are refused.
+fn open_change(state: &Shared, path: &str) {
+    let Some(cwd) = workspace_dir() else {
+        return;
+    };
+    let Some(path) = protocol::change_target(&cwd, path) else {
+        state
+            .borrow()
+            .webview
+            .notify(&format!("Not opened, outside the workspace: {path}"));
+        return;
+    };
+    let uri = Uri::file_uri(&path);
+    let fallback = {
+        let uri = uri.clone();
+        Closure::once_into_js(move |_: JsValue| {
+            let _ = execute_uri_command("vscode.open", &uri);
+        })
+    };
+    let _ = execute_uri_command("git.openChange", &uri)
+        .unchecked_into::<Thenable>()
+        .catch_once(&fallback);
 }
 
 /// Posts the paths inside the workspace as picked files and says which ones were refused.

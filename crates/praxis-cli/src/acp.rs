@@ -691,8 +691,19 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
                 .status(v1::ToolCallStatus::Pending);
             // The panel titles the subagent's block with its type (SPEC §11).
             let kind = input["subagent_type"].as_str().filter(|_| name == "Agent");
-            let meta =
-                kind.and_then(|kind| json!({"praxis": {"subagent": kind}}).as_object().cloned());
+            // A Write or Edit names its file, so the panel can list what a subagent changed.
+            let file = input["file_path"]
+                .as_str()
+                .filter(|_| matches!(name.as_str(), "Write" | "Edit"));
+            let mut praxis = serde_json::Map::new();
+            if let Some(kind) = kind {
+                praxis.insert("subagent".into(), kind.into());
+            }
+            if let Some(file) = file {
+                praxis.insert("filePath".into(), file.into());
+            }
+            let meta = (!praxis.is_empty())
+                .then(|| serde_json::Map::from_iter([("praxis".to_owned(), praxis.into())]));
             v1::SessionUpdate::ToolCall(call.meta(meta))
         }
         AgentEvent::ToolFinished { id, outcome } => {
@@ -765,12 +776,20 @@ fn subagent_update(
             fields,
         )));
     }
-    let meta = json!({"praxis": {"parentToolCallId": parent}})
-        .as_object()
-        .cloned();
+    // Merged, not replaced: the call may already carry its own `praxis` fields, such as `filePath`.
+    let with_parent = |meta: Option<serde_json::Map<String, Value>>| {
+        let mut meta = meta.unwrap_or_default();
+        let praxis = meta.entry("praxis").or_insert_with(|| json!({}));
+        praxis["parentToolCallId"] = json!(parent);
+        Some(meta)
+    };
     match update(event)? {
-        v1::SessionUpdate::ToolCall(call) => Some(v1::SessionUpdate::ToolCall(call.meta(meta))),
+        v1::SessionUpdate::ToolCall(call) => {
+            let meta = with_parent(call.meta.clone());
+            Some(v1::SessionUpdate::ToolCall(call.meta(meta)))
+        }
         v1::SessionUpdate::ToolCallUpdate(call) => {
+            let meta = with_parent(call.meta.clone());
             Some(v1::SessionUpdate::ToolCallUpdate(call.meta(meta)))
         }
         // shortcut: a subagent's reasoning and notices are dropped rather than shown on its call; upgrade with the panel's sub-block rendering.
@@ -1153,6 +1172,12 @@ mod tests {
         assert_eq!(agent["_meta"]["praxis"]["subagent"], "general");
         let child = call("c1").expect("the subagent's Write is sent");
         assert_eq!(child["_meta"]["praxis"]["parentToolCallId"], "c0");
+        // The tool has resolved its input to an absolute path by the time the call starts.
+        assert!(
+            child["_meta"]["praxis"]["filePath"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("/sub.txt"))
+        );
         // Its text is on the Agent call, not a flat message chunk, and the parent's reply stays flat.
         let agent_text: Vec<&str> = updates
             .iter()

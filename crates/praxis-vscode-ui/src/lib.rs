@@ -39,6 +39,13 @@ struct Tool {
     calls: usize,
     /// The subagent's (prompt tokens, context length), once it has reported them.
     usage: Option<(u32, u32)>,
+    /// The file a `Write` or `Edit` call changes.
+    file: Option<String>,
+    /// The `Agent` call this one runs under, and the calls nested under this one in arrival order.
+    parent: Option<String>,
+    children: Vec<String>,
+    /// The changed-files list an `Agent` call shows, inside its block.
+    files: Option<Element>,
 }
 
 /// Sets a block's summary as text, never HTML: titles and types come from the model.
@@ -378,6 +385,10 @@ pub fn start() -> Result<(), JsValue> {
         let Some(button) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
         };
+        if let Some(path) = button.get_attribute("data-open-change") {
+            api.post_message(&json!({"type": "open_change", "path": path}).to_string());
+            return;
+        }
         let (Some(id), Some(option)) = (
             button.get_attribute("data-request"),
             button.get_attribute("data-option"),
@@ -709,6 +720,7 @@ impl Ui {
             {
                 Some(owner) => {
                     owner.calls += 1;
+                    owner.children.push(id.clone());
                     owner.details.append_child(&details)?;
                     show_summary(owner)?;
                 }
@@ -725,6 +737,10 @@ impl Ui {
                 kind: None,
                 calls: 0,
                 usage: None,
+                file: None,
+                parent: message["parent"].as_str().map(str::to_owned),
+                children: Vec::new(),
+                files: None,
             };
             self.tools.insert(id.clone(), tool);
         }
@@ -737,10 +753,55 @@ impl Ui {
         if let Some(kind) = message["subagent"].as_str() {
             tool.kind = Some(kind.to_owned());
         }
+        if tool.kind.is_some() && tool.files.is_none() {
+            let files = self.document.create_element("div")?;
+            files.set_attribute("role", "group")?;
+            files.set_attribute("aria-label", "Changed files")?;
+            tool.details
+                .insert_before(&files, Some(tool.pre.as_ref()))?;
+            tool.files = Some(files);
+        }
+        if let Some(file) = message["file"].as_str() {
+            tool.file = Some(file.to_owned());
+        }
         status.clone_into(&mut tool.status);
         show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
             tool.pre.set_text_content(Some(output));
+        }
+        match tool.parent.clone() {
+            Some(parent) => self.refresh_files(&parent),
+            None => Ok(()),
+        }
+    }
+
+    /// Rebuilds an `Agent` call's changed-files buttons from its calls, so a file lists once its
+    /// `Write` or `Edit` completes. Each button carries the path the click opens.
+    fn refresh_files(&self, owner: &str) -> Result<(), JsValue> {
+        let Some(tool) = self.tools.get(owner) else {
+            return Ok(());
+        };
+        let Some(container) = &tool.files else {
+            return Ok(());
+        };
+        let calls: Vec<(Option<String>, String)> = tool
+            .children
+            .iter()
+            .filter_map(|id| self.tools.get(id))
+            .map(|call| (call.file.clone(), call.status.clone()))
+            .collect();
+        let files = view::changed_files(
+            calls
+                .iter()
+                .map(|(file, status)| (file.as_deref(), status.as_str())),
+        );
+        container.set_text_content(None);
+        for file in files {
+            let button = self.document.create_element("button")?;
+            button.set_attribute("type", "button")?;
+            button.set_attribute("data-open-change", file)?;
+            button.set_text_content(Some(file));
+            container.append_child(&button)?;
         }
         Ok(())
     }

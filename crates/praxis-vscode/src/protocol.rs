@@ -30,6 +30,8 @@ pub enum FromPanel {
     Model(String),
     /// The permission mode picker's choice: `read-only`, `ask` or `auto-edit`.
     PermissionMode(String),
+    /// A changed file the subagent panel asked to open; checked against the workspace before use.
+    OpenChange(String),
 }
 
 impl FromPanel {
@@ -51,6 +53,7 @@ impl FromPanel {
             }
             "model" => Some(Self::Model(value["key"].as_str()?.to_owned())),
             "mode" => Some(Self::PermissionMode(value["key"].as_str()?.to_owned())),
+            "open_change" => Some(Self::OpenChange(value["path"].as_str()?.to_owned())),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -622,6 +625,17 @@ pub fn inside(root: &str, path: &str) -> bool {
         && !path.components().any(|part| part == Component::ParentDir)
 }
 
+/// The absolute path an open request names, if it is inside the workspace. The agent's tools
+/// resolve a relative `file_path` against the workspace, so a relative one is joined to it.
+pub fn change_target(root: &str, path: &str) -> Option<String> {
+    let full = if Path::new(path).has_root() {
+        path.to_owned()
+    } else {
+        format!("{root}/{path}")
+    };
+    inside(root, &full).then_some(full)
+}
+
 fn update(update: &Value) -> Reaction {
     match update["sessionUpdate"].as_str() {
         Some("agent_message_chunk") => match update["content"]["text"].as_str() {
@@ -657,6 +671,10 @@ fn update(update: &Value) -> Reaction {
             }
             if let Some(kind) = meta["subagent"].as_str() {
                 message["subagent"] = kind.into();
+            }
+            // Set by the agent on a Write or Edit call only: the file it changes.
+            if let Some(file) = meta["filePath"].as_str() {
+                message["file"] = file.into();
             }
             show(message)
         }
@@ -773,6 +791,50 @@ mod tests {
     fn dropped_uris_are_deduplicated() {
         let uris = ["file:///a.rs".to_owned(), " file:///a.rs ".to_owned()];
         assert_eq!(dropped_paths(&uris), ["/a.rs"]);
+    }
+
+    #[test]
+    fn a_subagents_written_file_reaches_the_panel_for_its_change_list() {
+        let (mut client, _) = Client::start("/work");
+        let write = json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Write a.rs",
+            "status": "pending", "_meta": {"praxis": {"parentToolCallId": "c0", "filePath": "/work/a.rs"}}});
+        let line = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s1", "update": write}});
+        let shown = client.on_line(&line.to_string()).show.expect("shown");
+        assert_eq!(shown["file"], "/work/a.rs");
+        assert_eq!(shown["parent"], "c0");
+    }
+
+    #[test]
+    fn only_paths_inside_the_workspace_can_be_opened() {
+        assert!(inside("/work", "/work/src/a.rs"));
+        assert!(!inside("/work", "/work2/a.rs"));
+        assert!(!inside("/work", "/work/../etc/passwd"));
+        assert!(!inside("/work", "src/a.rs"));
+    }
+
+    #[test]
+    fn a_changed_file_resolves_inside_the_workspace_or_is_refused() {
+        assert_eq!(
+            change_target("/work", "src/a.rs").as_deref(),
+            Some("/work/src/a.rs")
+        );
+        assert_eq!(
+            change_target("/work", "/work/a.rs").as_deref(),
+            Some("/work/a.rs")
+        );
+        assert_eq!(change_target("/work", "/etc/passwd"), None);
+        assert_eq!(change_target("/work", "../etc/passwd"), None);
+        assert_eq!(change_target("/work", "/work/../etc/passwd"), None);
+    }
+
+    #[test]
+    fn open_change_requests_carry_their_path_and_need_one() {
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"open_change","path":"/work/a.rs"}"#),
+            Some(FromPanel::OpenChange("/work/a.rs".to_owned()))
+        );
+        assert_eq!(FromPanel::parse(r#"{"type":"open_change"}"#), None);
     }
 
     #[test]
