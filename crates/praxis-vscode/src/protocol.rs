@@ -536,6 +536,18 @@ impl Client {
     }
 }
 
+/// The text shown after "Turn ended:". A turn cut by the request limit names the limit and its settings.
+pub fn done_reason(reason: &str, limit: u64) -> String {
+    if reason == "max_turn_requests" {
+        format!(
+            "stopped at the limit of {limit} model requests per turn. To allow more, raise \
+             praxis.agent.maxTurnRequests in VS Code settings or agent.max_turn_requests in config.toml."
+        )
+    } else {
+        reason.to_owned()
+    }
+}
+
 /// The `initialize` line both kinds of `praxis acp` child send first.
 pub fn initialize() -> String {
     request(
@@ -642,6 +654,15 @@ mod tests {
 
     fn sent(reaction: &Reaction) -> Value {
         serde_json::from_str(reaction.send.as_deref().unwrap_or("null")).unwrap()
+    }
+
+    #[test]
+    fn turn_limit_stop_names_the_limit_and_both_settings() {
+        let text = done_reason("max_turn_requests", 40);
+        assert!(text.contains("40"), "{text}");
+        assert!(text.contains("praxis.agent.maxTurnRequests"), "{text}");
+        assert!(text.contains("agent.max_turn_requests"), "{text}");
+        assert_eq!(done_reason("end_turn", 40), "end_turn");
     }
 
     #[test]

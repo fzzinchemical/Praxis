@@ -711,7 +711,19 @@ fn problems_of(path: &str) -> Option<Problems> {
     })
 }
 
-fn react(state: &Shared, reaction: Reaction) {
+fn react(state: &Shared, mut reaction: Reaction) {
+    if let Some(message) = reaction
+        .show
+        .as_mut()
+        .filter(|message| message["type"] == "done")
+    {
+        // shortcut: the unset case assumes core's default of 50; config.toml's own value is not read here.
+        let limit = setting(&get_configuration("praxis"), "agent.maxTurnRequests")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(50);
+        let reason = message["reason"].as_str().unwrap_or_default();
+        message["reason"] = Value::String(protocol::done_reason(reason, limit));
+    }
     if reaction
         .show
         .as_ref()

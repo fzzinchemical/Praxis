@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use praxis_core::config::{
-    Backend, Loaded, McpServer, ModelRef, Sources, load, load_with_approval,
+    AgentSettings, Backend, Loaded, McpServer, ModelRef, Sources, load, load_with_approval,
 };
 use praxis_core::permissions::Mode;
 use praxis_core::trust::TrustStore;
@@ -105,6 +105,11 @@ fn permission_rule_lists_merge_and_other_values_replace() {
         config.profiles["qwen3*"].stop.as_deref(),
         Some(&["a".to_owned()][..])
     );
+}
+
+#[test]
+fn default_turn_limit_leaves_room_for_a_real_task() {
+    assert!(AgentSettings::default().max_turn_requests >= 25);
 }
 
 #[test]
