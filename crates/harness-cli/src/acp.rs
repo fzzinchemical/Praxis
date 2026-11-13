@@ -57,6 +57,10 @@ struct Server<M> {
     client_reads: AtomicBool,
 }
 
+/// Prompt text that makes the test build panic its turn task, where no tool can catch it.
+#[cfg(test)]
+const CRASH_PROMPT: &str = "crash this turn";
+
 /// The session config option the client shows as the model picker (ACP "model" category).
 const MODEL_OPTION: &str = "model";
 
@@ -336,6 +340,11 @@ pub fn agent(
                     let (tx, mut rx) = mpsc::channel(64);
                     let turn_cancel = cancel.clone();
                     let task = tokio::spawn(async move {
+                        // Test seam: a turn that panics on the task itself, where tools can't catch it.
+                        #[cfg(test)]
+                        if prompt == CRASH_PROMPT {
+                            panic!("the test crashed this turn");
+                        }
                         agent.run_turn(prompt, &tx, turn_cancel).await;
                         agent
                     });
@@ -943,6 +952,43 @@ mod tests {
             !format!("{err:?}").contains("already running"),
             "the next prompt must not be refused as running: {err:?}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_that_panics_gets_an_error_and_the_next_prompt_is_not_refused_as_running() {
+        let dir = temp_dir("panic-through-prompt");
+        let server = fake_server().await;
+        let run = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let crash =
+                    v1::PromptRequest::new(session.session_id.clone(), vec![CRASH_PROMPT.into()]);
+                let crashed = cx.send_request(crash).block_task().await;
+                assert!(
+                    crashed.is_err(),
+                    "a panicked turn must answer with an error"
+                );
+                let next = v1::PromptRequest::new(session.session_id, vec!["go".into()]);
+                let refused = cx.send_request(next).block_task().await;
+                let Err(err) = refused else {
+                    panic!("the panicked session must not run another turn");
+                };
+                assert!(
+                    !format!("{err:?}").contains("already running"),
+                    "the next prompt must not be refused as running: {err:?}"
+                );
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
