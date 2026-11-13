@@ -12,7 +12,7 @@ use harness_core::tools::EditorReader;
 use harness_core::tools::FileDiff;
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
@@ -111,6 +111,7 @@ impl<M: Models> Server<M> {
     fn open(
         &self,
         resume: Option<&str>,
+        client_cwd: &Path,
         cx: &ConnectionTo<Client>,
     ) -> anyhow::Result<(String, Vec<Message>, String)> {
         let (log, prior) = match resume {
@@ -127,9 +128,12 @@ impl<M: Models> Server<M> {
             .tools()
             .checkpoint_into(self.sessions_dir.join(&id).join("checkpoints"));
         if self.client_reads.load(Ordering::Relaxed) {
-            agent
-                .tools()
-                .read_from_editor(editor_reader(cx.clone(), id.clone()));
+            agent.tools().read_from_editor(editor_reader(
+                cx.clone(),
+                id.clone(),
+                agent.tools().workspace().to_path_buf(),
+                client_cwd.to_path_buf(),
+            ));
         }
         let agent = Some(agent.with_session(log, prior.clone()));
         let cancel = CancellationToken::new();
@@ -226,7 +230,9 @@ pub fn agent(
         // shortcut: sessions run in the launch directory and ignore `cwd` and `mcpServers`;
         // T5.2 decides whether the extension can ever pass a different folder.
         .on_receive_request(
-            async move |_req: v1::NewSessionRequest, responder, cx| match for_new.open(None, &cx) {
+            async move |req: v1::NewSessionRequest, responder, cx| match for_new
+                .open(None, &req.cwd, &cx)
+            {
                 Ok((id, _, _)) => {
                     let options = Some(for_new.config_options(&id));
                     responder.respond(v1::NewSessionResponse::new(id).config_options(options))
@@ -237,13 +243,14 @@ pub fn agent(
         )
         .on_receive_request(
             async move |req: v1::LoadSessionRequest, responder, cx| {
-                let (prior, option) = match for_load.open(Some(&req.session_id.to_string()), &cx) {
-                    Ok((id, prior, _)) => (prior, for_load.config_options(&id)),
-                    Err(e) => {
-                        return responder
-                            .respond_with_error(Error::invalid_params().data(e.to_string()));
-                    }
-                };
+                let (prior, option) =
+                    match for_load.open(Some(&req.session_id.to_string()), &req.cwd, &cx) {
+                        Ok((id, prior, _)) => (prior, for_load.config_options(&id)),
+                        Err(e) => {
+                            return responder
+                                .respond_with_error(Error::invalid_params().data(e.to_string()));
+                        }
+                    };
                 // The client rebuilds the conversation from these before the load answer.
                 for update in prior.into_iter().filter_map(replay) {
                     cx.send_notification(v1::SessionNotification::new(
@@ -412,13 +419,28 @@ pub fn agent(
 /// Reads through the client, so `Read` sees unsaved buffers. Runs on the tool's blocking thread,
 /// never in the dispatch loop, so waiting for the client's answer here cannot deadlock.
 /// shortcut: a failed request falls back to the disk, which `Read` has already confined.
-fn editor_reader(cx: ConnectionTo<Client>, session: String) -> EditorReader {
+fn editor_reader(
+    cx: ConnectionTo<Client>,
+    session: String,
+    workspace: PathBuf,
+    client_cwd: PathBuf,
+) -> EditorReader {
     EditorReader(Box::new(move |path| {
+        let path = client_path(&workspace, &client_cwd, path);
         let request = v1::ReadTextFileRequest::new(session.clone(), path);
         let answer =
             tokio::runtime::Handle::current().block_on(cx.send_request(request).block_task());
         answer.ok().map(|reply| reply.content)
     }))
+}
+
+/// Maps a canonical workspace path to the client's spelling of its folder, since the client looks
+/// up unsaved buffers by the path it knows (a symlinked folder differs from its target).
+fn client_path(workspace: &Path, client_cwd: &Path, path: &Path) -> PathBuf {
+    match path.strip_prefix(workspace) {
+        Ok(rest) => client_cwd.join(rest),
+        Err(_) => path.to_path_buf(),
+    }
 }
 
 /// The tool call a permission request shows. A `Write` or `Edit` also carries its diff, so the
@@ -1455,5 +1477,23 @@ mod tests {
         let limit = stop_reason(StopReason::MaxTurnRequests);
         assert_eq!(limit, Some(v1::StopReason::MaxTurnRequests));
         assert_eq!(stop_reason(StopReason::ProviderError), None);
+    }
+
+    #[test]
+    fn editor_reads_use_the_clients_spelling_of_a_symlinked_workspace() {
+        let dir = temp_dir("symlinked-cwd");
+        let real = dir.join("real");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        let link = dir.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let workspace = real.canonicalize().unwrap();
+        assert_eq!(
+            client_path(&workspace, &link, &workspace.join("src/a.rs")),
+            link.join("src/a.rs")
+        );
+        assert_eq!(
+            client_path(&workspace, &link, Path::new("/etc/passwd")),
+            Path::new("/etc/passwd")
+        );
     }
 }
