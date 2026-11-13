@@ -585,6 +585,7 @@ impl Agent {
     }
 
     /// Logs a message a subagent produced under the `Agent` call `parent`, without adding it to history.
+    /// shortcut: called once the subagent finishes, so a crash mid-subagent loses its records; log as they happen if that matters.
     fn log_subagent(&mut self, parent: &ToolCallId, message: &Message) {
         if let Some(log) = &mut self.session
             && self.log_error.is_none()
