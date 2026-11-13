@@ -5,7 +5,7 @@ members = ["crates/*", "xtask"]
 default-members = ["crates/harness-core", "crates/harness-cli", "xtask"]
 
 [workspace.package]
-version = "0.0.0"
+version = "1.0.0-beta.1"
 edition = "2024"
 rust-version = "1.99"
 publish = false

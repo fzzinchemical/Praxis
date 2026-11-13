@@ -1,0 +1,53 @@
+name: Release
+
+# Push a tag like v1.0.0 or v1.0.0-beta.1 on a commit that is on main.
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Refuse tags that are not on main
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99"
+          targets: wasm32-unknown-unknown
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - run: ./scripts/verify
+
+      # Must match the wasm-bindgen crate version exactly (AGENTS.md).
+      - run: cargo install wasm-bindgen-cli --version 0.2.128 --locked
+
+      - name: Build
+        run: |
+          cargo build --release --locked -p harness-cli
+          cargo xtask vsix
+
+      - name: Package
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          mkdir dist
+          tar czf "dist/harness-$v-x86_64-linux.tar.gz" -C target/release harness -C "$GITHUB_WORKSPACE" README.md
+          cp target/harness.vsix "dist/harness-$v.vsix"
+          (cd dist && sha256sum * > SHA256SUMS)
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          pre=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && pre=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes "${pre[@]}"
