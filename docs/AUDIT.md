@@ -567,7 +567,7 @@ Same rules: one item per branch, write the test first, tick the box here.
 
 ## Must fix
 
-- [ ] **25. A subagent's tool call can get the same id as the parent's `Agent` call**
+- [x] **25. A subagent's tool call can get the same id as the parent's `Agent` call**
   (`crates/praxis-core/src/agent/mod.rs` `run_turn`, ids `text-call-{n}-{i}` and `constrained-{n}`)
   - **What this is:** Calls recovered from text, or forced by a constrained tool, get an id built
     from the agent's history length. Small local models (ADR 0002) take this path often.
@@ -582,7 +582,7 @@ Same rules: one item per branch, write the test first, tick the box here.
 
 ## Should fix
 
-- [ ] **26. Every word a subagent writes resends its whole text so far**
+- [x] **26. Every word a subagent writes resends its whole text so far**
   (`crates/praxis-cli/src/acp.rs` `subagent_update`)
   - **What this is:** A subagent's text shows on its `Agent` call. Each `TextDelta` sends a
     `tool_call_update` with all text so far, because ACP content replaces, not appends.
