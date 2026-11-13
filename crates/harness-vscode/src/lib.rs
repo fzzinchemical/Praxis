@@ -1079,10 +1079,11 @@ fn plugin_children() -> Array {
 /// A plugin as a tree item. Its id is the plugin name, which the context-menu commands read back.
 /// The context value picks the menu: enable only for disabled plugins, disable only for enabled ones.
 fn plugin_node(item: &PluginItem) -> JsValue {
-    let context = if item.enabled {
-        "plugin-enabled"
-    } else {
-        "plugin-disabled"
+    // A broken plugin's context starts with `plugin-` so the Remove menu still matches it.
+    let context = match (&item.error, item.enabled) {
+        (Some(_), _) => "plugin-broken",
+        (None, true) => "plugin-enabled",
+        (None, false) => "plugin-disabled",
     };
     node(&[
         ("id", JsValue::from_str(&item.name)),

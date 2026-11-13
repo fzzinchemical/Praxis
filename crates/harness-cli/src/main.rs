@@ -128,16 +128,21 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
         PluginCommand::List { json: true } => {
             let mut plugins = Vec::new();
             for (name, entry) in store.list().map_err(anyhow::Error::msg)? {
-                let (_, plugin) = store.get(&name).map_err(anyhow::Error::msg)?;
-                let can_run = plugin
-                    .runs(&store.data_root())
-                    .map_err(anyhow::Error::msg)?;
+                // One broken plugin must not hide the others: the Remove action needs its row.
+                let loaded = store
+                    .get(&name)
+                    .and_then(|(_, plugin)| plugin.runs(&store.data_root()));
+                let (can_run, error) = match loaded {
+                    Ok(runs) => (runs, None),
+                    Err(error) => (Vec::new(), Some(error)),
+                };
                 plugins.push(serde_json::json!({
                     "name": name,
                     "source": entry.source,
                     "commit": entry.commit,
                     "enabled": entry.enabled,
                     "can_run": can_run,
+                    "error": error,
                 }));
             }
             println!("{}", serde_json::Value::Array(plugins));

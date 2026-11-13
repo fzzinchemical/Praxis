@@ -218,3 +218,55 @@ fn list_json_is_an_empty_array_when_nothing_is_installed() {
     let home = temp("list-json-empty");
     assert_eq!(stdout(&harness(&home, &["list", "--json"])).trim(), "[]");
 }
+
+#[test]
+fn list_json_still_lists_a_plugin_whose_manifest_is_broken() {
+    let home = temp("list-json-broken");
+    let good = home.join("good");
+    fs::create_dir_all(&good).unwrap();
+    source_repo(&good);
+    stdout(&harness(&home, &["install", good.to_str().unwrap()]));
+
+    // A second plugin, named "other" by its manifest, so the broken one is not "demo".
+    let bad = home.join("bad");
+    fs::create_dir_all(&bad).unwrap();
+    source_repo(&bad);
+    fs::write(
+        bad.join(".claude-plugin/plugin.json"),
+        r#"{"name": "other"}"#,
+    )
+    .unwrap();
+    git(&bad, &["commit", "--quiet", "-am", "rename"]);
+    stdout(&harness(&home, &["install", bad.to_str().unwrap()]));
+
+    // Break the installed copy's manifest so loading it fails.
+    let installed = home.join("xdg-data/harness/plugins/other/.claude-plugin/plugin.json");
+    fs::write(&installed, "{not json").unwrap();
+
+    let out = harness(&home, &["list", "--json"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let listed: serde_json::Value = serde_json::from_str(&stdout(&out)).unwrap();
+    let plugins = listed.as_array().expect("top level is an array");
+    assert_eq!(plugins.len(), 2, "{listed}");
+
+    let demo = plugins
+        .iter()
+        .find(|p| p["name"] == "demo")
+        .expect("demo listed");
+    assert!(demo["error"].is_null(), "{demo}");
+    assert!(!demo["can_run"].as_array().unwrap().is_empty(), "{demo}");
+
+    let other = plugins
+        .iter()
+        .find(|p| p["name"] == "other")
+        .expect("other listed");
+    assert!(
+        other["error"].as_str().is_some_and(|e| !e.is_empty()),
+        "{other}"
+    );
+    assert_eq!(other["can_run"], serde_json::json!([]), "{other}");
+}

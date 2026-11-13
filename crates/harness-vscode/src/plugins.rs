@@ -10,11 +10,16 @@ pub struct PluginItem {
     pub enabled: bool,
     pub commit: String,
     pub can_run: Vec<String>,
+    /// Set when the CLI could not load the plugin; such a row only offers Remove.
+    pub error: Option<String>,
 }
 
 impl PluginItem {
-    /// The state, plus the pinned commit while disabled.
+    /// The state, plus the pinned commit while disabled, or the load error.
     pub fn description(&self) -> String {
+        if let Some(error) = &self.error {
+            return format!("broken: {error}");
+        }
         if self.enabled {
             return "enabled".to_owned();
         }
@@ -68,6 +73,7 @@ fn plugin_item(row: &Value) -> Result<PluginItem, String> {
             .ok_or("plugin row without an `enabled` flag")?,
         commit: text("commit")?,
         can_run,
+        error: row["error"].as_str().map(str::to_owned),
     })
 }
 
@@ -178,6 +184,17 @@ mod tests {
             install_args("https://example.com/p.git"),
             ["plugin", "install", "--", "https://example.com/p.git"]
         );
+    }
+
+    #[test]
+    fn a_broken_plugin_keeps_its_row_with_the_error_and_no_runs() {
+        let items = plugin_items(
+            r#"[{"name":"other","source":"/s","commit":"abc","enabled":false,
+                 "can_run":[],"error":"manifest is not JSON"}]"#,
+        )
+        .unwrap();
+        assert_eq!(items[0].error.as_deref(), Some("manifest is not JSON"));
+        assert_eq!(items[0].description(), "broken: manifest is not JSON");
     }
 
     #[test]
