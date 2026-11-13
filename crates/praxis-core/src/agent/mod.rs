@@ -1324,7 +1324,7 @@ fn assemble_prefix(
     (system, warning)
 }
 
-fn title(name: &str, input: Option<&Value>) -> String {
+pub fn title(name: &str, input: Option<&Value>) -> String {
     let subject = ["file_path", "command", "pattern"]
         .iter()
         .find_map(|key| input?.get(key)?.as_str());

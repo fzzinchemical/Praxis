@@ -4,12 +4,13 @@ use agent_client_protocol::v1::{ConnectionTo, schema as v1};
 use agent_client_protocol::{
     Agent as AcpAgent, Client, ConnectTo, Error, on_receive_notification, on_receive_request,
 };
-use praxis_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome};
+use praxis_core::agent::{Agent, AgentEvent, PermissionReply, StopReason, ToolOutcome, title};
 use praxis_core::permissions::Mode;
 use praxis_core::provider::Message;
 use praxis_core::session::{self, SessionLog};
 use praxis_core::tools::EditorReader;
-use praxis_core::tools::FileDiff;
+use praxis_core::tools::{FileDiff, ToolOutput};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -291,7 +292,7 @@ pub fn agent(
                         }
                     };
                 // The client rebuilds the conversation from these before the load answer.
-                for update in prior.into_iter().filter_map(replay) {
+                for update in prior.into_iter().flat_map(replay) {
                     cx.send_notification(v1::SessionNotification::new(
                         req.session_id.clone(),
                         update,
@@ -655,14 +656,45 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
     })
 }
 
-fn replay(message: Message) -> Option<v1::SessionUpdate> {
+/// The updates a live turn would have sent for one logged message, so a loaded chat looks the same.
+fn replay(message: Message) -> Vec<v1::SessionUpdate> {
     match message {
-        Message::User { content } => Some(v1::SessionUpdate::UserMessageChunk(chunk(content))),
+        Message::User { content } => vec![v1::SessionUpdate::UserMessageChunk(chunk(content))],
         Message::Assistant {
-            content: Some(text),
-            ..
-        } => Some(v1::SessionUpdate::AgentMessageChunk(chunk(text))),
-        _ => None,
+            content,
+            tool_calls,
+        } => {
+            let mut updates: Vec<_> = content
+                .map(|text| v1::SessionUpdate::AgentMessageChunk(chunk(text)))
+                .into_iter()
+                .collect();
+            for call in tool_calls {
+                let input = serde_json::from_str::<Value>(&call.arguments).ok();
+                let title = title(&call.name, input.as_ref());
+                updates.extend(update(AgentEvent::ToolStarted {
+                    id: call.id,
+                    name: call.name,
+                    input: input.unwrap_or(Value::Null),
+                    title,
+                }));
+            }
+            updates
+        }
+        // shortcut: the log keeps no error flag, so every replayed result shows as completed.
+        Message::Tool {
+            tool_call_id,
+            content,
+        } => update(AgentEvent::ToolFinished {
+            id: tool_call_id,
+            outcome: ToolOutcome::Completed(ToolOutput {
+                content,
+                is_error: false,
+                structured: Value::Null,
+            }),
+        })
+        .into_iter()
+        .collect(),
+        Message::System { .. } => Vec::new(),
     }
 }
 
@@ -703,7 +735,7 @@ mod tests {
     use super::*;
     use agent_client_protocol::schema::ProtocolVersion;
     use praxis_core::agent::AgentConfig;
-    use praxis_core::provider::Provider;
+    use praxis_core::provider::{Provider, ToolCall};
     use praxis_core::tools::{ToolContext, ToolOutput};
     use serde_json::{Value, json, to_value};
     use std::path::Path;
@@ -1305,6 +1337,84 @@ mod tests {
             seen,
             [
                 r#""user_message_chunk" go"#,
+                // The rejected write replays as a call, with no text in this closure.
+                r#""tool_call" "#,
+                r#""tool_call_update" "#,
+                r#""agent_message_chunk" done"#,
+                "loaded"
+            ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loading_a_session_replays_its_tool_calls_in_order() {
+        let dir = temp_dir("load-tools");
+        let mut log = SessionLog::create(&dir.join("sessions"), &dir).unwrap();
+        let id = log.id().to_owned();
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "Read".into(),
+            arguments: r#"{"file_path":"a.rs"}"#.into(),
+        };
+        for message in [
+            Message::User {
+                content: "go".into(),
+            },
+            Message::Assistant {
+                content: Some("Reading.".into()),
+                tool_calls: vec![call],
+            },
+            Message::Tool {
+                tool_call_id: "c1".into(),
+                content: "fn a".into(),
+            },
+            Message::Assistant {
+                content: Some("done".into()),
+                tool_calls: vec![],
+            },
+        ] {
+            log.append(&message).unwrap();
+        }
+        // Loading refuses a session that this fixture still holds open.
+        drop(log);
+        let server = fake_server().await;
+        let log = Log::default();
+        let on_update = log.clone();
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    let text = update["content"]["text"]
+                        .as_str()
+                        .or(update["title"].as_str())
+                        .or(update["content"][0]["content"]["text"].as_str())
+                        .unwrap_or_default();
+                    push(&on_update, format!("{} {text}", update["sessionUpdate"]));
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(praxis(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let load = v1::LoadSessionRequest::new(id.clone(), &dir);
+                cx.send_request(load).block_task().await?;
+                push(&log, "loaded".into());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let seen = log.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [
+                r#""user_message_chunk" go"#,
+                r#""agent_message_chunk" Reading."#,
+                r#""tool_call" Read a.rs"#,
+                r#""tool_call_update" fn a"#,
                 r#""agent_message_chunk" done"#,
                 "loaded"
             ]

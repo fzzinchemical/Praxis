@@ -876,6 +876,37 @@ mod tests {
     }
 
     #[test]
+    fn a_replayed_chat_reaches_the_panel_in_order() {
+        let (mut client, _) = Client::start("/work");
+        let replay = [
+            json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "go"}}),
+            json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Reading."}}),
+            json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Read a.rs", "status": "pending"}),
+            json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "completed",
+                "content": [{"type": "content", "content": {"type": "text", "text": "fn a"}}]}),
+            json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "done"}}),
+        ];
+        let shown: Vec<Value> = replay
+            .into_iter()
+            .filter_map(|update| {
+                let line = json!({"jsonrpc": "2.0", "method": "session/update",
+                    "params": {"sessionId": "s1", "update": update}});
+                client.on_line(&line.to_string()).show
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                json!({"type": "user", "text": "go"}),
+                json!({"type": "text", "text": "Reading."}),
+                json!({"type": "tool", "id": "c1", "title": "Read a.rs", "status": "pending", "output": null}),
+                json!({"type": "tool", "id": "c1", "title": null, "status": "completed", "output": "fn a"}),
+                json!({"type": "text", "text": "done"}),
+            ]
+        );
+    }
+
+    #[test]
     fn session_updates_and_stop_reasons_map_to_panel_messages() {
         let (mut client, _) = Client::start("/work");
         let mut on = |update: Value| {
