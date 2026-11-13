@@ -403,6 +403,11 @@ impl Ui {
                 }
                 self.append("p", "notice", notice)?;
             }
+            // A replayed prompt: plain text, and the next reply starts a new message.
+            "user" => {
+                self.message = None;
+                self.append("p", "user", text("text"))?;
+            }
             "text" => {
                 self.status.phase = Phase::Generating;
                 if self.message.is_none() {

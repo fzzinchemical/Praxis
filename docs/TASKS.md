@@ -529,7 +529,7 @@ flowchart TB
   - **Needs:** T5.11, T5.3.
   - **Do:** an activity-bar icon (view container) with a sessions view for the current workspace: new session, open a previous one in the chat panel, refresh after each turn. Keyboard reachable with labelled items.
   - **Done when:** native tests cover mapping `session/list` results to view items; the checklist item "click the sidebar icon, pick an earlier session, see its history and continue it" passes; and sessions from another workspace never show.
-  - **Status:** native tests and `./scripts/verify` pass; the VSIX builds with the icon. The manual checklist item (Sessions sidebar, T5.12 in `editors/vscode/CHECKLIST.md`) was **not run**: it needs a VS Code install. History replay skips user messages, since the webview doesn't map `user_message_chunk` yet.
+  - **Status:** native tests and `./scripts/verify` pass; the VSIX builds with the icon. The manual checklist item (Sessions sidebar, T5.12 in `editors/vscode/CHECKLIST.md`) was **not run**: it needs a VS Code install. Replay shows user and agent text; a failed listing shows as the view's first item.
 
 - [x] **T5.13 Config split documented** (§11) · *Should*
   - **Needs:** T5.2.

@@ -570,6 +570,11 @@ fn update(update: &Value) -> Reaction {
             Some(text) => show(json!({"type": "text", "text": text})),
             None => Reaction::default(),
         },
+        // Sent only when `session/load` replays history; a live prompt is drawn by the panel itself.
+        Some("user_message_chunk") => match update["content"]["text"].as_str() {
+            Some(text) => show(json!({"type": "user", "text": text})),
+            None => Reaction::default(),
+        },
         Some("tool_call" | "tool_call_update") => {
             let texts: Vec<&str> = update["content"]
                 .as_array()
@@ -820,6 +825,11 @@ mod tests {
         };
         let chunk = json!({"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "Hi"}});
         assert_eq!(on(chunk), Some(json!({"type": "text", "text": "Hi"})));
+        let replayed = json!({"sessionUpdate": "user_message_chunk", "content": {"type": "text", "text": "fix it"}});
+        assert_eq!(
+            on(replayed),
+            Some(json!({"type": "user", "text": "fix it"}))
+        );
         let tool = json!({"sessionUpdate": "tool_call", "toolCallId": "t", "title": "Read a.rs", "status": "pending"});
         assert_eq!(
             on(tool),

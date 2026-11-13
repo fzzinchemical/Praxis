@@ -825,6 +825,8 @@ struct Sidebar {
     emitter: EventEmitter,
     output: OutputChannel,
     items: Vec<SessionItem>,
+    /// Why the last listing failed, shown as the view's first item until a listing succeeds.
+    problem: Option<String>,
     listing: Option<Listing>,
 }
 
@@ -864,6 +866,7 @@ fn create_sessions_view(output: &OutputChannel) {
             emitter,
             output: output.clone(),
             items: Vec::new(),
+            problem: None,
             listing: None,
         });
     });
@@ -883,16 +886,33 @@ fn node(fields: &[(&str, JsValue)]) -> JsValue {
     object.into()
 }
 
-/// The view's root items: one per session, or a line saying there are none.
+/// The view's root items: a failed listing first, then one per session, or a line saying there are none.
 fn children() -> Array {
-    let mut nodes: Vec<JsValue> = SIDEBAR.with(|sidebar| {
+    let (problem, mut nodes): (Option<String>, Vec<JsValue>) = SIDEBAR.with(|sidebar| {
         sidebar
             .borrow()
             .as_ref()
-            .map(|sidebar| sidebar.items.iter().map(session_node).collect())
+            .map(|sidebar| {
+                let nodes = sidebar.items.iter().map(session_node).collect();
+                (sidebar.problem.clone(), nodes)
+            })
             .unwrap_or_default()
     });
-    if nodes.is_empty() {
+    if let Some(problem) = problem {
+        nodes.insert(
+            0,
+            node(&[
+                (
+                    "label",
+                    JsValue::from_str(&format!("Could not list sessions: {problem}")),
+                ),
+                (
+                    "tooltip",
+                    JsValue::from_str("Details are in the Harness output channel"),
+                ),
+            ]),
+        );
+    } else if nodes.is_empty() {
         nodes.push(node(&[(
             "label",
             JsValue::from_str("No sessions in this workspace yet"),
@@ -921,9 +941,24 @@ fn session_node(item: &SessionItem) -> JsValue {
 
 /// Replaces the view's sessions and asks VS Code to redraw them.
 fn publish(items: Vec<SessionItem>) {
+    redraw(|sidebar| {
+        sidebar.items = items;
+        sidebar.problem = None;
+    });
+}
+
+/// Logs a failed listing and shows it in the view, keeping the last known sessions.
+fn fail(problem: String) {
+    redraw(|sidebar| {
+        sidebar.output.append(&format!("sessions: {problem}\n"));
+        sidebar.problem = Some(problem);
+    });
+}
+
+fn redraw(change: impl FnOnce(&mut Sidebar)) {
     let emitter = SIDEBAR.with(|sidebar| {
         sidebar.borrow_mut().as_mut().map(|sidebar| {
-            sidebar.items = items;
+            change(sidebar);
             sidebar.emitter.clone()
         })
     });
@@ -951,7 +986,7 @@ fn refresh_sessions() {
     }
     let child = match spawn_acp(&cwd) {
         Ok(child) => child,
-        Err(error) => return output.append(&format!("sessions: spawn failed: {error:?}\n")),
+        Err(error) => return fail(format!("spawn failed: {error:?}")),
     };
     child
         .stdin()
@@ -959,7 +994,7 @@ fn refresh_sessions() {
     child.stdout().set_encoding("utf8");
     child.stderr().set_encoding("utf8");
 
-    let (answer_child, answer_output) = (child.clone(), output.clone());
+    let answer_child = child.clone();
     let mut lines = Lines::default();
     let on_stdout = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
         for line in lines.push(&text_of(chunk)) {
@@ -969,8 +1004,7 @@ fn refresh_sessions() {
                 publish(sessions);
             }
             if let Some(message) = reaction.show {
-                let text = message["text"].as_str().unwrap_or_default();
-                answer_output.append(&format!("sessions: {text}\n"));
+                fail(message["text"].as_str().unwrap_or_default().to_owned());
             }
             if let Some(send) = reaction.send {
                 answer_child.stdin().write(&format!("{send}\n"));
@@ -984,9 +1018,8 @@ fn refresh_sessions() {
     let on_stderr = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
         stderr_output.append(&text_of(chunk));
     });
-    let error_output = output.clone();
     let on_error = Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
-        error_output.append(&format!("sessions: harness acp: {}\n", text_of(error)));
+        fail(format!("harness acp: {}", text_of(error)));
     });
     child.stdout().on("data", on_stdout.as_ref());
     child.stderr().on("data", on_stderr.as_ref());
