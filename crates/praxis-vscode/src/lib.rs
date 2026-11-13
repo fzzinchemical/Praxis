@@ -24,6 +24,7 @@ const VIEW_COLUMN_ACTIVE: i32 = -1;
 const VIEW_COLUMN_BESIDE: i32 = -2;
 const RESTART: &str = "Restart";
 const CHAT_TITLE: &str = "Praxis";
+const REVEAL: &str = "Show chat";
 
 #[wasm_bindgen]
 extern "C" {
@@ -54,6 +55,8 @@ extern "C" {
     fn show_error_message(message: &str);
     #[wasm_bindgen(js_namespace = window, js_name = showErrorMessage)]
     fn show_error_with_action(message: &str, action: &str) -> Promise;
+    #[wasm_bindgen(js_namespace = window, js_name = showInformationMessage)]
+    fn show_information_with_action(message: &str, action: &str) -> Promise;
 
     #[wasm_bindgen(js_namespace = workspace, js_name = openTextDocument)]
     fn open_text_document(options: &Object) -> Promise;
@@ -358,6 +361,32 @@ fn chat_option_flags() -> [(&'static str, bool); 3] {
         ("retainContextWhenHidden", true),
         ("enableFindWidget", true),
     ]
+}
+
+/// The notice for a turn that ended while VS Code was unfocused; `None` when the window has focus.
+fn turn_notice(focused: bool, title: &str, reason: &str) -> Option<String> {
+    (!focused).then(|| format!("{title}: turn ended ({reason})."))
+}
+
+/// Whether the VS Code window has focus. Unreadable counts as focused, so nothing is shown.
+fn window_focused() -> bool {
+    WINDOW
+        .with(|window| property(window, "state"))
+        .and_then(|state| property(&state, "focused"))
+        .and_then(|focused| focused.as_bool())
+        .unwrap_or(true)
+}
+
+/// Shows the turn notice; its button reveals the chat panel.
+fn notify_turn_end(panel: WebviewPanel, text: &str) {
+    let on_choice = Closure::once_into_js(move |choice: JsValue| {
+        if choice.as_string().as_deref() == Some(REVEAL) {
+            panel.reveal();
+        }
+    });
+    let _ = show_information_with_action(text, REVEAL)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_choice);
 }
 
 fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Result<(), JsValue> {
@@ -801,12 +830,16 @@ fn react(state: &Shared, mut reaction: Reaction) {
         let reason = message["reason"].as_str().unwrap_or_default();
         message["reason"] = Value::String(protocol::done_reason(reason, limit));
     }
-    if reaction
+    if let Some(message) = reaction
         .show
         .as_ref()
-        .is_some_and(|message| message["type"] == "done")
+        .filter(|message| message["type"] == "done")
     {
         refresh_sessions();
+        let reason = message["reason"].as_str().unwrap_or_default();
+        if let Some(text) = turn_notice(window_focused(), CHAT_TITLE, reason) {
+            notify_turn_end(state.borrow().handle.clone(), &text);
+        }
     }
     let panel = state.borrow();
     if let Some(message) = reaction.show {
@@ -1572,6 +1605,17 @@ mod tests {
         // VS Code's buffer drops a BOM and rewrites mixed EOLs; only dirty text counts as unsaved.
         let text = choose_text(false, || Some("normalized".into()), || Some("disk".into()));
         assert_eq!(text.as_deref(), Some("disk"));
+    }
+
+    #[test]
+    fn notifies_when_the_window_is_unfocused() {
+        let text = turn_notice(false, "Praxis", "end_turn");
+        assert!(text.is_some_and(|text| text.contains("Praxis") && text.contains("end_turn")));
+    }
+
+    #[test]
+    fn silent_when_the_window_is_focused() {
+        assert_eq!(turn_notice(true, "Praxis", "end_turn"), None);
     }
 
     #[test]
