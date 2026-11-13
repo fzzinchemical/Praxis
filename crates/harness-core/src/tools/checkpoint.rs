@@ -154,8 +154,15 @@ impl ToolContext {
         }
         failed.reverse();
         self.checkpoints().turns.push(failed);
+        // Users need to know which files already changed back, not only which ones failed.
+        let done = if restored.is_empty() {
+            String::new()
+        } else {
+            let names: Vec<_> = restored.iter().map(|p| p.display().to_string()).collect();
+            format!("Restored {}. ", names.join(", "))
+        };
         Err(io::Error::other(format!(
-            "Can't restore {}",
+            "{done}Can't restore {}",
             failures.join("; ")
         )))
     }
@@ -254,6 +261,10 @@ mod tests {
 
         let err = ctx.undo().unwrap_err().to_string();
         assert!(err.contains("gone/b.txt"), "{err}");
+        assert!(
+            err.contains(&path("a.txt")),
+            "restored file not named: {err}"
+        );
         assert_eq!(
             fs::read_to_string(workspace.join("a.txt")).unwrap(),
             "one\n"
