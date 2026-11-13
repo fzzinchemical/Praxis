@@ -21,8 +21,17 @@ pub(super) struct Checkpoints {
 
 impl ToolContext {
     /// Keeps originals under `dir` (created `0700`) from now on.
+    /// A resumed session reuses the folder, so numbering starts above the copies already there.
     pub fn checkpoint_into(&self, dir: PathBuf) {
-        self.checkpoints().dir = Some(dir);
+        let highest = fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0);
+        let mut cp = self.checkpoints();
+        cp.dir = Some(dir);
+        cp.saved = highest;
     }
 
     /// Starts a new undo step. Turns that changed nothing don't count as one.
@@ -155,6 +164,52 @@ mod tests {
         );
         assert!(ctx.undo().unwrap().is_empty());
         assert!(UNDO_NOTE.contains("Bash effects are not"));
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn resumed_session_edits_and_undoes_into_the_same_checkpoint_folder() {
+        let root = std::env::temp_dir().join(format!("harness-resume-{}", std::process::id()));
+        let workspace = root.join("ws");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::write(workspace.join("a.txt"), "one\n").unwrap();
+        let checkpoints = root.join("checkpoints");
+        let path = |name: &str| workspace.join(name).display().to_string();
+        let edit_input = |old: &str, new: &str| {
+            from_value(json!({"file_path": path("a.txt"), "old_string": old, "new_string": new}))
+                .unwrap()
+        };
+
+        let first = ToolContext::new(&workspace).unwrap();
+        first.checkpoint_into(checkpoints.clone());
+        first.begin_turn();
+        read(
+            from_value(json!({"file_path": path("a.txt")})).unwrap(),
+            &first,
+        )
+        .unwrap();
+        edit(edit_input("one", "two"), &first).unwrap();
+        drop(first);
+
+        let resumed = ToolContext::new(&workspace).unwrap();
+        resumed.checkpoint_into(checkpoints);
+        resumed.begin_turn();
+        read(
+            from_value(json!({"file_path": path("a.txt")})).unwrap(),
+            &resumed,
+        )
+        .unwrap();
+        edit(edit_input("two", "three"), &resumed).unwrap();
+        assert_eq!(
+            fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "three\n"
+        );
+
+        assert_eq!(resumed.undo().unwrap().len(), 1);
+        assert_eq!(
+            fs::read_to_string(workspace.join("a.txt")).unwrap(),
+            "two\n"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }
