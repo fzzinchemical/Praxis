@@ -145,13 +145,11 @@ pub(crate) fn replace_with(
 }
 
 /// Refuses to overwrite `path` while the editor holds different text, since the write would
-/// lose the user's unsaved edits. `disk` is the file's current content.
+/// lose the user's unsaved edits. `buffer` is the editor's text, if any; `disk` is the file's
+/// current content, read only by callers that have a buffer to compare.
 // shortcut: refuse outright; buffer edits need fs/write_text_file, upgrade when that exists.
-fn refuse_unsaved_buffer(path: &Path, disk: &[u8], ctx: &ToolContext) -> Result<(), ToolError> {
-    if ctx
-        .editor_text(path)
-        .is_some_and(|buffer| buffer.as_bytes() != disk)
-    {
+fn refuse_unsaved_buffer(path: &Path, buffer: Option<&str>, disk: &[u8]) -> Result<(), ToolError> {
+    if buffer.is_some_and(|buffer| buffer.as_bytes() != disk) {
         return Err(ToolError::Refused(format!(
             "{} has unsaved changes in the editor; ask the user to save it.",
             path.display()
@@ -181,9 +179,10 @@ pub fn write(input: WriteInput, ctx: &ToolContext) -> Result<ToolOutput, ToolErr
         }
         Err(_) => false,
     };
-    if existed {
-        let bytes = fs::read(&path).map_err(ToolError::io("read", &path))?;
-        refuse_unsaved_buffer(&path, &bytes, ctx)?;
+    // Without an editor buffer there is nothing to protect, so the old file is never read.
+    if existed && let Some(buffer) = ctx.editor_text(&path) {
+        let bytes = read_bytes(&path)?;
+        refuse_unsaved_buffer(&path, Some(&buffer), &bytes)?;
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(ToolError::io("create the folder for", &path))?;
@@ -226,7 +225,7 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         return refuse(format!("Read {shown} before editing it."));
     };
     let bytes = read_bytes(&path)?;
-    refuse_unsaved_buffer(&path, &bytes, ctx)?;
+    refuse_unsaved_buffer(&path, ctx.editor_text(&path).as_deref(), &bytes)?;
     if hash_of(&bytes) != seen {
         return refuse(format!(
             "{shown} changed since you read it. Read it again before editing."
@@ -341,6 +340,65 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "original");
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A workspace with `name` holding `bytes`, and its context. The caller removes `dir`.
+    fn workspace_with(name: &str, bytes: &[u8]) -> (PathBuf, PathBuf, ToolContext) {
+        let dir = std::env::temp_dir().join(format!("harness-write-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join(name);
+        fs::write(&target, bytes).unwrap();
+        let ctx = ToolContext::new(&dir).unwrap();
+        (dir, target, ctx)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_without_an_editor_does_not_read_the_old_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, target, ctx) = workspace_with("out.txt", b"old");
+        // Write-only: reading the old content would fail, but overwriting it must not read it.
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o200)).unwrap();
+
+        let result = write(
+            WriteInput {
+                file_path: "out.txt".to_owned(),
+                content: "new\n".to_owned(),
+            },
+            &ctx,
+        );
+
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(
+            result.is_ok(),
+            "write without an editor read the old file: {result:?}"
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "new\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn write_refuses_when_the_editor_holds_different_text() {
+        let (dir, target, ctx) = workspace_with("dirty.txt", b"on disk\n");
+        ctx.read_from_editor(super::super::EditorReader(Box::new(|_: &Path| {
+            Some("unsaved edit\n".to_owned())
+        })));
+
+        let result = write(
+            WriteInput {
+                file_path: "dirty.txt".to_owned(),
+                content: "agent\n".to_owned(),
+            },
+            &ctx,
+        );
+
+        assert!(
+            matches!(result, Err(ToolError::Refused(ref m)) if m.contains("unsaved changes")),
+            "expected a refusal, got {result:?}"
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "on disk\n");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
