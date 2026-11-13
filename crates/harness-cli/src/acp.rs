@@ -196,6 +196,17 @@ impl<M: Models> Server<M> {
             slot.cancel.cancel();
         }
     }
+
+    /// Drops the session's slot. A running turn is cancelled, and its agent is dropped when it
+    /// ends, since `settle_turn` then finds no slot to return it to.
+    fn close(&self, id: &str) -> Result<(), Error> {
+        let slot = self
+            .sessions()
+            .remove(id)
+            .ok_or_else(|| Error::invalid_params().data(format!("unknown session `{id}`")))?;
+        slot.cancel.cancel();
+        Ok(())
+    }
 }
 
 pub fn agent(
@@ -210,7 +221,8 @@ pub fn agent(
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
     });
-    let (for_init, for_new, for_load, for_list, for_prompt, for_cancel, for_set) = (
+    let (for_init, for_new, for_load, for_list, for_prompt, for_cancel, for_set, for_close) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -226,7 +238,8 @@ pub fn agent(
                 let reads = req.client_capabilities.fs.read_text_file;
                 for_init.client_reads.store(reads, Ordering::Relaxed);
                 let list = v1::SessionListCapabilities::new();
-                let sessions = v1::SessionCapabilities::new().list(list);
+                let close = v1::SessionCloseCapabilities::new();
+                let sessions = v1::SessionCapabilities::new().list(list).close(close);
                 let capabilities = v1::AgentCapabilities::new()
                     .load_session(true)
                     .session_capabilities(sessions);
@@ -434,6 +447,15 @@ pub fn agent(
                 Ok(())
             },
             on_receive_notification!(),
+        )
+        .on_receive_request(
+            async move |req: v1::CloseSessionRequest, responder, _cx| match for_close
+                .close(&req.session_id.to_string())
+            {
+                Ok(()) => responder.respond(v1::CloseSessionResponse::new()),
+                Err(e) => responder.respond_with_error(e),
+            },
+            on_receive_request!(),
         )
 }
 
@@ -835,6 +857,39 @@ mod tests {
     /// Stands in for a turn whose task panicked, so its agent never comes back.
     fn crashed_turn() -> Agent {
         panic!("turn crashed")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_a_session_refuses_its_prompts_and_keeps_the_others() {
+        let dir = temp_dir("close");
+        let server = fake_server().await;
+        let run = Client
+            .v1()
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let first = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let second = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let close = v1::CloseSessionRequest::new(first.session_id.clone());
+                cx.send_request(close).block_task().await?;
+                let prompt = v1::PromptRequest::new(first.session_id, vec!["go".into()]);
+                let refused = cx.send_request(prompt).block_task().await;
+                assert!(refused.is_err(), "a closed session must refuse prompts");
+                let prompt = v1::PromptRequest::new(second.session_id, vec!["go".into()]);
+                let answered = cx.send_request(prompt).block_task().await;
+                assert!(answered.is_ok(), "the other session must still answer");
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
