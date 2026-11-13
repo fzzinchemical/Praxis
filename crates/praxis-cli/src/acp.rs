@@ -10,7 +10,7 @@ use praxis_core::agent::{
 };
 use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
-use praxis_core::provider::{Message, ToolCall};
+use praxis_core::provider::{MEMORY_MARK, Message, ToolCall};
 use praxis_core::session::{self, Entry, SessionLog};
 use praxis_core::tools::{DiagnosticsReader, EditorReader};
 use praxis_core::tools::{FileDiff, ToolOutput};
@@ -968,7 +968,11 @@ fn replay(entry: Entry) -> Vec<v1::SessionUpdate> {
 
 fn replay_message(message: Message) -> Vec<v1::SessionUpdate> {
     match message {
-        Message::User { content } => vec![v1::SessionUpdate::UserMessageChunk(chunk(content))],
+        // Memory injected mid-turn is not a bubble, so the panel's turn numbers match the log's.
+        Message::User { content } if !content.starts_with(MEMORY_MARK) => {
+            vec![v1::SessionUpdate::UserMessageChunk(chunk(content))]
+        }
+        Message::User { .. } => Vec::new(),
         Message::Assistant {
             content,
             tool_calls,

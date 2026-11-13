@@ -6,7 +6,7 @@
 use praxis_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use praxis_core::hooks::{Hook, Matcher};
 use praxis_core::permissions::Policy;
-use praxis_core::provider::Provider;
+use praxis_core::provider::{Message, Provider};
 use praxis_core::tools::ToolContext;
 use serde_json::{Value, json};
 use std::fs;
@@ -1235,4 +1235,56 @@ async fn a_pre_tool_hook_sees_a_dot_and_dotdot_path_folded_to_the_workspace_path
         payload["tool_input"]["file_path"],
         json!(workspace.join("a.txt").to_str().unwrap())
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rewinding_to_a_turn_that_loaded_memory_restores_that_turn_whole() {
+    let workspace = new_workspace();
+    fs::create_dir_all(workspace.join("sub")).unwrap();
+    fs::write(workspace.join("sub/CLAUDE.md"), "sub memory").unwrap();
+    fs::write(workspace.join("sub/a.txt"), "a").unwrap();
+    fs::write(workspace.join("top.txt"), "old").unwrap();
+    let mut harness = Harness::in_workspace(
+        workspace.clone(),
+        vec![
+            tool_reply(&[("r1", "Read", json!({"file_path": "sub/a.txt"}))]),
+            text_reply("read"),
+            tool_reply(&[(
+                "w1",
+                "Write",
+                json!({"file_path": "top.txt", "content": "new"}),
+            )]),
+            text_reply("edited"),
+        ],
+        10,
+    )
+    .await;
+    harness
+        .agent
+        .as_ref()
+        .unwrap()
+        .tools()
+        .checkpoint_into(new_workspace());
+    let allow = |_: &str| Some(PermissionReply::AllowOnce);
+    harness
+        .turn("read it", CancellationToken::new(), allow)
+        .await;
+    harness
+        .turn("edit it", CancellationToken::new(), allow)
+        .await;
+    let agent = harness.agent.as_mut().unwrap();
+
+    let numbers: Vec<usize> = agent.rewindable_turns().iter().map(|(n, _)| *n).collect();
+    assert_eq!(numbers, [1, 2]);
+    agent.rewind_to_turn(2).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(workspace.join("top.txt")).unwrap(),
+        "old"
+    );
+    assert!(matches!(
+        agent.history().last(),
+        Some(Message::Assistant { content: Some(text), .. }) if text == "read"
+    ));
+    fs::remove_dir_all(&workspace).unwrap();
 }

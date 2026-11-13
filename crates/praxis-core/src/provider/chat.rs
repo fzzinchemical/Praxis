@@ -44,6 +44,17 @@ pub enum Message {
     },
 }
 
+/// Prefixes the user message that carries memory injected mid-turn. Such a message is not a turn.
+// shortcut: logs written before this marker still count mid-turn memory as turns, so their rewind numbers can be off. Upgrade by versioning the log header.
+pub const MEMORY_MARK: &str = "<!-- praxis:memory -->\n";
+
+impl Message {
+    /// Whether this is a user prompt that starts a turn, rather than memory injected mid-turn.
+    pub fn starts_turn(&self) -> bool {
+        matches!(self, Message::User { content } if !content.starts_with(MEMORY_MARK))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolSchema {
     pub name: String,

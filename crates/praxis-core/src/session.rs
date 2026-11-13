@@ -166,8 +166,7 @@ struct Rewind {
 
 /// Drops main user turn `turn` (1-based) and everything after it, subagent entries included.
 fn cut_turn(entries: &mut Vec<Entry>, turn: usize) {
-    let is_turn_start =
-        |e: &Entry| e.subagent_of.is_none() && matches!(e.message, Message::User { .. });
+    let is_turn_start = |e: &Entry| e.subagent_of.is_none() && e.message.starts_turn();
     let start = turn.checked_sub(1).and_then(|n| {
         entries
             .iter()
@@ -366,6 +365,7 @@ fn open(dir: &Path, id: &str, new: bool) -> io::Result<File> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::MEMORY_MARK;
 
     fn user(text: &str) -> Message {
         Message::User {
@@ -417,6 +417,27 @@ mod tests {
         let (_log, messages) = SessionLog::resume(&dir, &id).unwrap();
 
         assert_eq!(texts(&messages), ["one", "a", "three"]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_rewind_cuts_at_the_turn_not_at_a_memory_message_inside_an_earlier_turn() {
+        let dir = scratch("rewind-memory");
+        let mut log = SessionLog::create(&dir, &dir.join("ws")).unwrap();
+        let id = log.id().to_owned();
+        let memory = format!("{MEMORY_MARK}sub memory");
+        log.append(&user("one")).unwrap();
+        log.append(&reply("a")).unwrap();
+        log.append(&user(&memory)).unwrap();
+        log.append(&reply("b")).unwrap();
+        log.append(&user("two")).unwrap();
+        log.append(&reply("c")).unwrap();
+        log.append_rewind(2).unwrap();
+        drop(log);
+
+        let (_log, messages) = SessionLog::resume(&dir, &id).unwrap();
+
+        assert_eq!(texts(&messages), ["one", "a", memory.as_str(), "b"]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

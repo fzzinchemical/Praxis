@@ -16,8 +16,8 @@ use crate::mcp::Mcp;
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::plugin::{AgentDef, Skill, render};
 use crate::provider::{
-    ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, ReadyModel,
-    ToolCall, ToolSchema,
+    ChatChunk, ChatRequest, FinishReason, LoadPolicy, MEMORY_MARK, Message, Provider,
+    ProviderError, ReadyModel, ToolCall, ToolSchema,
 };
 use crate::session::SessionLog;
 use crate::tools::{self, FileDiff, ToolContext, ToolOutput, confine};
@@ -688,7 +688,7 @@ impl Agent {
 
     fn user_messages(&self) -> impl Iterator<Item = &str> {
         self.history.iter().filter_map(|m| match m {
-            Message::User { content } => Some(content.as_str()),
+            Message::User { content } if m.starts_turn() => Some(content.as_str()),
             _ => None,
         })
     }
@@ -721,7 +721,7 @@ impl Agent {
             .history
             .iter()
             .enumerate()
-            .filter(|(_, m)| matches!(m, Message::User { .. }))
+            .filter(|(_, m)| m.starts_turn())
             .nth(turn - 1)
             .map(|(i, _)| i);
         let Some(start) = start else {
@@ -913,7 +913,11 @@ impl Agent {
             }
             // After every result of this round, so the tool-call pairing stays valid.
             if !self.pending_memory.is_empty() {
-                let content = std::mem::take(&mut self.pending_memory).join("\n\n");
+                // The marker keeps this message out of turn numbering (`Message::starts_turn`).
+                let content = format!(
+                    "{MEMORY_MARK}{}",
+                    std::mem::take(&mut self.pending_memory).join("\n\n")
+                );
                 self.record(Message::User { content });
             }
             if turn.cancel.is_cancelled() {

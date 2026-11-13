@@ -7,7 +7,8 @@ pub mod stream;
 
 pub use admin::{Capabilities, InstanceConfig, LoadPolicy, LoadedInstance, ModelInfo, ReadyModel};
 pub use chat::{
-    ChatChunk, ChatRequest, CompletionDetails, FinishReason, Message, ToolCall, ToolSchema, Usage,
+    ChatChunk, ChatRequest, CompletionDetails, FinishReason, MEMORY_MARK, Message, ToolCall,
+    ToolSchema, Usage,
 };
 
 use admin::AdminClient;
