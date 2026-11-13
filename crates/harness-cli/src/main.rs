@@ -75,7 +75,11 @@ enum PluginCommand {
     Install {
         source: String,
     },
-    List,
+    List {
+        /// Print a JSON array with each plugin's state and what it can run.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show what the plugin can run, then enable it.
     Enable {
         name: String,
@@ -115,7 +119,24 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
             println!("Installed {} at {}, disabled.", plugin.name, entry.commit);
             println!("Run `harness plugin enable {}` to enable it.", plugin.name);
         }
-        PluginCommand::List => {
+        PluginCommand::List { json: true } => {
+            let mut plugins = Vec::new();
+            for (name, entry) in store.list().map_err(anyhow::Error::msg)? {
+                let (_, plugin) = store.get(&name).map_err(anyhow::Error::msg)?;
+                let can_run = plugin
+                    .runs(&store.data_root())
+                    .map_err(anyhow::Error::msg)?;
+                plugins.push(serde_json::json!({
+                    "name": name,
+                    "source": entry.source,
+                    "commit": entry.commit,
+                    "enabled": entry.enabled,
+                    "can_run": can_run,
+                }));
+            }
+            println!("{}", serde_json::Value::Array(plugins));
+        }
+        PluginCommand::List { json: false } => {
             for (name, entry) in store.list().map_err(anyhow::Error::msg)? {
                 let state = if entry.enabled { "enabled" } else { "disabled" };
                 println!(

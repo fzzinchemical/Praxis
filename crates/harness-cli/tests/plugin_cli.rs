@@ -174,3 +174,47 @@ fn remove_keeps_data_unless_its_removal_is_confirmed_separately() {
     assert!(!data.exists());
     assert!(!harness(&home, &["enable", "demo"]).status.success());
 }
+
+#[test]
+fn list_json_reports_state_and_what_each_plugin_can_run() {
+    let home = temp("list-json");
+    let src = home.join("src");
+    fs::create_dir_all(&src).unwrap();
+    let commit = source_repo(&src);
+    stdout(&harness(&home, &["install", src.to_str().unwrap()]));
+
+    let listed: serde_json::Value =
+        serde_json::from_str(&stdout(&harness(&home, &["list", "--json"]))).unwrap();
+    let plugins = listed.as_array().expect("top level is an array");
+    assert_eq!(plugins.len(), 1, "{listed}");
+    let demo = &plugins[0];
+    assert_eq!(demo["name"], "demo");
+    assert_eq!(demo["commit"], commit.as_str());
+    assert_eq!(demo["enabled"], false);
+    assert!(demo["source"].as_str().unwrap().ends_with("src"), "{demo}");
+    let can_run: Vec<&str> = demo["can_run"]
+        .as_array()
+        .expect("can_run is an array")
+        .iter()
+        .filter_map(|line| line.as_str())
+        .collect();
+    assert!(
+        can_run.iter().any(|l| l.contains("echo hook-ran")),
+        "{can_run:?}"
+    );
+    assert!(
+        can_run.iter().any(|l| l.contains("demo-server --stdio")),
+        "{can_run:?}"
+    );
+
+    stdout(&harness(&home, &["enable", "demo"]));
+    let enabled: serde_json::Value =
+        serde_json::from_str(&stdout(&harness(&home, &["list", "--json"]))).unwrap();
+    assert_eq!(enabled[0]["enabled"], true);
+}
+
+#[test]
+fn list_json_is_an_empty_array_when_nothing_is_installed() {
+    let home = temp("list-json-empty");
+    assert_eq!(stdout(&harness(&home, &["list", "--json"])).trim(), "[]");
+}
