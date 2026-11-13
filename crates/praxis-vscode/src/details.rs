@@ -3,7 +3,10 @@
 //! is rendered with raw HTML escaped and unsafe links dropped.
 
 use crate::plugins::PluginItem;
-use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
+// The chat panel's sanitizer, shared as a file because praxis-vscode-ui is a cdylib.
+#[path = "../../praxis-vscode-ui/src/sanitize.rs"]
+mod sanitize;
+use sanitize::markdown;
 
 /// The whole page for one plugin: its README, then its commands, skills and agents.
 pub fn details_page(item: &PluginItem) -> String {
@@ -42,45 +45,6 @@ code, pre {{ font-family: var(--vscode-editor-font-family); }}</style>\n\
         name = escape(&item.name),
         state = escape(&item.description()),
     )
-}
-
-/// Renders untrusted markdown with raw HTML shown as text and only safe link schemes kept.
-/// Same rules as the chat panel's `markdown` in praxis-vscode-ui, which cannot be imported here
-/// (it is a cdylib). shortcut: duplicated rules; move both into one rlib crate if they change.
-fn markdown(text: &str) -> String {
-    // CommonMark links can't nest, so one flag per kind tracks a dropped start tag.
-    let (mut in_link, mut in_image) = (false, false);
-    let events = Parser::new(text).filter_map(|event| match event {
-        Event::Html(raw) | Event::InlineHtml(raw) => Some(Event::Text(raw)),
-        Event::Start(Tag::Link { ref dest_url, .. }) if !safe_url(dest_url) => {
-            in_link = true;
-            None
-        }
-        Event::End(TagEnd::Link) if in_link => {
-            in_link = false;
-            None
-        }
-        // Images never load: the CSP blocks them, and alt text is enough.
-        Event::Start(Tag::Image { .. }) => {
-            in_image = true;
-            None
-        }
-        Event::End(TagEnd::Image) if in_image => {
-            in_image = false;
-            None
-        }
-        other => Some(other),
-    });
-    let mut out = String::new();
-    html::push_html(&mut out, events);
-    out
-}
-
-fn safe_url(url: &str) -> bool {
-    let url = url.to_ascii_lowercase();
-    ["http://", "https://", "vscode:"]
-        .iter()
-        .any(|scheme| url.starts_with(scheme))
 }
 
 fn escape(text: &str) -> String {
