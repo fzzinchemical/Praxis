@@ -23,6 +23,7 @@ const SHELL: &str = include_str!("../../../editors/vscode/webview.html");
 const VIEW_COLUMN_ACTIVE: i32 = -1;
 const VIEW_COLUMN_BESIDE: i32 = -2;
 const RESTART: &str = "Restart";
+const CHAT_TITLE: &str = "Praxis";
 
 #[wasm_bindgen]
 extern "C" {
@@ -349,14 +350,24 @@ fn command(
     Ok(())
 }
 
+/// Boolean webview options for the chat. `retainContextWhenHidden` keeps the conversation when the
+/// tab is hidden; `enableFindWidget` lets Ctrl+F search it.
+fn chat_option_flags() -> [(&'static str, bool); 3] {
+    [
+        ("enableScripts", true),
+        ("retainContextWhenHidden", true),
+        ("enableFindWidget", true),
+    ]
+}
+
 fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Result<(), JsValue> {
     let options = Object::new();
-    Reflect::set(&options, &"enableScripts".into(), &true.into())?;
-    // Without it VS Code discards the webview when its tab is hidden, and the conversation with it.
-    Reflect::set(&options, &"retainContextWhenHidden".into(), &true.into())?;
+    for (key, value) in chat_option_flags() {
+        Reflect::set(&options, &key.into(), &value.into())?;
+    }
     let roots = Array::of1(root.unchecked_ref());
     Reflect::set(&options, &"localResourceRoots".into(), &roots)?;
-    let panel = create_webview_panel("praxis.chat", "Praxis", VIEW_COLUMN_ACTIVE, &options)?;
+    let panel = create_webview_panel("praxis.chat", CHAT_TITLE, VIEW_COLUMN_ACTIVE, &options)?;
     let webview = panel.webview();
     let shared: Shared = Rc::new(RefCell::new(Panel {
         webview: webview.clone(),
@@ -1561,5 +1572,10 @@ mod tests {
         // VS Code's buffer drops a BOM and rewrites mixed EOLs; only dirty text counts as unsaved.
         let text = choose_text(false, || Some("normalized".into()), || Some("disk".into()));
         assert_eq!(text.as_deref(), Some("disk"));
+    }
+
+    #[test]
+    fn chat_panel_enables_the_find_widget() {
+        assert!(chat_option_flags().contains(&("enableFindWidget", true)));
     }
 }
