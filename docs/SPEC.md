@@ -549,7 +549,7 @@ mask_keep_turns = 10
 filter_output = true                 # on since the T2.11 eval (no drop in success)
 
 [permissions]
-mode = "ask"                      # read-only | ask | auto-edit
+mode = "ask"                      # read-only | ask | auto-edit | full-access (user config only)
 allow = ["Bash(cargo test*)"]
 deny = ["Read(**/.env*)"]
 
@@ -599,7 +599,7 @@ flowchart TD
 
 Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
 
-The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. Claude Code's `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt: approved by the project owner on 2026-11-12. Project `.claude/settings.json` and `settings.local.json` widen through this gate like `.praxis/config.toml`, with `hooks` added to the approved TOML (§12, T9.8). MCP servers and plugins join this list in their own tasks. The hostile fixture in `crates/praxis-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
+The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. A project's `permissions.mode = "full-access"` is refused outright, never offered for approval (T10.7). They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. Claude Code's `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt: approved by the project owner on 2026-11-12. Project `.claude/settings.json` and `settings.local.json` widen through this gate like `.praxis/config.toml`, with `hooks` added to the approved TOML (§12, T9.8). MCP servers and plugins join this list in their own tasks. The hostile fixture in `crates/praxis-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
 
 ### Sessions
 
@@ -648,6 +648,9 @@ flowchart TD
 | `read-only` | allow | deny | deny |
 | `ask` | allow | ask | ask |
 | `auto-edit` | allow | allow in workspace | ask |
+| `full-access` | allow | allow in workspace | allow, except a `Bash` command with compound syntax or hard-denied text, which asks |
+
+`full-access` (T10.7, owner approval 2026-11-13) loosens §10 for `Bash` and MCP calls: they run without asking, still under every deny rule and hard denial, which are checked first. Only the user can select it: in `config.toml`, a `--config-override`, or the VS Code setting `praxis.permissions.mode` (machine scope, so a workspace can't set it). A project's `permissions.mode = "full-access"` is dropped with a notice, approved or not. Compound `Bash` commands still ask because the allow check can't see inside them; the sandbox still applies.
 
 A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
 
@@ -719,7 +722,7 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 2. A repository can't run code or widen permissions without approval, and changed content requires re-approval.
 3. `Bash` never runs outside the sandbox unless the user turned it off in **user** config or a flag.
 4. Write and edit paths are checked after symlink resolution.
-5. **Hard denials,** even under `auto-edit`: `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.praxis/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
+5. **Hard denials,** even under `auto-edit` and `full-access` (§9, T10.7): `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.praxis/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
 6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
 7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
 8. No network traffic except to the configured LM Studio server, the Anthropic API when enabled in user config or a flag, MCP servers, and whatever the user approves.
@@ -895,10 +898,10 @@ Config reaches the user through three surfaces. Each key lives in one of them:
 | Surface | Keys | Scope |
 |---|---|---|
 | Chat panel | `model`, `agent`, permission `mode` | Session only. Never written to a file; a new session falls back to config. |
-| VS Code settings | `praxis.binaryPath` (machine scope), `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput` | Forwarded to the CLI as `--config-override` only when the user set them. |
+| VS Code settings | `praxis.binaryPath` (machine scope), `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput`, `praxis.permissions.mode` (machine scope, T10.7) | Forwarded to the CLI as `--config-override` only when the user set them. |
 | File only (`config.toml`) | `mcp`, `hooks`, `sandbox.*`, `permissions.allow`, `permissions.deny`, `anthropic.*`, `profiles.*`, `plugins` | Read from the user and project layers. |
 
-Rule: security-relevant keys are never VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `praxis.binaryPath` is machine-scoped for the same reason.
+Rule: security-relevant keys are never workspace-settable VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `praxis.binaryPath` and `praxis.permissions.mode` are machine-scoped for the same reason; the mode is the only permission key exposed, and only so the user can choose `full-access` (T10.7).
 
 Precedence: an extension-supplied `--config-override` is a CLI flag, so it beats env and file layers, as §8 says. An unset VS Code setting adds no override, so the file and env values apply.
 

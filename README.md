@@ -37,7 +37,7 @@ Hosted models still help with tasks local models can't do yet. Support for the A
 ## What it does
 
 - **Agent loop** with streaming output, built-in `Read`, `Write`, `Edit`, `Grep`, `Glob` and `Bash` tools, and a turn summary that lists the files changed and whether tests actually ran.
-- **Safety in code, not in the prompt.** Permission modes (`read-only`, `ask`, `auto-edit`) with allow and deny rules, workspace confinement, a Landlock sandbox for `Bash`, hard denials for secrets, and a trust gate for project config. Model output, file contents and tool results are treated as untrusted.
+- **Safety in code, not in the prompt.** Permission modes (`read-only`, `ask`, `auto-edit`, and `full-access`, which only the user can select) with allow and deny rules, workspace confinement, a Landlock sandbox for `Bash`, hard denials for secrets, and a trust gate for project config. Model output, file contents and tool results are treated as untrusted.
 - **Sessions:** resume (`--resume`), checkpoints and `/undo`, and plan-first mode (`/plan`, then `/execute`).
 - **MCP client** over stdio and streamable HTTP, read from config or `.mcp.json`. Tool definitions are pinned, and a changed tool needs your approval.
 - **Claude Code compatibility:** plugins (`plugin.json`, skills, commands, agents, hooks, MCP), standalone skills and agents in `.claude/` and `~/.claude/`, `CLAUDE.md` and `AGENTS.md` memory with imports and nested files, path-scoped rules, and Claude Code settings.
@@ -115,7 +115,7 @@ context = 32768               # context size to load models with
 auto_load = true              # load the model without asking (default)
 
 [permissions]
-mode = "ask"                  # read-only | ask | auto-edit
+mode = "ask"                  # read-only | ask | auto-edit | full-access (user config only)
 allow = ["Bash(cargo test*)"]
 deny = ["Read(**/.env*)"]
 

@@ -460,8 +460,9 @@ fn workspace_dir() -> Option<String> {
 
 /// `--config-override` pairs for the settings the user set. Unset ones keep config.toml's values.
 fn config_overrides(config: &Configuration) -> Vec<String> {
-    const KEYS: [(&str, &str); 5] = [
+    const KEYS: [(&str, &str); 6] = [
         ("defaultModel", "default_model"),
+        ("permissions.mode", "permissions.mode"),
         ("lmstudio.baseUrl", "lmstudio.base_url"),
         ("agent.maxTurnRequests", "agent.max_turn_requests"),
         ("context.maskKeepTurns", "context.mask_keep_turns"),

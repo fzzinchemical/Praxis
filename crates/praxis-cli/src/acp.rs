@@ -74,17 +74,18 @@ fn mode_entry(mode: Mode) -> (&'static str, &'static str) {
         Mode::ReadOnly => ("read-only", "Read-only"),
         Mode::Ask => ("ask", "Ask"),
         Mode::AutoEdit => ("auto-edit", "Auto-edit"),
+        Mode::FullAccess => ("full-access", "Full access"),
     }
 }
 
 fn mode_from_key(key: &str) -> Option<Mode> {
-    [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit]
+    [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit, Mode::FullAccess]
         .into_iter()
         .find(|mode| mode_entry(*mode).0 == key)
 }
 
 fn mode_option(current: Mode) -> v1::SessionConfigOption {
-    let options = [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit]
+    let options = [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit, Mode::FullAccess]
         .map(mode_entry)
         .map(|(key, label)| v1::SessionConfigSelectOption::new(key, label));
     let mut option = v1::SessionConfigOption::select(

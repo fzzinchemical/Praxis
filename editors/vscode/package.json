@@ -64,6 +64,12 @@
           "type": "string",
           "description": "Model key for new runs. Unset uses config.toml (default_model)."
         },
+        "praxis.permissions.mode": {
+          "type": "string",
+          "enum": ["read-only", "ask", "auto-edit", "full-access"],
+          "scope": "machine",
+          "markdownDescription": "Permission mode for tool calls. `full-access` runs `Bash` and MCP tools without asking, still under the hard denials. Machine-scoped so a workspace can't raise it. Unset uses config.toml (permissions.mode)."
+        },
         "praxis.lmstudio.baseUrl": {
           "type": "string",
           "scope": "machine",

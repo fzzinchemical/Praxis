@@ -401,6 +401,14 @@ pub fn load_with_approval(
             merge(&mut project, rules_table(&settings.permissions), "");
             project_hooks.extend(settings.hooks);
         }
+        // Full access is never granted by a project, approved or not (SPEC §10).
+        if mode_of(&project) == Some(Mode::FullAccess) {
+            remove(&mut project, "permissions.mode");
+            notices.push(format!(
+                "Ignored `permissions.mode = \"full-access\"` from {}: only your own config can select it.",
+                path.display()
+            ));
+        }
         let (widening, mut keys) =
             split_widening(&mut project, mode_of(&merged).unwrap_or_default());
         // Shown to the approver as TOML, but not merged into the config table: hooks are parsed.

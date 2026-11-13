@@ -21,6 +21,9 @@ pub enum Mode {
     #[default]
     Ask,
     AutoEdit,
+    /// Runs `Bash` and MCP tools without asking. Hard denials (SPEC §10) still come first, and
+    /// only the user's own config can select it (SPEC §8).
+    FullAccess,
 }
 
 /// Any of these makes a command compound, so an allow rule can't vouch for all of it.
@@ -219,14 +222,22 @@ impl Permissions {
         }
         let allowed_by_rule = subjects
             .allow
-            .is_some_and(|s| self.policy.allow.iter().any(|r| r.matches(tool, &s)));
+            .as_ref()
+            .is_some_and(|s| self.policy.allow.iter().any(|r| r.matches(tool, s)));
         if allowed_by_rule || self.allowed.contains(tool) || hook == Some(PermissionDecision::Allow)
         {
             return Decision::Allow;
         }
         match tool {
             _ if read_only => Decision::Allow,
-            "Write" | "Edit" if self.policy.mode == Mode::AutoEdit => Decision::Allow,
+            "Write" | "Edit" if self.policy.mode >= Mode::AutoEdit => Decision::Allow,
+            // Only a simple command reaches here allowed: hard-denied text leaves `allow` unset.
+            "Bash" if self.policy.mode == Mode::FullAccess && subjects.allow.is_some() => {
+                Decision::Allow
+            }
+            mcp if self.policy.mode == Mode::FullAccess && mcp.starts_with("mcp__") => {
+                Decision::Allow
+            }
             "Write" | "Edit" => Decision::Ask { can_always: true },
             // A grant would cover every later command, so routine ones need allow rules instead.
             "Bash" => Decision::Ask { can_always: false },
@@ -444,6 +455,9 @@ mod tests {
             (Mode::AutoEdit, &write, Some(Decision::Allow)),
             (Mode::AutoEdit, &edit, Some(Decision::Allow)),
             (Mode::AutoEdit, &shell, Some(ASK_ONCE)),
+            (Mode::FullAccess, &write, Some(Decision::Allow)),
+            (Mode::FullAccess, &shell, Some(Decision::Allow)),
+            (Mode::FullAccess, &unknown, None),
         ] {
             let decision = permissions(mode, &[], &[]).decide(call.0, &call.1);
             match expected {

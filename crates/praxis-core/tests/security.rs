@@ -30,7 +30,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate, matchers};
 
-const MODES: [Mode; 3] = [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit];
+const MODES: [Mode; 4] = [Mode::ReadOnly, Mode::Ask, Mode::AutoEdit, Mode::FullAccess];
 /// The widest rules a user could write, so only the invariants stand in the way.
 const ALLOW_ALL: [&str; 3] = ["Write", "Edit", "Bash"];
 
@@ -385,6 +385,42 @@ fn a_repository_cannot_widen_permissions_or_drop_the_sandbox_without_approval() 
     let (config, asked) = load(false);
     assert_eq!(asked, 1);
     assert!(config.permissions.allow.is_empty());
+}
+
+/// Full access (SPEC §9) is a user choice, so a `--config-override` (VS Code's machine-scoped
+/// setting) selects it, while a project's `permissions.mode = "full-access"` never does.
+#[test]
+fn only_the_user_can_select_full_access() {
+    let dir = temp_dir("full-access");
+    let project = dir.join("config.toml");
+    fs::write(&project, "[permissions]\nmode = \"full-access\"\n").unwrap();
+    let store = TrustStore::new(dir.join("trust.json"));
+    let loaded = load_with_approval(
+        Sources {
+            project: Some(project.clone()),
+            trust: Some(store),
+            ..Sources::default()
+        },
+        &mut |_, _| true,
+    )
+    .unwrap();
+    assert_eq!(loaded.config.permissions.mode, Mode::Ask);
+    assert!(
+        loaded
+            .notices
+            .iter()
+            .any(|n| n.contains("full-access") || n.contains("permissions.mode"))
+    );
+
+    let loaded = load_with_approval(
+        Sources {
+            overrides: vec![r#"permissions.mode="full-access""#.to_owned()],
+            ..Sources::default()
+        },
+        &mut |_, _| false,
+    )
+    .unwrap();
+    assert_eq!(loaded.config.permissions.mode, Mode::FullAccess);
 }
 
 /// Invariant 6, child environments: secrets never reach a command, whatever their case.
