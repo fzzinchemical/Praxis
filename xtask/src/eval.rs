@@ -344,6 +344,11 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let mut last_error = None;
     let mut rewrites: BTreeMap<String, u32> = BTreeMap::new();
     while let Some(event) = rx.recv().await {
+        // Scored as before subagent events were tagged: a subagent's calls count as the run's.
+        let event = match event {
+            AgentEvent::Subagent { event, .. } => *event,
+            other => other,
+        };
         match event {
             // The sandbox stands in for approval: the agent can only harm its own copy.
             AgentEvent::PermissionRequest { respond, .. } => {
