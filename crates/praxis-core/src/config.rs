@@ -254,7 +254,7 @@ impl Config {
 #[serde(default, deny_unknown_fields)]
 pub struct AgentSettings {
     pub max_turn_requests: u32,
-    /// Load a model without asking (SPEC §5.2).
+    /// Load a model without asking (SPEC §5.2). Defaults on; a project file can't turn it on.
     pub auto_load: bool,
 }
 
@@ -262,7 +262,7 @@ impl Default for AgentSettings {
     fn default() -> Self {
         Self {
             max_turn_requests: DEFAULT_MAX_TURN_REQUESTS,
-            auto_load: false,
+            auto_load: true,
         }
     }
 }

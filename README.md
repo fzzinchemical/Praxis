@@ -112,7 +112,7 @@ base_url = "http://localhost:1234"
 context = 32768               # context size to load models with
 
 [agent]
-auto_load = false             # load the model without asking
+auto_load = true              # load the model without asking (default)
 
 [permissions]
 mode = "ask"                  # read-only | ask | auto-edit
@@ -151,7 +151,7 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 Tracked in [M10](docs/TASKS.md#m10-beta-1-feedback).
 
 - Reopening an old chat in VS Code shows only your messages, not the agent's replies or tool calls (T10.1).
-- Models aren't loaded automatically by default. Set `agent.auto_load = true` in `config.toml` (T10.2).
+- Models load without asking by default. Set `agent.auto_load = false` in `config.toml` to be asked first (T10.2).
 - When a turn hits its request limit, VS Code doesn't say how to raise it. Set `praxis.agent.maxTurnRequests` in VS Code settings or `agent.max_turn_requests` in `config.toml` (default 50) (T10.3).
 - The agent asks for approval on almost every action, and `Bash` approvals can't be remembered (T10.7).
 

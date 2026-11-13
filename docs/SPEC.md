@@ -258,7 +258,7 @@ flowchart TD
     class missing,stop bad
 ```
 
-The provider never prompts. `LoadPolicy::Allowed` means `auto_load = true` or approval already given. `LoadPolicy::AskFirst` fails with `ProviderError::LoadNeedsConsent` instead of loading, so the front end can ask and retry with `Allowed`, or stop and show the error's explanation. A load adds an instance and leaves existing ones in place. If a load applies less context than requested, that is an error.
+`agent.auto_load` defaults to `true`, so a missing model loads without asking. Set `auto_load = false` to be asked first. The provider never prompts. `LoadPolicy::Allowed` means `auto_load = true` or approval already given. `LoadPolicy::AskFirst` fails with `ProviderError::LoadNeedsConsent` instead of loading, so the front end can ask and retry with `Allowed`, or stop and show the error's explanation. A load adds an instance and leaves existing ones in place. If a load applies less context than requested, that is an error.
 
 ### 5.3 Tool-call recovery
 
@@ -542,7 +542,7 @@ model = "lmstudio/qwen3.5-4b"
 
 [agent]
 max_turn_requests = 50
-auto_load = false
+auto_load = true
 
 [context]
 mask_keep_turns = 10

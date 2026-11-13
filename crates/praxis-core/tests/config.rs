@@ -43,7 +43,7 @@ fn defaults_apply_when_no_layer_sets_a_key() {
     assert_eq!(config.default_model, None);
     assert_eq!(config.lmstudio.base_url, "http://localhost:1234");
     assert_eq!(config.lmstudio.api_key_env, "LM_API_TOKEN");
-    assert!(!config.agent.auto_load);
+    assert!(config.agent.auto_load);
     assert_eq!(config.context.mask_keep_turns, 10);
     assert!(config.context.filter_output);
     assert!(notices.is_empty());
@@ -187,7 +187,8 @@ fn project_config_cannot_change_the_server_or_widen_permissions() {
     assert_eq!(config.default_model.as_deref(), Some("chosen"));
     assert_eq!(config.lmstudio.base_url, "http://localhost:1234");
     assert_eq!(config.lmstudio.api_key_env, "LM_API_TOKEN");
-    assert!(!config.agent.auto_load);
+    // Gated: the project's `true` is dropped, so the default applies.
+    assert!(config.agent.auto_load);
     assert!(config.permissions.allow.is_empty());
     assert_eq!(config.permissions.deny, ["Read(.env)"]);
     let all = notices.join("\n");
@@ -274,7 +275,8 @@ fn a_hostile_project_activates_nothing_without_approval() {
     assert_eq!(asked.len(), 1);
     assert_eq!(config.permissions.mode, Mode::Ask);
     assert!(config.permissions.allow.is_empty());
-    assert!(!config.agent.auto_load);
+    // Gated: the project's `true` is dropped, so the default applies.
+    assert!(config.agent.auto_load);
     // Narrowing and model choice still apply.
     assert_eq!(config.permissions.deny, ["Read(**/.env*)"]);
     assert_eq!(config.default_model.as_deref(), Some("qwen3.5-4b"));

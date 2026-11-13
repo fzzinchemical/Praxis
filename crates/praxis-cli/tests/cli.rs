@@ -222,10 +222,17 @@ async fn non_interactive_runs_never_write_or_run_commands() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn non_interactive_never_loads_a_model_without_auto_load() {
+async fn non_interactive_never_loads_a_model_when_auto_load_is_off() {
     let server = server(Some(1024), Replies(vec![text_reply("no")])).await;
+    let args = [
+        "--config-override",
+        "agent.auto_load=false",
+        "--model",
+        "m",
+        "hi",
+    ];
 
-    let output = run(&server, &workspace(), &["--model", "m", "hi"]).await;
+    let output = run(&server, &workspace(), &args).await;
 
     assert_eq!(output.status.code(), Some(1));
     assert!(err(&output).contains("needs loading"), "{}", err(&output));
@@ -269,6 +276,12 @@ async fn user_config_chooses_the_model_and_allows_loading() {
 async fn project_config_cannot_allow_loading() {
     let server = server(Some(1024), Replies(vec![text_reply("no")])).await;
     let dir = workspace();
+    fs::create_dir_all(dir.join("xdg/praxis")).unwrap();
+    fs::write(
+        dir.join("xdg/praxis/config.toml"),
+        "[agent]\nauto_load = false\n",
+    )
+    .unwrap();
     fs::create_dir_all(dir.join(".praxis")).unwrap();
     fs::write(
         dir.join(".praxis/config.toml"),
@@ -428,7 +441,8 @@ async fn repl_asks_to_load_then_asks_before_writing_and_keeps_context_between_pr
     .await;
 
     let typed = "y\nfirst\ny\nsecond\nn\n/exit\n";
-    let output = in_terminal(&server.uri(), &dir, "--model m", typed).await;
+    let args = "--config-override agent.auto_load=false --model m";
+    let output = in_terminal(&server.uri(), &dir, args, typed).await;
 
     assert_eq!(output.status.code(), Some(0), "{}", out(&output));
     assert_eq!(requests_to(&server, LOAD).await.len(), 1);
@@ -467,7 +481,13 @@ async fn approving_project_config_at_the_terminal_is_remembered() {
 async fn declining_the_load_stops_without_loading() {
     let server = server(None, Replies(vec![text_reply("no")])).await;
 
-    let output = in_terminal(&server.uri(), &workspace(), "--model m hi", "n\n").await;
+    let output = in_terminal(
+        &server.uri(),
+        &workspace(),
+        "--config-override agent.auto_load=false --model m hi",
+        "n\n",
+    )
+    .await;
 
     assert_eq!(output.status.code(), Some(1));
     assert!(requests_to(&server, LOAD).await.is_empty());
