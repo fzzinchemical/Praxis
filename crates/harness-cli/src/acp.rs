@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use tokio::sync::mpsc;
+use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
 pub type NewAgent = Box<dyn Fn() -> anyhow::Result<Agent> + Send + Sync>;
@@ -164,6 +165,21 @@ impl<M: Models> Server<M> {
     fn end_turn(&self, id: &str, agent: Agent) {
         if let Some(slot) = self.sessions().get_mut(id) {
             slot.agent = Some(agent);
+        }
+    }
+
+    /// Puts back the agent a finished turn returned. A panicked turn returns none, so its session
+    /// is dropped: the next prompt then fails as unknown, and the session can be loaded again.
+    fn settle_turn(&self, id: &str, joined: Result<Agent, JoinError>) -> Result<(), Error> {
+        match joined {
+            Ok(agent) => {
+                self.end_turn(id, agent);
+                Ok(())
+            }
+            Err(e) => {
+                self.sessions().remove(id);
+                Err(Error::internal_error().data(format!("the turn crashed: {e}")))
+            }
         }
     }
 
@@ -323,19 +339,24 @@ pub fn agent(
                             }
                             AgentEvent::TurnEnded(reason) => stop = reason,
                             other => {
-                                if let Some(update) = update(other) {
-                                    cx.send_notification(v1::SessionNotification::new(
-                                        req.session_id.clone(),
-                                        update,
-                                    ))?;
+                                if let Some(update) = update(other)
+                                    && cx
+                                        .send_notification(v1::SessionNotification::new(
+                                            req.session_id.clone(),
+                                            update,
+                                        ))
+                                        .is_err()
+                                {
+                                    // The client is gone: stop the turn, but keep draining so the agent comes back.
+                                    cancel.cancel();
                                 }
                             }
                         }
                     }
-                    let agent = task
-                        .await
-                        .map_err(|e| Error::internal_error().data(e.to_string()))?;
-                    server.end_turn(&id, agent);
+                    let settled = server.settle_turn(&id, task.await);
+                    if let Err(e) = settled {
+                        return responder.respond_with_error(e);
+                    }
                     match stop_reason(stop) {
                         Some(reason) => responder.respond(v1::PromptResponse::new(reason)),
                         None => {
@@ -809,6 +830,58 @@ mod tests {
             .unwrap();
         let seen = log.lock().unwrap().clone();
         (id, seen)
+    }
+
+    /// Stands in for a turn whose task panicked, so its agent never comes back.
+    fn crashed_turn() -> Agent {
+        panic!("turn crashed")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running() {
+        let dir = temp_dir("crashed-turn");
+        let server = Server {
+            new_agent: Box::new(|| unreachable!("no new agent is needed")),
+            models: FakeModels,
+            sessions_dir: dir.join("sessions"),
+            sessions: Mutex::new(HashMap::new()),
+            client_reads: AtomicBool::new(false),
+        };
+        let url = "http://127.0.0.1:1".to_owned();
+        let tools = Arc::new(ToolContext::new(&dir).unwrap());
+        let provider = Arc::new(Provider::new(&url, None).unwrap());
+        let config = AgentConfig {
+            model: "m".into(),
+            context_size: 100_000,
+            system_prompt: "sys".into(),
+            memory: Vec::new(),
+            scoped_rules: Vec::new(),
+            mask_keep_turns: 10,
+            max_turn_requests: 10,
+            profile: harness_core::agent::profile::ModelProfile::default(),
+            seed: None,
+            policy: harness_core::permissions::Policy::default(),
+            masking: true,
+        };
+        let slot = Slot {
+            agent: Some(Agent::new(provider, tools, config)),
+            cancel: CancellationToken::new(),
+            model: "m".into(),
+            mode: Mode::Ask,
+        };
+        server.sessions().insert("s".into(), slot);
+        let (_agent, _cancel) = server.begin_turn("s").unwrap();
+        let joined = tokio::spawn(async { crashed_turn() }).await;
+        let settled = server.settle_turn("s", joined);
+        assert!(settled.is_err(), "a crashed turn must be reported");
+        let next = server.begin_turn("s");
+        let Err(err) = next else {
+            panic!("the crashed session must not hand out an agent");
+        };
+        assert!(
+            !format!("{err:?}").contains("already running"),
+            "the next prompt must not be refused as running: {err:?}"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
