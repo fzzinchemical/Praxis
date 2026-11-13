@@ -660,6 +660,7 @@ flowchart LR
 - [ ] **T7.2 Performance check** (§2)
   - **Needs:** T5.6.
   - **Done when:** every target is measured and reported. Investigate misses and update the targets with evidence. Don't use `unsafe` to hit them.
+  - **Also measure:** the sessions sidebar's refresh, which starts a fresh `harness acp` child each time (T5.12). If startup is noticeable, keep one listing child alive and resend `session/list`.
 
 - [x] ~~**T7.3 Rich TUI decision**~~ Cut (2026-11-12): the owner chose the REPL; no `ratatui`.
 
