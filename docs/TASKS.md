@@ -428,6 +428,7 @@ flowchart LR
 - [ ] **T4.5 Real server check and resources**
   - **Needs:** T4.4, T4.6.
   - **Done when:** real filesystem, git and browser MCP servers work on a small-window model, with eval scores no worse than without them. Resources and prompts are added.
+  - **Progress (2026-11-13):** real `mcp-server-filesystem`, `mcp-server-git` and `playwright-mcp` (pinned, see docs/MCP_SERVERS.md) pass `tests/mcp_real.rs` (ignored by default). qwen3.5-4b ran a prompt through all three end to end at 32k context. Resources and prompts are exposed as tools. Open: the eval board with and without these servers, which needs MCP wiring in `xtask eval` inside bwrap.
   - **Status:** resources and prompts are done, with fixture tests (`resources_and_prompts_are_tools`). Still open for a human: the real filesystem, git and browser servers (they need npm and network) and the eval comparison on a small-window model. Left unticked until both are done.
 
 - [x] **T4.6 Pin MCP tool definitions** (§13)
