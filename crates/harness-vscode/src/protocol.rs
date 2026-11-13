@@ -204,6 +204,40 @@ pub struct Reaction {
     pub read: Option<FileRead>,
     /// The model picker's state, sent after `show`.
     pub models: Option<Value>,
+    /// The workspace's sessions from a `session/list` answer, newest first.
+    pub sessions: Option<Vec<SessionItem>>,
+}
+
+/// One saved session as the sessions view lists it.
+#[derive(Debug, PartialEq)]
+pub struct SessionItem {
+    pub id: String,
+    pub label: String,
+}
+
+/// The sessions of one workspace from a `session/list` answer, newest first. Other workspaces and
+/// entries without an id are dropped; an untitled session gets a placeholder label.
+pub fn session_items(result: &Value, cwd: &str) -> Vec<SessionItem> {
+    let mut sessions: Vec<&Value> = result["sessions"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s["cwd"].as_str() == Some(cwd) && s["sessionId"].is_string())
+        .collect();
+    // ISO 8601 UTC strings sort by time.
+    sessions.sort_by(|a, b| b["updatedAt"].as_str().cmp(&a["updatedAt"].as_str()));
+    sessions
+        .into_iter()
+        .map(|s| SessionItem {
+            id: s["sessionId"].as_str().unwrap_or_default().to_owned(),
+            label: s["title"]
+                .as_str()
+                .filter(|title| !title.is_empty())
+                .unwrap_or("Untitled session")
+                .to_owned(),
+        })
+        .collect()
 }
 
 /// A proposed change from a permission request's `diff` content. `old_text` is empty for a new file.
@@ -248,6 +282,8 @@ pub fn file_reply(id: Value, text: Option<&str>) -> String {
 const INITIALIZE: u64 = 0;
 const NEW_SESSION: u64 = 1;
 const SET_MODEL: u64 = 2;
+const SESSION_LIST: u64 = 3;
+const LOAD_SESSION: u64 = 4;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -258,23 +294,28 @@ pub struct Client {
     pending: Vec<(Value, Vec<String>)>,
     /// The model picker as last shown, re-sent when a switch fails.
     picker: Option<Value>,
+    /// The session a `session/load` asked for, adopted when the agent answers.
+    loading: Option<String>,
 }
 
 impl Client {
     /// Returns the client and the `initialize` line to send first.
     pub fn start(cwd: &str) -> (Self, String) {
-        let line = request(
-            INITIALIZE,
-            "initialize",
-            json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true}}}),
-        );
         let client = Self {
             cwd: cwd.to_owned(),
             session: None,
-            next_id: SET_MODEL + 1,
+            next_id: LOAD_SESSION + 1,
             pending: Vec::new(),
             picker: None,
+            loading: None,
         };
+        (client, initialize())
+    }
+
+    /// Like `start`, but after `initialize` the agent loads `session` instead of creating one.
+    pub fn resume(cwd: &str, session: &str) -> (Self, String) {
+        let (mut client, line) = Self::start(cwd);
+        client.loading = Some(session.to_owned());
         (client, line)
     }
 
@@ -332,6 +373,10 @@ impl Client {
             return match message["id"].as_u64() {
                 Some(INITIALIZE | NEW_SESSION) => {
                     show(notice(&format!("Harness could not start: {text}")))
+                }
+                Some(LOAD_SESSION) => {
+                    self.loading = None;
+                    show(notice(&format!("Could not open session: {text}")))
                 }
                 Some(SET_MODEL) => Reaction {
                     show: Some(notice(&format!("Could not switch model: {text}"))),
@@ -406,11 +451,18 @@ impl Client {
     fn response(&mut self, id: Option<u64>, result: &Value) -> Reaction {
         match id {
             Some(INITIALIZE) => Reaction {
-                send: Some(request(
-                    NEW_SESSION,
-                    "session/new",
-                    json!({"cwd": self.cwd, "mcpServers": []}),
-                )),
+                send: Some(match &self.loading {
+                    Some(session) => request(
+                        LOAD_SESSION,
+                        "session/load",
+                        json!({"sessionId": session, "cwd": self.cwd, "mcpServers": []}),
+                    ),
+                    None => request(
+                        NEW_SESSION,
+                        "session/new",
+                        json!({"cwd": self.cwd, "mcpServers": []}),
+                    ),
+                }),
                 ..Reaction::default()
             },
             Some(NEW_SESSION) => {
@@ -419,6 +471,14 @@ impl Client {
                 Reaction {
                     show: Some(notice("ready")),
                     models: self.picker.clone(),
+                    ..Reaction::default()
+                }
+            }
+            Some(LOAD_SESSION) => {
+                self.session = self.loading.take();
+                Reaction {
+                    show: Some(notice("ready")),
+                    models: picker(result),
                     ..Reaction::default()
                 }
             }
@@ -437,6 +497,47 @@ impl Client {
                 None => Reaction::default(),
             },
         }
+    }
+}
+
+/// The `initialize` line both kinds of `harness acp` child send first.
+pub fn initialize() -> String {
+    request(
+        INITIALIZE,
+        "initialize",
+        json!({"protocolVersion": 1, "clientCapabilities": {"fs": {"readTextFile": true}}}),
+    )
+}
+
+/// The sidebar's `session/list` for one workspace.
+pub fn list_request(cwd: &str) -> String {
+    request(SESSION_LIST, "session/list", json!({"cwd": cwd}))
+}
+
+/// One line from the sidebar's own `harness acp` child, which only lists sessions. The
+/// `initialize` answer asks for the list and the list's answer becomes `Reaction::sessions`;
+/// the child never sends `session/new`, so listing leaves no session behind.
+pub fn listing_on_line(cwd: &str, line: &str) -> Reaction {
+    let Ok(message) = serde_json::from_str::<Value>(line) else {
+        return show(notice(&format!("unreadable agent output: {line}")));
+    };
+    if let Some(error) = message.get("error") {
+        let text = error["data"]
+            .as_str()
+            .or(error["message"].as_str())
+            .unwrap_or("unknown error");
+        return show(notice(&format!("Could not list sessions: {text}")));
+    }
+    match message["id"].as_u64() {
+        Some(INITIALIZE) => Reaction {
+            send: Some(list_request(cwd)),
+            ..Reaction::default()
+        },
+        Some(SESSION_LIST) => Reaction {
+            sessions: Some(session_items(&message["result"], cwd)),
+            ..Reaction::default()
+        },
+        _ => Reaction::default(),
     }
 }
 
@@ -740,12 +841,13 @@ mod tests {
             on(usage),
             Some(json!({"type": "usage", "used": 5, "size": 9}))
         );
-        let done = r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn"}}"#;
+        // The first prompt's id; ids below it belong to the handshake, list and load requests.
+        let done = r#"{"jsonrpc":"2.0","id":5,"result":{"stopReason":"end_turn"}}"#;
         assert_eq!(
             client.on_line(done).show,
             Some(json!({"type": "done", "reason": "end_turn"}))
         );
-        let failed = r#"{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"boom"}}"#;
+        let failed = r#"{"jsonrpc":"2.0","id":5,"error":{"code":-32603,"message":"boom"}}"#;
         assert_eq!(
             client.on_line(failed).show,
             Some(json!({"type": "done", "reason": "error: boom"}))
@@ -987,5 +1089,59 @@ mod tests {
             vec!["{\"a\":1}", "{\"b\":2}"]
         );
         assert_eq!(lines.push("}\n"), vec!["{}"]);
+    }
+
+    #[test]
+    fn session_items_keep_only_this_workspace_newest_first_and_labelled() {
+        let result = json!({"sessions": [
+            {"sessionId": "old", "cwd": "/w/a", "title": "first", "updatedAt": "2026-01-01T00:00:00Z"},
+            {"sessionId": "other", "cwd": "/w/b", "title": "elsewhere", "updatedAt": "2026-03-01T00:00:00Z"},
+            {"sessionId": "new", "cwd": "/w/a", "updatedAt": "2026-02-01T00:00:00Z"},
+            {"cwd": "/w/a", "title": "no id"}
+        ]});
+        let items = session_items(&result, "/w/a");
+        let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
+        assert_eq!(ids, ["new", "old"]);
+        assert_eq!(items[0].label, "Untitled session");
+        assert_eq!(items[1].label, "first");
+    }
+
+    #[test]
+    fn listing_asks_for_this_workspace_after_initialize_and_maps_the_answer() {
+        let init = json!({"jsonrpc": "2.0", "id": 0, "result": {}}).to_string();
+        let list = sent(&listing_on_line("/w/a", &init));
+        assert_eq!(list["method"], "session/list");
+        assert_eq!(list["params"]["cwd"], "/w/a");
+        let answer = json!({"jsonrpc": "2.0", "id": list["id"],
+            "result": {"sessions": [{"sessionId": "s1", "cwd": "/w/a", "title": "hi"}]}});
+        let reaction = listing_on_line("/w/a", &answer.to_string());
+        assert_eq!(reaction.sessions.unwrap()[0].id, "s1");
+    }
+
+    #[test]
+    fn a_resumed_session_is_loaded_before_prompts_go_to_it() {
+        let (mut client, init) = Client::resume("/w/a", "s9");
+        assert!(init.contains("initialize"));
+        let load = sent(&client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#));
+        assert_eq!(load["method"], "session/load");
+        assert_eq!(load["params"]["sessionId"], "s9");
+        assert_eq!(load["params"]["cwd"], "/w/a");
+        // Until the load answer arrives, no prompt can go out.
+        assert!(client.prompt("hi", &Context::default()).is_none());
+        client.on_line(&json!({"jsonrpc": "2.0", "id": load["id"], "result": {}}).to_string());
+        let prompt = sent(&Reaction {
+            send: client.prompt("hi", &Context::default()),
+            ..Reaction::default()
+        });
+        assert_eq!(prompt["params"]["sessionId"], "s9");
+    }
+
+    #[test]
+    fn a_failed_session_list_is_a_notice() {
+        let error = json!({"jsonrpc": "2.0", "id": 3, "error": {"message": "boom"}});
+        assert_eq!(
+            listing_on_line("/w/a", &error.to_string()).show,
+            Some(notice("Could not list sessions: boom"))
+        );
     }
 }

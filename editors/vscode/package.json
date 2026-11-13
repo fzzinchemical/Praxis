@@ -9,7 +9,25 @@
   "main": "./dist/harness_vscode.js",
   "capabilities": { "untrustedWorkspaces": { "supported": false } },
   "contributes": {
-    "commands": [{ "command": "harness.open", "title": "Harness: Open Chat" }],
+    "commands": [
+      { "command": "harness.open", "title": "Harness: Open Chat" },
+      { "command": "harness.newSession", "title": "Harness: New Session", "icon": "$(add)" },
+      { "command": "harness.openSession", "title": "Harness: Open Session" },
+      { "command": "harness.refreshSessions", "title": "Harness: Refresh Sessions", "icon": "$(refresh)" }
+    ],
+    "viewsContainers": {
+      "activitybar": [{ "id": "harness", "title": "Harness", "icon": "media/harness.svg" }]
+    },
+    "views": {
+      "harness": [{ "id": "harness.sessions", "name": "Sessions" }]
+    },
+    "menus": {
+      "view/title": [
+        { "command": "harness.newSession", "when": "view == harness.sessions", "group": "navigation" },
+        { "command": "harness.refreshSessions", "when": "view == harness.sessions", "group": "navigation" }
+      ],
+      "commandPalette": [{ "command": "harness.openSession", "when": "false" }]
+    },
     "configuration": {
       "title": "Harness",
       "properties": {

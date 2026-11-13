@@ -19,6 +19,7 @@ const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <Default Extension="json" ContentType="application/json"/>
 <Default Extension="js" ContentType="application/javascript"/>
 <Default Extension="wasm" ContentType="application/wasm"/>
+<Default Extension="svg" ContentType="image/svg+xml"/>
 </Types>
 "#;
 
@@ -63,6 +64,11 @@ fn vsix() -> Result<()> {
     // CSP bars, and Electron rejects the `import source` syntax of `module` (ADR 0001).
     build_wasm(root, "harness-vscode-ui", "deno", &out.join("ui"))?;
     fs::copy(root.join("editors/vscode/ui.css"), out.join("ui/ui.css"))?;
+    fs::create_dir_all(out.join("media"))?;
+    fs::copy(
+        root.join("editors/vscode/media/harness.svg"),
+        out.join("media/harness.svg"),
+    )?;
 
     let package = fs::read_to_string(root.join("editors/vscode/package.json"))?;
     let manifest = vsix_manifest(&serde_json::from_str(&package)?)?;
@@ -74,7 +80,7 @@ fn vsix() -> Result<()> {
         ("extension.vsixmanifest".to_owned(), manifest.into_bytes()),
         ("extension/package.json".to_owned(), package.into_bytes()),
     ];
-    for dir in ["dist", "ui"] {
+    for dir in ["dist", "ui", "media"] {
         for file in fs::read_dir(out.join(dir))? {
             let path = file?.path();
             let name = path.file_name().context("no file name")?.to_string_lossy();

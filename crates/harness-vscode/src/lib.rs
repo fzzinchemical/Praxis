@@ -6,7 +6,9 @@
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
-use protocol::{Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection};
+use protocol::{
+    Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wasm_bindgen::JsCast;
@@ -29,7 +31,10 @@ extern "C" {
 #[wasm_bindgen(module = "vscode")]
 extern "C" {
     #[wasm_bindgen(catch, js_namespace = commands, js_name = registerCommand)]
-    fn register_command(id: &str, callback: &Closure<dyn FnMut()>) -> Result<JsValue, JsValue>;
+    fn register_command(
+        id: &str,
+        callback: &Closure<dyn FnMut(JsValue)>,
+    ) -> Result<JsValue, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = window, js_name = createWebviewPanel)]
     fn create_webview_panel(
@@ -77,9 +82,12 @@ extern "C" {
     fn on_did_change_active_text_editor(listener: &Closure<dyn FnMut(JsValue)>) -> Disposable;
     #[wasm_bindgen(js_namespace = window, js_name = showOpenDialog)]
     fn show_open_dialog(options: &Object) -> Promise;
+    #[wasm_bindgen(js_namespace = window, js_name = createTreeView)]
+    fn create_tree_view(id: &str, options: &JsValue) -> JsValue;
     #[wasm_bindgen(js_namespace = languages, js_name = getDiagnostics)]
     fn get_diagnostics(uri: &Uri) -> Array;
 
+    #[derive(Clone)]
     type Uri;
     #[wasm_bindgen(static_method_of = Uri, js_name = joinPath)]
     fn join_path(base: &Uri, path: &str) -> Uri;
@@ -132,6 +140,19 @@ extern "C" {
     -> Disposable;
 }
 
+#[wasm_bindgen(module = "vscode")]
+extern "C" {
+    /// `vscode.EventEmitter`, which tells the sessions view to redraw.
+    #[derive(Clone)]
+    type EventEmitter;
+    #[wasm_bindgen(constructor)]
+    fn new() -> EventEmitter;
+    #[wasm_bindgen(method, getter)]
+    fn event(this: &EventEmitter) -> JsValue;
+    #[wasm_bindgen(method)]
+    fn fire(this: &EventEmitter, data: &JsValue);
+}
+
 #[wasm_bindgen(module = "fs")]
 extern "C" {
     #[wasm_bindgen(catch, js_name = readFileSync)]
@@ -140,6 +161,7 @@ extern "C" {
 
 #[wasm_bindgen(module = "child_process")]
 extern "C" {
+    #[derive(Clone)]
     type ChildProcess;
     #[wasm_bindgen(catch)]
     fn spawn(command: &str, args: &Array, options: &Object) -> Result<ChildProcess, JsValue>;
@@ -185,6 +207,8 @@ struct Panel {
     client: Option<Client>,
     lines: Lines,
     closed: bool,
+    /// The session a sidebar click asked to open, loaded instead of a new one.
+    resume: Option<String>,
     /// Webview and editor registrations, disposed when the panel closes.
     disposables: Vec<Disposable>,
     /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
@@ -230,19 +254,41 @@ type Shared = Rc<RefCell<Panel>>;
 pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     let root = context.extension_uri();
     let output = create_output_channel("Harness");
-    let command = Closure::<dyn FnMut()>::new(move || {
-        if let Err(error) = open_panel(&root, &output) {
-            show_error_message(&format!("Harness: could not open the panel: {error:?}"));
+    let panel = {
+        let (root, output) = (root.clone(), output.clone());
+        move |resume: Option<String>| {
+            if let Err(error) = open_panel(&root, &output, resume) {
+                show_error_message(&format!("Harness: could not open the panel: {error:?}"));
+            }
         }
-    });
-    let disposable = register_command("harness.open", &command)?;
+    };
+    create_sessions_view(&output);
+    refresh_sessions();
+    let open = panel.clone();
+    command(&context, "harness.open", move |_| open(None))?;
+    let new_session = panel.clone();
+    command(&context, "harness.newSession", move |_| new_session(None))?;
+    command(&context, "harness.openSession", move |id| {
+        panel(id.as_string())
+    })?;
+    command(&context, "harness.refreshSessions", |_| refresh_sessions())
+}
+
+/// Registers a command whose handler receives the command's arguments, and keeps the handler alive.
+fn command(
+    context: &ExtensionContext,
+    id: &str,
+    handle: impl FnMut(JsValue) + 'static,
+) -> Result<(), JsValue> {
+    let callback = Closure::<dyn FnMut(JsValue)>::new(handle);
+    let disposable = register_command(id, &callback)?;
     context.subscriptions().push(&disposable);
-    // shortcut: closures leak until the host exits; fine for one command, revisit if they multiply.
-    command.forget();
+    // shortcut: closures leak until the host exits; fine for a handful of commands, revisit if they multiply.
+    callback.forget();
     Ok(())
 }
 
-fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
+fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Result<(), JsValue> {
     let options = Object::new();
     Reflect::set(&options, &"enableScripts".into(), &true.into())?;
     // Without it VS Code discards the webview when its tab is hidden, and the conversation with it.
@@ -261,6 +307,7 @@ fn open_panel(root: &Uri, output: &OutputChannel) -> Result<(), JsValue> {
         closed: false,
         disposables: Vec::new(),
         closures: Vec::new(),
+        resume,
     }));
 
     let state = shared.clone();
@@ -365,18 +412,7 @@ fn start(state: &Shared) {
         return;
     };
     // `harness.binaryPath` is machine-scoped in package.json, so a repository can't redirect it.
-    let binary = get_configuration("harness")
-        .get("binaryPath")
-        .as_string()
-        .unwrap_or_else(|| "harness".to_owned());
-    let options = Object::new();
-    if let Err(error) = Reflect::set(&options, &"cwd".into(), &cwd.as_str().into()) {
-        return state
-            .borrow()
-            .webview
-            .notify(&format!("spawn failed: {error:?}"));
-    }
-    let child = match spawn(&binary, &Array::of1(&"acp".into()), &options) {
+    let child = match spawn_acp(&cwd) {
         Ok(child) => child,
         Err(error) => {
             return state
@@ -385,7 +421,11 @@ fn start(state: &Shared) {
                 .notify(&format!("spawn failed: {error:?}"));
         }
     };
-    let (client, init) = Client::start(&cwd);
+    let resume = state.borrow().resume.clone();
+    let (client, init) = match &resume {
+        Some(session) => Client::resume(&cwd, session),
+        None => Client::start(&cwd),
+    };
     child.stdin().write(&format!("{init}\n"));
     child.stdout().set_encoding("utf8");
     child.stderr().set_encoding("utf8");
@@ -595,6 +635,13 @@ fn problems_of(path: &str) -> Option<Problems> {
 }
 
 fn react(state: &Shared, reaction: Reaction) {
+    if reaction
+        .show
+        .as_ref()
+        .is_some_and(|message| message["type"] == "done")
+    {
+        refresh_sessions();
+    }
     let panel = state.borrow();
     if let Some(message) = reaction.show {
         panel.webview.post_message(&message.to_string());
@@ -712,4 +759,200 @@ fn text_of(value: JsValue) -> String {
 fn listener(state: &Shared, handle: fn(&Shared, String)) -> Closure<dyn FnMut(JsValue)> {
     let state = state.clone();
     Closure::new(move |value: JsValue| handle(&state, text_of(value)))
+}
+
+/// `harness acp` in `cwd`. `harness.binaryPath` is machine-scoped in package.json, so a repository
+/// can't redirect it.
+fn spawn_acp(cwd: &str) -> Result<ChildProcess, JsValue> {
+    let binary = get_configuration("harness")
+        .get("binaryPath")
+        .as_string()
+        .unwrap_or_else(|| "harness".to_owned());
+    let options = Object::new();
+    Reflect::set(&options, &"cwd".into(), &cwd.into())?;
+    spawn(&binary, &Array::of1(&"acp".into()), &options)
+}
+
+/// The sessions view. Listing runs in its own `harness acp` child, independent of the chat panels.
+struct Sidebar {
+    emitter: EventEmitter,
+    output: OutputChannel,
+    items: Vec<SessionItem>,
+    listing: Option<Listing>,
+}
+
+/// A `session/list` in flight: its child and listeners, unhooked before they drop.
+struct Listing {
+    child: ChildProcess,
+    stdout: Closure<dyn FnMut(JsValue)>,
+    stderr: Closure<dyn FnMut(JsValue)>,
+    error: Closure<dyn FnMut(JsValue)>,
+}
+
+impl Listing {
+    fn stop(&self) {
+        self.child.stdout().off("data", self.stdout.as_ref());
+        self.child.stderr().off("data", self.stderr.as_ref());
+        self.child.off_child("error", self.error.as_ref());
+        self.child.kill();
+    }
+}
+
+thread_local! {
+    static SIDEBAR: RefCell<Option<Sidebar>> = const { RefCell::new(None) };
+}
+
+/// Registers the sessions view. Its provider is a plain object, which VS Code accepts in place of a class.
+fn create_sessions_view(output: &OutputChannel) {
+    let emitter = EventEmitter::new();
+    let provider = node(&[
+        ("onDidChangeTreeData", emitter.event()),
+        ("getTreeItem", callback(|item| item)),
+        ("getChildren", callback(|_| children().into())),
+    ]);
+    // The view lives as long as the host; the returned handle needs no keeping.
+    let _ = create_tree_view("harness.sessions", &node(&[("treeDataProvider", provider)]));
+    SIDEBAR.with(|sidebar| {
+        *sidebar.borrow_mut() = Some(Sidebar {
+            emitter,
+            output: output.clone(),
+            items: Vec::new(),
+            listing: None,
+        });
+    });
+}
+
+/// A closure VS Code calls back into. shortcut: provider closures live until the host exits; the view is created once.
+fn callback(handle: impl FnMut(JsValue) -> JsValue + 'static) -> JsValue {
+    Closure::<dyn FnMut(JsValue) -> JsValue>::new(handle).into_js_value()
+}
+
+/// A plain object with the given properties. A fresh object accepts any property, so the sets can't fail.
+fn node(fields: &[(&str, JsValue)]) -> JsValue {
+    let object = Object::new();
+    for (key, value) in fields {
+        let _ = Reflect::set(&object, &JsValue::from_str(key), value);
+    }
+    object.into()
+}
+
+/// The view's root items: one per session, or a line saying there are none.
+fn children() -> Array {
+    let mut nodes: Vec<JsValue> = SIDEBAR.with(|sidebar| {
+        sidebar
+            .borrow()
+            .as_ref()
+            .map(|sidebar| sidebar.items.iter().map(session_node).collect())
+            .unwrap_or_default()
+    });
+    if nodes.is_empty() {
+        nodes.push(node(&[(
+            "label",
+            JsValue::from_str("No sessions in this workspace yet"),
+        )]));
+    }
+    let array = Array::new();
+    for node in &nodes {
+        array.push(node);
+    }
+    array
+}
+
+/// A session as a tree item whose click runs `harness.openSession` with its id.
+fn session_node(item: &SessionItem) -> JsValue {
+    let command = node(&[
+        ("command", JsValue::from_str("harness.openSession")),
+        ("title", JsValue::from_str("Open session")),
+        ("arguments", Array::of1(&JsValue::from_str(&item.id)).into()),
+    ]);
+    node(&[
+        ("id", JsValue::from_str(&item.id)),
+        ("label", JsValue::from_str(&item.label)),
+        ("command", command),
+    ])
+}
+
+/// Replaces the view's sessions and asks VS Code to redraw them.
+fn publish(items: Vec<SessionItem>) {
+    let emitter = SIDEBAR.with(|sidebar| {
+        sidebar.borrow_mut().as_mut().map(|sidebar| {
+            sidebar.items = items;
+            sidebar.emitter.clone()
+        })
+    });
+    // Fired after the borrow ends: VS Code may call `getChildren` synchronously.
+    if let Some(emitter) = emitter {
+        emitter.fire(&JsValue::UNDEFINED);
+    }
+}
+
+/// Lists the workspace's sessions with the sidebar's own child, replacing any listing in flight.
+fn refresh_sessions() {
+    let Some(cwd) = workspace_dir() else {
+        return publish(Vec::new());
+    };
+    let Some((previous, output)) = SIDEBAR.with(|sidebar| {
+        sidebar
+            .borrow_mut()
+            .as_mut()
+            .map(|sidebar| (sidebar.listing.take(), sidebar.output.clone()))
+    }) else {
+        return;
+    };
+    if let Some(previous) = previous {
+        previous.stop();
+    }
+    let child = match spawn_acp(&cwd) {
+        Ok(child) => child,
+        Err(error) => return output.append(&format!("sessions: spawn failed: {error:?}\n")),
+    };
+    child
+        .stdin()
+        .write(&format!("{}\n", protocol::initialize()));
+    child.stdout().set_encoding("utf8");
+    child.stderr().set_encoding("utf8");
+
+    let (answer_child, answer_output) = (child.clone(), output.clone());
+    let mut lines = Lines::default();
+    let on_stdout = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
+        for line in lines.push(&text_of(chunk)) {
+            let reaction = protocol::listing_on_line(&cwd, &line);
+            let finished = reaction.sessions.is_some() || reaction.show.is_some();
+            if let Some(sessions) = reaction.sessions {
+                publish(sessions);
+            }
+            if let Some(message) = reaction.show {
+                let text = message["text"].as_str().unwrap_or_default();
+                answer_output.append(&format!("sessions: {text}\n"));
+            }
+            if let Some(send) = reaction.send {
+                answer_child.stdin().write(&format!("{send}\n"));
+            }
+            if finished {
+                answer_child.kill();
+            }
+        }
+    });
+    let stderr_output = output.clone();
+    let on_stderr = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
+        stderr_output.append(&text_of(chunk));
+    });
+    let error_output = output.clone();
+    let on_error = Closure::<dyn FnMut(JsValue)>::new(move |error: JsValue| {
+        error_output.append(&format!("sessions: harness acp: {}\n", text_of(error)));
+    });
+    child.stdout().on("data", on_stdout.as_ref());
+    child.stderr().on("data", on_stderr.as_ref());
+    child.on_child("error", on_error.as_ref());
+    let listing = Listing {
+        child,
+        stdout: on_stdout,
+        stderr: on_stderr,
+        error: on_error,
+    };
+    SIDEBAR.with(|sidebar| {
+        if let Some(sidebar) = sidebar.borrow_mut().as_mut() {
+            sidebar.listing = Some(listing);
+        }
+    });
 }
