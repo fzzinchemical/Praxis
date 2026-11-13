@@ -310,3 +310,135 @@ removes unused `Outcome` fields). No dependency can be dropped.
 not read, except the markdown escaping, the `read_file` guard and the process spawn. In
 `context/` (budget, compaction, prefix), only the turn-boundary logic was checked. `provider/admin.rs` (model load/unload) was not read; there is no Anthropic provider code yet. `./scripts/verify` was not run
 for this audit, and nothing was changed in the code.
+
+---
+
+# Round 2 (2026-11-13)
+
+Round 2 reviewed the 14 fix commits (`facccf7`..`ff46a8f`) and the parts that round 1 skipped:
+subagent delegation, `provider/admin.rs`, memory loading in `context/prefix.rs`, the context
+budget, the VS Code panel and session wiring, and the `xtask` eval sandbox. Same rules as above:
+one item per branch, write the test first, tick the box here.
+
+## Must fix
+
+- [x] **15. A subagent ignores plan mode and the session's permission choices**
+  (`crates/harness-core/src/agent/mod.rs:349`, `:247`, `:501`)
+  - **What this is:** The `Agent` tool runs a subagent. `delegate` builds it from
+    `self.config.clone()`, and `Agent::new` builds its permissions from `config.policy`.
+  - **Problem:** `set_mode` (plan mode, and the VS Code permission picker) changes only
+    `self.permissions`, not `config.policy`. So the subagent starts with the mode from the
+    config file. The session's "always" grants and "reject for this session" choices aren't
+    passed on either. `Agent` counts as a read-only tool, so it is allowed in plan mode.
+    Example: the user config says `auto-edit`, and the user switches the session to plan mode
+    (read-only). The model calls `Agent`, and the subagent writes files without asking. In
+    `ask` mode, the user gets write prompts during "plan mode", which should never happen.
+  - **Fix:** Give the child a copy of the parent's current permissions
+    (`child.permissions = self.permissions.clone()`; add `Clone` to `Permissions`), instead of
+    building new ones from `config.policy`.
+  - **Done when:** A test in `crates/harness-core/tests/plan.rs` builds an agent with
+    `Mode::AutoEdit` and an agent definition, calls `set_mode(Mode::ReadOnly)`, and has the fake
+    model call `Agent`, whose child then calls `Write`. The file must not exist afterwards.
+  - **If we skip it:** Plan mode is not read-only: one tool call gets around it.
+
+- [x] **16. Two panels on the same session write one log and fight over checkpoints**
+  (`crates/harness-vscode/src/lib.rs:296-298`, `crates/harness-core/src/session.rs` `create`/`resume`)
+  - **What this is:** Clicking a session in the sidebar runs `harness.openSession`. That always
+    opens a new panel, and each panel starts its own `harness acp` process, which resumes the
+    session log.
+  - **Problem:** Click the same session twice (or keep it open in VS Code and also run
+    `harness --resume` in a terminal), and two processes append to one `.jsonl` file. Their
+    messages mix, so the next resume rebuilds a history that neither process had. Both also
+    read the highest checkpoint number at start and then create the same next number. One of
+    them fails with "File exists" on its next `Write` or `Edit`. This is item 2 again, in a new
+    way.
+  - **Fix:** Take an exclusive lock on the log file in `SessionLog::create` and `resume`, using
+    std's `File::try_lock` (stable since Rust 1.89, so no new dependency). If the lock fails,
+    report "session `<id>` is open in another window". The lock is released when the log is
+    dropped. Optionally, the extension can also show the panel that already exists.
+  - **Done when:** A test in `crates/harness-core/tests/session.rs` resumes one id twice. The
+    second call returns an error while the first log is still alive, and succeeds after it is
+    dropped.
+  - **If we skip it:** The session history gets mixed up for good, and file edits fail at
+    random.
+
+## Should fix
+
+- [x] **17. Absolute paths (item 4) let a symlinked path get around its deny rule**
+  (`crates/harness-core/src/agent/mod.rs` `absolute_paths`,
+  `crates/harness-core/src/permissions/mod.rs` `subjects`)
+  - **What this is:** `subjects` matches deny rules against two spellings of a path: the one
+    the model wrote and the resolved one. Its comment says "so neither `..` nor a symlink can
+    step around a deny rule".
+  - **Problem:** `check_call` now replaces the model's path with the result of
+    `confine::resolve`, which follows symlinks, before the permission check. So both spellings
+    are the resolved target. Example: the repo has `secrets -> vendor/keys`, and the deny rule
+    is `Read(secrets/**)`. `Read secrets/id` becomes `<ws>/vendor/keys/id`, no deny rule
+    matches, and the file is read. Before item 4, this was refused. The unit tests in
+    `permissions` call `decide` directly, so they don't see this.
+  - **Fix:** In `absolute_paths`, make the path absolute without following symlinks
+    (`workspace.join(raw)` for a relative `raw`). Then `subjects` still sees the symlink name,
+    and still resolves the target itself.
+  - **Done when:** A test in `tests/security.rs` (or `tests/agent.rs`) runs a full agent turn
+    with a symlinked folder and a deny rule on the link name, and shows that `Read` through the
+    link is denied.
+  - **If we skip it:** Deny rules on symlinked folders silently stop working.
+
+- [x] **18. `Write` still overwrites files that have unsaved changes in VS Code**
+  (`crates/harness-core/src/tools/files.rs` `write`)
+  - **What this is:** Item 5 made `Edit` refuse a file whose editor buffer differs from the
+    disk.
+  - **Problem:** `Write` has no such check. It replaces the file on disk under a dirty buffer.
+    Then VS Code reports a conflict, and either the user's unsaved edits or the agent's write
+    is lost, depending on which button the user presses.
+  - **Fix:** Use the same `editor_text` comparison in `write` when the file already exists.
+    Move it into a small shared helper used by `edit` and `write`.
+  - **Done when:** The ACP test for item 5 gets a twin for `Write`, which expects the
+    "unsaved changes" message and an unchanged file.
+  - **If we skip it:** The data loss from item 5 stays possible through the other write tool.
+
+## Nice to have
+
+- [x] **19. Lost trust-store updates can let a changed MCP tool through without a prompt**
+  (`crates/harness-core/src/trust.rs` `set`)
+  - **What this is:** Item 8 made each write atomic. But `set` still reads, changes and writes
+    the whole file with no lock.
+  - **Problem:** Suppose two processes start at the same time and both pin MCP tools. The
+    second write drops the first one's pins. On the next start, those tools count as never
+    seen, and they are pinned silently in whatever form they have then. If the server changed
+    a tool in between, nobody is asked, and catching exactly that is the point of pinning.
+    This needs a race and a changed tool, so it is rare.
+  - **Fix:** Hold `File::lock` on a `trust.json.lock` file (std, no dependency) around the
+    read-modify-write in `set`.
+  - **Done when:** The `concurrent_sets_leave_the_store_valid_json` test also checks that all
+    16×20 keys are present.
+  - **If we skip it:** Rarely, a changed MCP tool gets in without approval.
+
+- [x] **20. Checkpoint copies of undone turns, and of ended sessions, are never deleted**
+  (`crates/harness-core/src/tools/checkpoint.rs` `undo`, `begin_turn`)
+  - **What this is:** Item 13 deletes copies when a turn drops out of the 20-turn window.
+  - **Problem:** `undo` pops a turn but leaves its copy files on disk. Those copies are no
+    longer in `turns`, so nothing will ever delete them. The last 20 turns of every session are
+    also kept forever after the session ends. Session logs have a `shortcut:` note about the
+    same kind of growth; checkpoints have none.
+  - **Fix:** Delete each copy after it has been restored in `undo`. Mark the leftovers from
+    ended sessions with a `shortcut:` next to the existing one for logs, or delete
+    `checkpoints/` when a session that ran no turns for a while is listed.
+  - **Done when:** The undo test checks that the checkpoint folder is empty after undoing every
+    turn.
+  - **If we skip it:** Disk use grows slowly.
+
+---
+
+**Round 2 verdict:** Fix 15 first: plan mode has a hole that one tool call opens. Then fix 16,
+which also stops item 2 from coming back.
+
+**Checked and fine:** the `.git` denial (1), the hook timeout (6), CRLF frontmatter (12), the
+orphaned tool calls (3), atomic store writes (8), the ACP turn settlement and close (9, 10),
+undo with partial failures (11). Also fine: memory and rule imports stay confined (symlinks and
+`~/` imports outside the workspace are refused), the branch name read from `HEAD` is filtered,
+and the eval runner runs the agent under bwrap plus Landlock.
+
+**Not checked:** `harness-vscode-ui/src/lib.rs` beyond the markdown path, the compaction
+summary request, `scripts/prove-evals`. `./scripts/verify` was not run, and none of the round 2
+findings were reproduced with a test. They come from reading the code.
