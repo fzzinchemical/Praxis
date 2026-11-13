@@ -20,7 +20,7 @@ Local-first coding agent harness, written in Rust. It connects to LM Studio (the
 4. Run the narrowest test while iterating, then `./scripts/verify` once at the end.
 5. Tick the task in `docs/TASKS.md` in the same branch. If reality differs from SPEC, update SPEC in that branch and say so in the commit body.
 6. Add any non-obvious trap you hit to the Gotchas section below.
-7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. Then push `main` to `origin` (github.com/fzzinchemical/Praxis); CI reruns verify there. Verify is the gate, and it runs on every commit through `.githooks/pre-commit`. Enable it once per clone with `git config core.hooksPath .githooks`.
+7. Merge into `main` locally with `git merge --ff-only` after verify passes, then delete the branch. Then push `main` to `origin` (github.com/fzzinchemical/Praxis) when the owner asks. There is no CI: verify is the gate, and it runs on every commit through `.githooks/pre-commit`. Enable it once per clone with `git config core.hooksPath .githooks`.
 
 Keep each branch to about 400 changed lines, recorded fixtures aside; split a task if it grows beyond that.
 
@@ -36,7 +36,7 @@ Keep each branch to about 400 changed lines, recorded fixtures aside; split a ta
 | One test | `cargo test -p praxis-core <name>` |
 | Run the agent | `cargo run -p praxis-cli -- "<prompt>"` |
 | Build the extension | `cargo xtask vsix` |
-| Release (builds binary and `.vsix`, publishes on GitHub) | push a `vX.Y.Z[-pre]` tag on a `main` commit |
+| Release (builds binary and `.vsix` into `target/dist`) | `./scripts/release vX.Y.Z[-pre]`; add `--publish` to tag, push and create the GitHub release |
 | Model evals (slow, needs a server, not in verify) | `cargo xtask eval --model <id>` |
 | Prove eval checks (no model, not in verify) | `./scripts/prove-evals` |
 

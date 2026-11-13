@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Builds a release locally (GitHub Actions are off): ./scripts/release v1.2.0 [--publish]
+# Without --publish it only builds dist/. With it, it tags HEAD, pushes the tag and creates the
+# GitHub release with `gh`. A tag with a suffix (v1.2.0-beta) becomes a pre-release.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+tag="${1:?usage: scripts/release vX.Y.Z[-pre] [--publish]}"
+publish="${2:-}"
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "release: bad tag $tag" >&2; exit 1; }
+[[ -z "$(git status --porcelain)" ]] || { echo "release: working tree not clean" >&2; exit 1; }
+git merge-base --is-ancestor HEAD main || { echo "release: HEAD is not on main" >&2; exit 1; }
+version="${tag#v}"
+crate_version="$(cargo metadata --no-deps --format-version 1 \
+  | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="praxis-cli"))')"
+[[ "$version" == "$crate_version" ]] || { echo "release: tag $version != crate version $crate_version" >&2; exit 1; }
+
+./scripts/verify
+cargo build --release --locked -p praxis-cli
+cargo xtask vsix
+
+rm -rf target/dist && mkdir -p target/dist
+tar czf "target/dist/praxis-$version-x86_64-linux.tar.gz" -C target/release praxis -C "$PWD" README.md
+cp target/praxis.vsix "target/dist/praxis-$version.vsix"
+(cd target/dist && sha256sum -- * > SHA256SUMS)
+echo "release: built target/dist for $tag"
+
+[[ "$publish" == "--publish" ]] || exit 0
+pre=()
+[[ "$tag" == *-* ]] && pre=(--prerelease)
+git tag "$tag"
+git push origin "$tag"
+gh release create "$tag" target/dist/* --verify-tag --generate-notes "${pre[@]}"

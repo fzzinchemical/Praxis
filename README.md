@@ -176,10 +176,11 @@ All product code is Rust ([ADR 0001](docs/adr/0001-rust-only-with-minimal-vscode
 
 ### Releases
 
-CI runs `./scripts/verify` on every push and pull request to `main`. Pushing a version tag that points to a commit on `main` builds the Linux binary and the `.vsix` and publishes a GitHub release. A tag with a suffix (`v1.1.0-beta`) becomes a pre-release.
+Releases are built locally; there is no CI. `./scripts/release` checks that the tree is clean, `HEAD` is on `main` and the tag matches the crate version, runs `./scripts/verify`, and builds the Linux binary, the `.vsix` and `SHA256SUMS` into `target/dist`. With `--publish` it also tags, pushes the tag and creates the GitHub release with `gh`. A tag with a suffix (`v1.2.0-beta`) becomes a pre-release.
 
 ```sh
-git tag v1.1.0-beta && git push origin v1.1.0-beta
+./scripts/release v1.2.0             # build only
+./scripts/release v1.2.0 --publish   # build, tag and publish
 ```
 
 ## Further reading
