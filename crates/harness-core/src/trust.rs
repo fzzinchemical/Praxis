@@ -6,7 +6,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::{self, DirBuilder};
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// `~/.local/share/harness/trust.json`: project config path to approved hash.
@@ -51,10 +51,9 @@ impl TrustStore {
         Ok(self.read()?.remove(key))
     }
 
+    /// Holds an exclusive lock on a sibling file across the read-modify-write, so concurrent
+    /// sets from other sessions cannot drop each other's keys.
     pub fn set(&self, key: &str, value: &str) -> Result<(), String> {
-        let mut approvals = self.read()?;
-        approvals.insert(key.to_owned(), value.to_owned());
-        let text = serde_json::to_string_pretty(&approvals).map_err(|e| e.to_string())?;
         let fail = |e: std::io::Error| format!("{}: {e}", self.path.display());
         if let Some(dir) = self.path.parent() {
             DirBuilder::new()
@@ -63,6 +62,18 @@ impl TrustStore {
                 .create(dir)
                 .map_err(fail)?;
         }
+        let lock_path = self.path.with_extension("json.lock");
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .mode(0o600)
+            .open(&lock_path)
+            .map_err(fail)?;
+        lock.lock().map_err(fail)?;
+        let mut approvals = self.read()?;
+        approvals.insert(key.to_owned(), value.to_owned());
+        let text = serde_json::to_string_pretty(&approvals).map_err(|e| e.to_string())?;
         replace_with(&self.path, |file| {
             file.set_permissions(fs::Permissions::from_mode(0o600))?;
             file.write_all(text.as_bytes())
@@ -93,7 +104,8 @@ mod tests {
             }
         });
         let text = fs::read_to_string(&path).unwrap();
-        serde_json::from_str::<BTreeMap<String, String>>(&text).unwrap();
+        let stored = serde_json::from_str::<BTreeMap<String, String>>(&text).unwrap();
+        assert_eq!(stored.len(), 16 * 20, "concurrent sets lost keys");
         fs::remove_dir_all(&dir).unwrap();
     }
 }
