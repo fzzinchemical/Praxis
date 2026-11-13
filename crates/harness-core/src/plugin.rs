@@ -2,11 +2,12 @@
 //! components themselves are parsed by later tasks.
 
 use crate::config::{Config, McpServer, ModelRef};
+use crate::tools::files::replace_with;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
 /// A hooks or MCP source: a file to read later, or an object inlined in the manifest.
@@ -506,18 +507,13 @@ impl Plugin {
             .create(&dir)
             .map_err(fail)?;
         let path = dir.join("options.json");
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(fail)?;
-        // `mode` applies only on creation; tighten a file that already existed.
-        file.set_permissions(fs::Permissions::from_mode(0o600))
-            .map_err(fail)?;
         let text = serde_json::to_string(&options).map_err(|e| e.to_string())?;
-        file.write_all(text.as_bytes()).map_err(fail)
+        // Private before any byte is written: a `sensitive` value must never be world-readable.
+        replace_with(&path, |file| {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            file.write_all(text.as_bytes())
+        })
+        .map_err(fail)
     }
 
     fn options(&self, data_root: &Path) -> Result<BTreeMap<String, String>, String> {
@@ -874,7 +870,8 @@ impl Store {
     fn save(&self, list: &BTreeMap<String, Installed>) -> Result<(), String> {
         let path = self.root.join("installed.json");
         let text = serde_json::to_string_pretty(list).map_err(|e| e.to_string())?;
-        fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+        replace_with(&path, |file| file.write_all(text.as_bytes()))
+            .map_err(|e| format!("{}: {e}", path.display()))
     }
 
     pub fn get(&self, name: &str) -> Result<(Installed, Plugin), String> {

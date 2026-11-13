@@ -1,11 +1,12 @@
 //! Approvals of project config that widens permissions (SPEC §8). Each project's approval is
 //! the SHA-256 of exactly what was approved, so any change needs approving again.
 
+use crate::tools::files::replace_with;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::fs::{self, DirBuilder, OpenOptions};
+use std::fs::{self, DirBuilder};
 use std::io::Write as _;
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 
 /// `~/.local/share/harness/trust.json`: project config path to approved hash.
@@ -62,16 +63,37 @@ impl TrustStore {
                 .create(dir)
                 .map_err(fail)?;
         }
-        // Written beside the store and renamed, so a crash never leaves half a file.
-        let partial = self.path.with_extension("json.partial");
-        OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&partial)
-            .and_then(|mut file| file.write_all(text.as_bytes()))
-            .and_then(|()| fs::rename(&partial, &self.path))
-            .map_err(fail)
+        replace_with(&self.path, |file| {
+            file.set_permissions(fs::Permissions::from_mode(0o600))?;
+            file.write_all(text.as_bytes())
+        })
+        .map_err(fail)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_sets_leave_the_store_valid_json() {
+        let dir =
+            std::env::temp_dir().join(format!("harness-trust-{}-concurrent", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let path = dir.join("trust.json");
+        let store = TrustStore::new(path.clone());
+        std::thread::scope(|scope| {
+            for thread in 0..16 {
+                let store = store.clone();
+                scope.spawn(move || {
+                    for n in 0..20 {
+                        store.set(&format!("project-{thread}-{n}"), "hash").unwrap();
+                    }
+                });
+            }
+        });
+        let text = fs::read_to_string(&path).unwrap();
+        serde_json::from_str::<BTreeMap<String, String>>(&text).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

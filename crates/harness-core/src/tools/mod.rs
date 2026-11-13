@@ -4,7 +4,7 @@
 pub(crate) mod bash;
 mod checkpoint;
 pub(crate) mod confine;
-mod files;
+pub(crate) mod files;
 mod filter;
 mod search;
 

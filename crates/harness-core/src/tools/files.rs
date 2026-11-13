@@ -109,7 +109,7 @@ pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
 /// Replaces `path` through a temp file in the same folder and a rename, so an interrupted
 /// write leaves the original intact. The temp file gets the mode before any content, so a
 /// private file is never briefly readable.
-pub(super) fn replace_with(
+pub(crate) fn replace_with(
     path: &Path,
     fill: impl FnOnce(&mut File) -> io::Result<()>,
 ) -> io::Result<()> {
