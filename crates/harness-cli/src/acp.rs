@@ -116,7 +116,13 @@ impl<M: Models> Server<M> {
         cx: &ConnectionTo<Client>,
     ) -> anyhow::Result<(String, Vec<Message>, String)> {
         let (log, prior) = match resume {
-            Some(id) => SessionLog::resume(&self.sessions_dir, id)?,
+            Some(id) => {
+                // The old slot holds the log's lock, so release it before reopening the file.
+                if let Some(old) = self.sessions().remove(id) {
+                    old.cancel.cancel();
+                }
+                SessionLog::resume(&self.sessions_dir, id)?
+            }
             None => (
                 SessionLog::create(&self.sessions_dir, &std::env::current_dir()?)?,
                 Vec::new(),
@@ -1309,6 +1315,37 @@ mod tests {
                 let other = v1::ListSessionsRequest::new().cwd(dir.join("empty"));
                 let none = cx.send_request(other).block_task().await?;
                 assert!(none.sessions.is_empty());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loading_an_open_session_again_on_the_same_connection_succeeds() {
+        let dir = temp_dir("reload");
+        let server = fake_server().await;
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |_note: v1::SessionNotification, _cx| Ok(()),
+                on_receive_notification!(),
+            )
+            .connect_with(harness(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let id = session.session_id.to_string();
+                for _ in 0..2 {
+                    cx.send_request(v1::LoadSessionRequest::new(id.clone(), &dir))
+                        .block_task()
+                        .await?;
+                }
                 Ok(())
             });
         tokio::time::timeout(Duration::from_secs(20), run)
