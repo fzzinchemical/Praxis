@@ -250,6 +250,53 @@ hostile content: model output, repository files and tool results are all untrust
   - **Done when:** A native test of `inside` (or of the session setup) covers a symlinked root.
   - **If we skip it:** Unsaved edits are quietly ignored for some users.
 
+## Follow-ups (gaps left after the fixes)
+
+- [ ] **F1. Item 9's notification-failure path has no test**
+  (`crates/harness-cli/src/acp.rs`, prompt handler)
+  - **Problem:** When `send_notification` fails, the turn is now cancelled and the loop keeps
+    draining events. No test reaches this path, because closing the connection mid-turn has no
+    seam in the test client yet.
+  - **Done when:** A test drops the client connection during a turn and shows that the agent
+    goes back to its slot.
+
+- [ ] **F2. Item 9's panic test bypasses the protocol**
+  (`crates/harness-cli/src/acp.rs`, `a_crashed_turn_does_not_leave_the_next_prompt_refused_as_running`)
+  - **Problem:** The test calls `settle_turn` directly with a `JoinError`. It does not prove that
+    the prompt handler sends the client an error, because a turn can't be made to panic through
+    `session/prompt`.
+  - **Done when:** A test makes a turn panic through `session/prompt` and gets an error response.
+
+- [ ] **F3. Tests for items 3, 9, 10 and 11 were never seen failing on the old code**
+  - **Problem:** Each fix and its test went in together, or the first test run failed to compile.
+    So nothing shows that these tests catch the original bug.
+  - **Done when:** Each test fails with its fix reverted (check locally, no commit needed), and
+    the result is noted here.
+
+- [ ] **F4. Checkpoint copies and session logs from earlier runs are never deleted**
+  (`crates/harness-core/src/tools/checkpoint.rs`, `crates/harness-core/src/session.rs`)
+  - **Problem:** Item 13 keeps copies only for the last 20 turns, but only within one process. A
+    resumed session starts with an empty turn list, so copies from earlier runs stay on disk. Logs
+    and `sessions/<id>/` folders are never deleted (marked with a `shortcut:` comment).
+  - **Fix:** On `checkpoint_into`, delete copies numbered below `highest - CHECKPOINT_TURNS`, or
+    expire whole session folders by age.
+  - **Done when:** A test resumes a session whose folder holds more than 20 old copies, and the
+    oldest ones are gone after the next turn.
+
+- [ ] **F5. A failed `/undo` doesn't say which files it did restore**
+  (`crates/harness-core/src/tools/checkpoint.rs` `undo`)
+  - **Problem:** When some restores fail, `undo` returns only the error, which names the failed
+    files. The user isn't told which files were restored.
+  - **Done when:** The error (or the CLI and ACP message) lists the restored files too.
+
+- [ ] **F6. A hooks test may hang under heavy load**
+  (`crates/harness-core/src/hooks.rs` tests)
+  - **Problem:** During the parallel fix work (load average about 100), one `cargo test -p
+    harness-core` run seemed to hang in a hooks test, and passed on a rerun. This was not
+    investigated. It may be a timing-sensitive timeout test.
+  - **Done when:** The test is found and made deterministic, or a stress run (for example 20
+    runs under `stress`) shows that it doesn't hang.
+
 ---
 
 **Verdict:** Fix 1 first (it escapes the sandbox). Then fix 2 and 3, because together they make
