@@ -9,8 +9,8 @@ use praxis_core::agent::{
 };
 use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
-use praxis_core::provider::Message;
-use praxis_core::session::{self, SessionLog};
+use praxis_core::provider::{Message, ToolCall};
+use praxis_core::session::{self, Entry, SessionLog};
 use praxis_core::tools::EditorReader;
 use praxis_core::tools::{FileDiff, ToolOutput};
 use serde_json::{Value, json};
@@ -125,14 +125,14 @@ impl<M: Models> Server<M> {
         resume: Option<&str>,
         client_cwd: &Path,
         cx: &ConnectionTo<Client>,
-    ) -> anyhow::Result<(String, Vec<Message>, String)> {
+    ) -> anyhow::Result<(String, Vec<Entry>, String)> {
         let (log, prior) = match resume {
             Some(id) => {
                 // The old slot holds the log's lock, so release it before reopening the file.
                 if let Some(old) = self.sessions().remove(id) {
                     old.cancel.cancel();
                 }
-                SessionLog::resume(&self.sessions_dir, id)?
+                SessionLog::resume_entries(&self.sessions_dir, id)?
             }
             None => (
                 SessionLog::create(&self.sessions_dir, &std::env::current_dir()?)?,
@@ -153,7 +153,12 @@ impl<M: Models> Server<M> {
                 client_cwd.to_path_buf(),
             ));
         }
-        let agent = Some(agent.with_session(log, prior.clone()));
+        let main = prior
+            .iter()
+            .filter(|e| e.subagent_of.is_none())
+            .map(|e| e.message.clone())
+            .collect();
+        let agent = Some(agent.with_session(log, main));
         let cancel = CancellationToken::new();
         let model = self.models.default_key();
         let slot = Slot {
@@ -759,8 +764,30 @@ fn subagent_update(
     }
 }
 
-/// The updates a live turn would have sent for one logged message, so a loaded chat looks the same.
-fn replay(message: Message) -> Vec<v1::SessionUpdate> {
+/// The updates a live turn would have sent for one logged entry, so a loaded chat looks the same.
+fn replay(entry: Entry) -> Vec<v1::SessionUpdate> {
+    let Some(parent) = entry.subagent_of else {
+        return replay_message(entry.message);
+    };
+    // A subagent's calls replay as its live events do. Its text is left out: live, it becomes the
+    // Agent call's content, and the Agent call's result already carries the reply.
+    let events: Vec<AgentEvent> = match entry.message {
+        Message::Assistant { tool_calls, .. } => {
+            tool_calls.into_iter().map(replayed_call).collect()
+        }
+        Message::Tool {
+            tool_call_id,
+            content,
+        } => vec![replayed_result(tool_call_id, content)],
+        Message::System { .. } | Message::User { .. } => Vec::new(),
+    };
+    events
+        .into_iter()
+        .filter_map(|event| subagent_update(&parent, event, &mut HashMap::new()))
+        .collect()
+}
+
+fn replay_message(message: Message) -> Vec<v1::SessionUpdate> {
     match message {
         Message::User { content } => vec![v1::SessionUpdate::UserMessageChunk(chunk(content))],
         Message::Assistant {
@@ -771,33 +798,43 @@ fn replay(message: Message) -> Vec<v1::SessionUpdate> {
                 .map(|text| v1::SessionUpdate::AgentMessageChunk(chunk(text)))
                 .into_iter()
                 .collect();
-            for call in tool_calls {
-                let input = serde_json::from_str::<Value>(&call.arguments).ok();
-                let title = title(&call.name, input.as_ref());
-                updates.extend(update(AgentEvent::ToolStarted {
-                    id: call.id,
-                    name: call.name,
-                    input: input.unwrap_or(Value::Null),
-                    title,
-                }));
-            }
+            updates.extend(
+                tool_calls
+                    .into_iter()
+                    .flat_map(|call| update(replayed_call(call))),
+            );
             updates
         }
-        // shortcut: the log keeps no error flag, so every replayed result shows as completed.
         Message::Tool {
             tool_call_id,
             content,
-        } => update(AgentEvent::ToolFinished {
-            id: tool_call_id,
-            outcome: ToolOutcome::Completed(ToolOutput {
-                content,
-                is_error: false,
-                structured: Value::Null,
-            }),
-        })
-        .into_iter()
-        .collect(),
+        } => update(replayed_result(tool_call_id, content))
+            .into_iter()
+            .collect(),
         Message::System { .. } => Vec::new(),
+    }
+}
+
+fn replayed_call(call: ToolCall) -> AgentEvent {
+    let input = serde_json::from_str::<Value>(&call.arguments).ok();
+    let title = title(&call.name, input.as_ref());
+    AgentEvent::ToolStarted {
+        id: call.id,
+        name: call.name,
+        input: input.unwrap_or(Value::Null),
+        title,
+    }
+}
+
+// shortcut: the log keeps no error flag, so every replayed result shows as completed.
+fn replayed_result(id: ToolCallId, content: String) -> AgentEvent {
+    AgentEvent::ToolFinished {
+        id,
+        outcome: ToolOutcome::Completed(ToolOutput {
+            content,
+            is_error: false,
+            structured: Value::Null,
+        }),
     }
 }
 
@@ -1118,6 +1155,12 @@ mod tests {
         );
         // The permission names the subagent.
         assert_eq!(asks, [r#""general: Write""#]);
+        // The log keeps the subagent's call under the Agent call, so a reload can nest it.
+        let logs = std::fs::read_dir(dir.join("sessions")).unwrap();
+        let log = logs.map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap());
+        let logged = log.collect::<String>();
+        assert!(logged.contains(r#""subagent_of":"c0""#), "{logged}");
+        assert!(!logged.contains(r#""subagent_of":"c1""#), "{logged}");
     }
 
     /// Stands in for a turn whose task panicked, so its agent never comes back.
@@ -1689,6 +1732,88 @@ mod tests {
                 r#""agent_message_chunk" done"#,
                 "loaded"
             ]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn loading_a_session_nests_a_subagents_calls_under_its_agent_call() {
+        let dir = temp_dir("load-subagent");
+        let mut log = SessionLog::create(&dir.join("sessions"), &dir).unwrap();
+        let id = log.id().to_owned();
+        let call = |id: &str, name: &str| ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: r#"{"file_path":"sub.txt","subagent_type":"general"}"#.into(),
+        };
+        log.append(&Message::Assistant {
+            content: None,
+            tool_calls: vec![call("c0", "Agent")],
+        })
+        .unwrap();
+        log.append_subagent(
+            "c0",
+            &Message::Assistant {
+                content: Some("inner text".into()),
+                tool_calls: vec![call("c1", "Write")],
+            },
+        )
+        .unwrap();
+        log.append_subagent(
+            "c0",
+            &Message::Tool {
+                tool_call_id: "c1".into(),
+                content: "written".into(),
+            },
+        )
+        .unwrap();
+        log.append(&Message::Tool {
+            tool_call_id: "c0".into(),
+            content: "found it".into(),
+        })
+        .unwrap();
+        drop(log);
+
+        let server = fake_server().await;
+        let updates = Log::default();
+        let on_update = updates.clone();
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    push(&on_update, to_value(&note.update).unwrap().to_string());
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(praxis(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                cx.send_request(v1::LoadSessionRequest::new(id.clone(), &dir))
+                    .block_task()
+                    .await?;
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let updates: Vec<Value> = updates
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|u| serde_json::from_str(u).unwrap())
+            .collect();
+        let nested = |id: &str| {
+            updates
+                .iter()
+                .find(|u| u["toolCallId"] == id)
+                .map(|u| u["_meta"]["praxis"]["parentToolCallId"].clone())
+        };
+        assert_eq!(nested("c0"), Some(Value::Null), "{updates:?}");
+        assert_eq!(nested("c1"), Some(json!("c0")), "{updates:?}");
+        assert!(
+            !updates.iter().any(|u| u["content"]["text"] == "inner text"),
+            "{updates:?}"
         );
     }
 

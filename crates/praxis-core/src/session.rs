@@ -62,26 +62,38 @@ impl SessionLog {
         Ok(Self { id, file })
     }
 
-    /// Opens an existing log and returns its messages. A partial last line, left by a crash, is
-    /// dropped from the file too, so the next record starts on a line of its own.
+    /// Opens an existing log and returns its main messages, without subagent entries.
     pub fn resume(dir: &Path, id: &str) -> io::Result<(Self, Vec<Message>)> {
+        let (log, entries) = Self::resume_entries(dir, id)?;
+        let messages = entries
+            .into_iter()
+            .filter(|e| e.subagent_of.is_none())
+            .map(|e| e.message)
+            .collect();
+        Ok((log, messages))
+    }
+
+    /// Opens an existing log and returns every entry in order, subagent ones included. A partial
+    /// last line, left by a crash, is dropped from the file too, so the next record starts on a
+    /// line of its own.
+    pub fn resume_entries(dir: &Path, id: &str) -> io::Result<(Self, Vec<Entry>)> {
         let file = open(dir, id, false)?;
         lock(&file, id)?;
         let text = fs::read_to_string(path(dir, id)?)?;
         let complete = text.rfind('\n').map_or(0, |i| i + 1);
-        let mut messages = Vec::new();
+        let mut entries = Vec::new();
         for (i, line) in text[..complete].lines().enumerate() {
             // Logs from before the header existed have none, so only the first line can be one.
             if i == 0 && serde_json::from_str::<HeaderLine>(line).is_ok() {
                 continue;
             }
-            messages.push(serde_json::from_str(line).map_err(io::Error::other)?);
+            entries.push(serde_json::from_str(line).map_err(io::Error::other)?);
         }
         if complete < text.len() {
             file.set_len(complete as u64)?;
         }
         let id = id.to_owned();
-        Ok((Self { id, file }, messages))
+        Ok((Self { id, file }, entries))
     }
 
     /// Wraps a file opened elsewhere, such as `/dev/full` to test write failures.
@@ -97,10 +109,45 @@ impl SessionLog {
     /// shortcut: logs are never deleted or trimmed, so disk use grows with every turn. Upgrade with a per-user size or age cap.
     /// shortcut: an ended session's checkpoint copies are never deleted (only undo and turn expiry remove them). Upgrade by sweeping the checkpoint folder of sessions that no longer exist.
     pub fn append(&mut self, message: &Message) -> io::Result<()> {
-        let mut line = serde_json::to_string(message).map_err(io::Error::other)?;
+        self.write_line(&EntryRef {
+            subagent_of: None,
+            message,
+        })
+    }
+
+    /// Writes a message a subagent produced under the `Agent` call `parent`. Resuming keeps it
+    /// out of the main history, and replay nests it under that call.
+    pub fn append_subagent(&mut self, parent: &str, message: &Message) -> io::Result<()> {
+        self.write_line(&EntryRef {
+            subagent_of: Some(parent),
+            message,
+        })
+    }
+
+    fn write_line(&mut self, entry: &impl Serialize) -> io::Result<()> {
+        let mut line = serde_json::to_string(entry).map_err(io::Error::other)?;
         line.push('\n');
         self.file.write_all(line.as_bytes())
     }
+}
+
+/// One logged message. Lines from before subagent entries existed have no `subagent_of`.
+#[derive(Debug, Deserialize)]
+pub struct Entry {
+    /// The `Agent` tool call whose subagent produced this message, if any.
+    #[serde(default)]
+    pub subagent_of: Option<String>,
+    #[serde(flatten)]
+    pub message: Message,
+}
+
+/// The borrowed form of [`Entry`] written to the log, leaving the field out when it is unset.
+#[derive(Serialize)]
+struct EntryRef<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subagent_of: Option<&'a str>,
+    #[serde(flatten)]
+    message: &'a Message,
 }
 
 /// Lists the sessions logged for `workspace`, newest activity first. It reads each log's header,

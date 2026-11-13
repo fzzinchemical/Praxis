@@ -311,3 +311,33 @@ fn setting_a_folder_refuses_ids_outside_the_session_path_rules() {
     assert!(session::set_folder(&sessions, "", "Work").is_err());
     assert!(!sessions.join("folders.json").exists());
 }
+
+#[test]
+fn a_subagent_entry_stays_out_of_the_main_history_but_keeps_its_parent() {
+    let dir = dir();
+    let mut log = SessionLog::create(&dir, &workspace()).unwrap();
+    let id = log.id().to_owned();
+    log.append(&user("go")).unwrap();
+    log.append_subagent("c0", &user("inner")).unwrap();
+    drop(log);
+    let (_, entries) = SessionLog::resume_entries(&dir, &id).unwrap();
+    let parents: Vec<Option<&str>> = entries.iter().map(|e| e.subagent_of.as_deref()).collect();
+    assert_eq!(parents, [None, Some("c0")]);
+    let (_, messages) = SessionLog::resume(&dir, &id).unwrap();
+    assert_eq!(contents(&messages), ["go"]);
+}
+
+#[test]
+fn a_log_line_written_before_the_subagent_field_still_loads() {
+    let dir = dir();
+    let log = SessionLog::create(&dir, &workspace()).unwrap();
+    let id = log.id().to_owned();
+    drop(log);
+    let path = dir.join(format!("{id}.jsonl"));
+    let mut text = fs::read_to_string(&path).unwrap();
+    text.push_str("{\"role\":\"user\",\"content\":\"old\"}\n");
+    fs::write(&path, text).unwrap();
+    let (_, entries) = SessionLog::resume_entries(&dir, &id).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].subagent_of, None);
+}

@@ -603,7 +603,7 @@ The widening items so far are `permissions.allow`, `agent.auto_load = true` and 
 
 ### Sessions
 
-- `~/.local/share/praxis/sessions/<id>.jsonl`: a header line, then one JSON record per line, append-only, mode `0600`. The header is `{"session":{"workspace":"<canonical path>","started":<Unix seconds, UTC>}}`. Tolerate a truncated last line on load, since a crash can cause one.
+- `~/.local/share/praxis/sessions/<id>.jsonl`: a header line, then one JSON record per line, append-only, mode `0600`. The header is `{"session":{"workspace":"<canonical path>","started":<Unix seconds, UTC>}}`. Tolerate a truncated last line on load, since a crash can cause one. A subagent's assistant and tool records carry `subagent_of: "<Agent call id>"`, which is absent on the parent's own lines (older logs have none). Resume keeps those lines out of the model's history; replay nests them under the `Agent` call (T10.11).
 - Session index: listing a workspace's sessions reads each log's header, its mtime (last activity, since logs only grow) and its first user line (the title, trimmed), newest first. Logs with no readable header, or a truncated one, are skipped and belong to no workspace.
 - Folders (T10.5): `<dir>/folders.json` maps session id to folder name, a JSON object beside the logs; the logs never change. A session in no folder has no entry. Names are trimmed, at most 64 characters, with no control characters; an empty name removes the entry. A missing or corrupt file reads as no folders. Writes go through a temp file and a rename. Deleting a session removes its entry. The listing carries `folder` (null when unfiled).
 - Resume (`--resume <id>`) rebuilds history from the log; `--resume` with no ID picks the newest session of the current workspace. The system prefix is rebuilt fresh, not logged. A failed log write stops the turn (`LogFailed`) before another request or tool runs.
@@ -803,7 +803,7 @@ sequenceDiagram
 | `Compaction` | `compaction_update`, if the client has `session.compaction` |
 | `Subagent` (T10.8) | its `TextDelta` becomes `tool_call_update` content on the `Agent` call (the text so far, replacing the last); its `ToolStarted`, `ToolFinished` and `PermissionRequest` go out as above with `_meta.praxis.parentToolCallId` naming that call; a permission title is `<subagent type>: <tool title>` |
 
-`_meta.praxis` carries the praxis-specific fields a plain client ignores: `subagent` (the subagent's type) on an `Agent` `tool_call`, and `parentToolCallId` on a subagent's tool call or update. Plain ACP clients see a flat list, with the subagent's text only on its `Agent` call.
+`_meta.praxis` carries the praxis-specific fields a plain client ignores: `subagent` (the subagent's type) on an `Agent` `tool_call`, and `parentToolCallId` on a subagent's tool call or update. On `session/load`, a logged subagent record replays with the same `parentToolCallId`, so a reload nests its calls as a live turn does. Plain ACP clients see a flat list, with the subagent's text only on its `Agent` call.
 
 Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`.
 

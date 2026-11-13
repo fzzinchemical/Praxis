@@ -336,7 +336,7 @@ impl Agent {
     /// returns its last reply. Sequential only: a subagent can't delegate further.
     // Boxed with an explicit `Send` type, since the child's turn reaches this function again.
     fn delegate<'a>(
-        &'a self,
+        &'a mut self,
         parent: ToolCallId,
         input: &'a Value,
         turn: &'a Turn<'_>,
@@ -396,12 +396,13 @@ impl Agent {
             let cancel = turn.cancel.clone();
             let run = async move {
                 child.run_turn(prompt, &tx, cancel).await;
-                child.history.into_iter().rev().find_map(|m| match m {
+                let reply = child.history.iter().rev().find_map(|m| match m {
                     Message::Assistant {
                         content: Some(c), ..
-                    } => Some(c),
+                    } => Some(c.clone()),
                     _ => None,
-                })
+                });
+                (reply, child.history)
             };
             // The parent's front end sees the subagent's text, tool calls and permission prompts,
             // tagged with the `Agent` call, but not its token counts, which would read as the parent's.
@@ -427,7 +428,14 @@ impl Agent {
                 }
                 ended
             };
-            let (reply, ended) = tokio::join!(run, forward);
+            let ((reply, history), ended) = tokio::join!(run, forward);
+            // Logged for replay only: the parent's own history must not gain the child's messages.
+            for message in history
+                .iter()
+                .filter(|m| matches!(m, Message::Assistant { .. } | Message::Tool { .. }))
+            {
+                self.log_subagent(&parent, message);
+            }
             match (reply, ended) {
                 (Some(reply), StopReason::EndTurn) => ToolOutput {
                     content: reply,
@@ -573,6 +581,16 @@ impl Agent {
             self.log_error = Some(error);
         }
         self.history.push(message);
+    }
+
+    /// Logs a message a subagent produced under the `Agent` call `parent`, without adding it to history.
+    fn log_subagent(&mut self, parent: &ToolCallId, message: &Message) {
+        if let Some(log) = &mut self.session
+            && self.log_error.is_none()
+            && let Err(error) = log.append_subagent(parent, message)
+        {
+            self.log_error = Some(error);
+        }
     }
 
     /// Calls rejected as unreadable or invalid in this session, for the scoreboard (SPEC §5.3).
