@@ -551,7 +551,7 @@ flowchart TB
   - **Do:** a JSON output mode for `harness plugin list` with each plugin's name, source, enabled state and "can run" list, for the extension to read.
   - **Done when:** a CLI test parses the output as JSON and checks the fields against the text output for the same fixture.
 
-- [ ] **T5.17 Plugins tree view in VS Code** (§11) · *Should*
+- [x] **T5.17 Plugins tree view in VS Code** (§11) · *Should*
   - **Needs:** T5.16.
   - **Do:** a tree view listing installed plugins, with an enable/disable toggle (enabling first shows the "can run" list in a modal), remove with confirm, and an install command taking a path or git URL. Shells out to the CLI; no plugin logic in the extension.
   - **Done when:** native tests cover mapping `plugin list --json` to tree items; the checklist item "enable a plugin, see its can-run list, confirm, then remove it" passes; and no action runs without its confirm step.

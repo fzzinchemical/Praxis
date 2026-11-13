@@ -13,20 +13,40 @@
       { "command": "harness.open", "title": "Harness: Open Chat" },
       { "command": "harness.newSession", "title": "Harness: New Session", "icon": "$(add)" },
       { "command": "harness.openSession", "title": "Harness: Open Session" },
-      { "command": "harness.refreshSessions", "title": "Harness: Refresh Sessions", "icon": "$(refresh)" }
+      { "command": "harness.refreshSessions", "title": "Harness: Refresh Sessions", "icon": "$(refresh)" },
+      { "command": "harness.enablePlugin", "title": "Harness: Enable Plugin" },
+      { "command": "harness.disablePlugin", "title": "Harness: Disable Plugin" },
+      { "command": "harness.removePlugin", "title": "Harness: Remove Plugin" },
+      { "command": "harness.installPlugin", "title": "Harness: Install Plugin", "icon": "$(add)" },
+      { "command": "harness.refreshPlugins", "title": "Harness: Refresh Plugins", "icon": "$(refresh)" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "harness", "title": "Harness", "icon": "media/harness.svg" }]
     },
     "views": {
-      "harness": [{ "id": "harness.sessions", "name": "Sessions" }]
+      "harness": [
+        { "id": "harness.sessions", "name": "Sessions" },
+        { "id": "harness.plugins", "name": "Plugins" }
+      ]
     },
     "menus": {
       "view/title": [
         { "command": "harness.newSession", "when": "view == harness.sessions", "group": "navigation" },
-        { "command": "harness.refreshSessions", "when": "view == harness.sessions", "group": "navigation" }
+        { "command": "harness.refreshSessions", "when": "view == harness.sessions", "group": "navigation" },
+        { "command": "harness.installPlugin", "when": "view == harness.plugins", "group": "navigation" },
+        { "command": "harness.refreshPlugins", "when": "view == harness.plugins", "group": "navigation" }
       ],
-      "commandPalette": [{ "command": "harness.openSession", "when": "false" }]
+      "view/item/context": [
+        { "command": "harness.enablePlugin", "when": "view == harness.plugins && viewItem == plugin-disabled", "group": "1_state" },
+        { "command": "harness.disablePlugin", "when": "view == harness.plugins && viewItem == plugin-enabled", "group": "1_state" },
+        { "command": "harness.removePlugin", "when": "view == harness.plugins && viewItem =~ /^plugin-/", "group": "2_remove" }
+      ],
+      "commandPalette": [
+        { "command": "harness.openSession", "when": "false" },
+        { "command": "harness.enablePlugin", "when": "false" },
+        { "command": "harness.disablePlugin", "when": "false" },
+        { "command": "harness.removePlugin", "when": "false" }
+      ]
     },
     "configuration": {
       "title": "Harness",

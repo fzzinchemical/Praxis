@@ -3,9 +3,11 @@
 //! `harness.open` opens a chat panel. Once its wasm reports ready, `harness acp` is spawned in the
 //! first workspace folder; prompts, stop and permission answers go to it, typed updates come back.
 
+mod plugins;
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
+use plugins::{PluginItem, Verb, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Client, Context, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection, SessionItem,
 };
@@ -83,6 +85,10 @@ extern "C" {
     fn on_did_change_active_text_editor(listener: &Closure<dyn FnMut(JsValue)>) -> Disposable;
     #[wasm_bindgen(js_namespace = window, js_name = showOpenDialog)]
     fn show_open_dialog(options: &Object) -> Promise;
+    #[wasm_bindgen(js_namespace = window, js_name = showWarningMessage)]
+    fn show_warning_message(message: &str, options: &JsValue, button: &str) -> Promise;
+    #[wasm_bindgen(js_namespace = window, js_name = showInputBox)]
+    fn show_input_box(options: &JsValue) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = createTreeView)]
     fn create_tree_view(id: &str, options: &JsValue) -> JsValue;
     #[wasm_bindgen(js_namespace = languages, js_name = getDiagnostics)]
@@ -265,6 +271,25 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     };
     create_sessions_view(&output);
     refresh_sessions();
+    create_plugins_view(&output);
+    refresh_plugins();
+    command(&context, "harness.enablePlugin", |item| {
+        if let Some(name) = plugin_name(&item) {
+            enable_plugin(name);
+        }
+    })?;
+    command(&context, "harness.disablePlugin", |item| {
+        if let Some(name) = plugin_name(&item) {
+            run_action(verb_args(Verb::Disable, &name));
+        }
+    })?;
+    command(&context, "harness.removePlugin", |item| {
+        if let Some(name) = plugin_name(&item) {
+            remove_plugin(name);
+        }
+    })?;
+    command(&context, "harness.installPlugin", |_| install_plugin())?;
+    command(&context, "harness.refreshPlugins", |_| refresh_plugins())?;
     let open = panel.clone();
     command(&context, "harness.open", move |_| open(None))?;
     let new_session = panel.clone();
@@ -817,10 +842,6 @@ fn listener(state: &Shared, handle: fn(&Shared, String)) -> Closure<dyn FnMut(Js
 /// `harness acp` in `cwd`. `harness.binaryPath` is machine-scoped in package.json, so a repository
 /// can't redirect it.
 fn spawn_acp(cwd: &str) -> Result<ChildProcess, JsValue> {
-    let binary = get_configuration("harness")
-        .get("binaryPath")
-        .as_string()
-        .unwrap_or_else(|| "harness".to_owned());
     let options = Object::new();
     Reflect::set(&options, &"cwd".into(), &cwd.into())?;
     let args = Array::new();
@@ -828,7 +849,15 @@ fn spawn_acp(cwd: &str) -> Result<ChildProcess, JsValue> {
         args.push(&arg.into());
     }
     args.push(&"acp".into());
-    spawn(&binary, &args, &options)
+    spawn(&binary_path(), &args, &options)
+}
+
+/// `harness.binaryPath`, the CLI that the sessions and plugins views shell out to.
+fn binary_path() -> String {
+    get_configuration("harness")
+        .get("binaryPath")
+        .as_string()
+        .unwrap_or_else(|| "harness".to_owned())
 }
 
 /// The sessions view. Listing runs in its own `harness acp` child, independent of the chat panels.
@@ -1046,6 +1075,217 @@ fn refresh_sessions() {
             sidebar.listing = Some(listing);
         }
     });
+}
+
+/// The Plugins view: the last `plugin list --json`, redrawn after each action.
+struct Plugins {
+    emitter: EventEmitter,
+    output: OutputChannel,
+    items: Vec<PluginItem>,
+}
+
+thread_local! {
+    static PLUGINS: RefCell<Option<Plugins>> = const { RefCell::new(None) };
+}
+
+/// Registers the Plugins view, same shape as the sessions view.
+fn create_plugins_view(output: &OutputChannel) {
+    let emitter = EventEmitter::new();
+    let provider = node(&[
+        ("onDidChangeTreeData", emitter.event()),
+        ("getTreeItem", callback(|item| item)),
+        ("getChildren", callback(|_| plugin_children().into())),
+    ]);
+    // The view lives as long as the host; the returned handle needs no keeping.
+    let _ = create_tree_view("harness.plugins", &node(&[("treeDataProvider", provider)]));
+    PLUGINS.with(|plugins| {
+        *plugins.borrow_mut() = Some(Plugins {
+            emitter,
+            output: output.clone(),
+            items: Vec::new(),
+        });
+    });
+}
+
+fn plugin_children() -> Array {
+    let mut nodes: Vec<JsValue> = PLUGINS.with(|plugins| {
+        plugins
+            .borrow()
+            .as_ref()
+            .map(|plugins| plugins.items.iter().map(plugin_node).collect())
+            .unwrap_or_default()
+    });
+    if nodes.is_empty() {
+        nodes.push(node(&[(
+            "label",
+            JsValue::from_str("No plugins installed"),
+        )]));
+    }
+    let array = Array::new();
+    for node in &nodes {
+        array.push(node);
+    }
+    array
+}
+
+/// A plugin as a tree item. Its id is the plugin name, which the context-menu commands read back.
+/// The context value picks the menu: enable only for disabled plugins, disable only for enabled ones.
+fn plugin_node(item: &PluginItem) -> JsValue {
+    let context = if item.enabled {
+        "plugin-enabled"
+    } else {
+        "plugin-disabled"
+    };
+    node(&[
+        ("id", JsValue::from_str(&item.name)),
+        ("label", JsValue::from_str(&item.name)),
+        ("description", JsValue::from_str(&item.description())),
+        ("contextValue", JsValue::from_str(context)),
+    ])
+}
+
+fn publish_plugins(items: Vec<PluginItem>) {
+    let emitter = PLUGINS.with(|plugins| {
+        plugins.borrow_mut().as_mut().map(|plugins| {
+            plugins.items = items;
+            plugins.emitter.clone()
+        })
+    });
+    // Fired after the borrow ends: VS Code may call `getChildren` synchronously.
+    if let Some(emitter) = emitter {
+        emitter.fire(&JsValue::UNDEFINED);
+    }
+}
+
+fn plugin_log(text: &str) {
+    PLUGINS.with(|plugins| {
+        if let Some(plugins) = plugins.borrow().as_ref() {
+            plugins.output.append(text);
+        }
+    });
+}
+
+/// The plugin a tree click or context-menu command was run on. From the palette the argument is absent.
+fn plugin_name(item: &JsValue) -> Option<String> {
+    Reflect::get(item, &"id".into()).ok()?.as_string()
+}
+
+/// Runs `harness <args>` and hands its result to `then` once it exits: stdout on exit 0, stderr otherwise.
+fn run_cli(args: Vec<String>, then: impl FnOnce(Result<String, String>) + 'static) {
+    let argv = Array::new();
+    for arg in &args {
+        argv.push(&arg.as_str().into());
+    }
+    let child = match spawn(&binary_path(), &argv, &Object::new()) {
+        Ok(child) => child,
+        Err(error) => return then(Err(format!("spawn failed: {error:?}"))),
+    };
+    child.stdout().set_encoding("utf8");
+    child.stderr().set_encoding("utf8");
+    let stdout = Rc::new(RefCell::new(String::new()));
+    let stderr = Rc::new(RefCell::new(String::new()));
+    let (out_sink, err_sink) = (stdout.clone(), stderr.clone());
+    let on_stdout = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
+        out_sink.borrow_mut().push_str(&text_of(chunk));
+    });
+    let on_stderr = Closure::<dyn FnMut(JsValue)>::new(move |chunk: JsValue| {
+        err_sink.borrow_mut().push_str(&text_of(chunk));
+    });
+    child.stdout().on("data", on_stdout.as_ref());
+    child.stderr().on("data", on_stderr.as_ref());
+    let on_error = Closure::<dyn FnMut(JsValue)>::new(|error: JsValue| {
+        plugin_log(&format!("plugins: harness: {}\n", text_of(error)));
+    });
+    child.on_child("error", on_error.as_ref());
+    let on_close = Closure::once_into_js(move |code: JsValue| {
+        let result = if code.as_f64() == Some(0.0) {
+            Ok(stdout.borrow().clone())
+        } else {
+            Err(stderr.borrow().clone())
+        };
+        then(result);
+    });
+    child.on_child("close", &on_close);
+    // shortcut: each run leaks its listeners until the host exits; plugin actions are rare, so the leak stays small.
+    on_stdout.forget();
+    on_stderr.forget();
+    on_error.forget();
+}
+
+/// Re-reads the plugin list from the CLI and redraws the view.
+fn refresh_plugins() {
+    run_cli(list_args(), |result| {
+        match result.and_then(|json| plugin_items(&json)) {
+            Ok(items) => publish_plugins(items),
+            Err(error) => plugin_log(&format!("plugins: list failed: {error}\n")),
+        }
+    });
+}
+
+/// Runs a CLI action, then refreshes the view whatever its outcome.
+fn run_action(args: Vec<String>) {
+    run_cli(args, |result| {
+        if let Err(error) = result {
+            plugin_log(&format!("plugins: {error}\n"));
+        }
+        refresh_plugins();
+    });
+}
+
+/// Shows a modal with one button and runs `on_confirm` only if that button is picked.
+fn confirm(message: &str, button: &'static str, on_confirm: impl FnOnce() + 'static) {
+    let options = node(&[("modal", JsValue::TRUE)]);
+    let on_choice = Closure::once_into_js(move |choice: JsValue| {
+        if choice.as_string().as_deref() == Some(button) {
+            on_confirm();
+        }
+    });
+    let _ = show_warning_message(message, &options, button)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_choice);
+}
+
+/// Shows what the plugin can run and enables it only if the user confirms.
+fn enable_plugin(name: String) {
+    let prompt = PLUGINS.with(|plugins| {
+        plugins.borrow().as_ref().and_then(|plugins| {
+            plugins
+                .items
+                .iter()
+                .find(|item| item.name == name)
+                .map(PluginItem::enable_prompt)
+        })
+    });
+    match prompt {
+        Some(prompt) => confirm(&prompt, "Enable", move || {
+            run_action(verb_args(Verb::Enable, &name));
+        }),
+        None => plugin_log(&format!("plugins: {name} is not listed\n")),
+    }
+}
+
+fn remove_plugin(name: String) {
+    let message = format!("Remove {name}? Its data is kept.");
+    confirm(&message, "Remove", move || {
+        run_action(verb_args(Verb::Remove, &name));
+    });
+}
+
+/// Asks for a path or git URL and installs it disabled. Cancel or blank input does nothing.
+fn install_plugin() {
+    let options = node(&[(
+        "prompt",
+        JsValue::from_str("Path to a plugin, or a git URL"),
+    )]);
+    let on_input = Closure::once_into_js(move |input: JsValue| {
+        let source = input.as_string().map(|text| text.trim().to_owned());
+        if let Some(source) = source.filter(|text| !text.is_empty()) {
+            run_action(install_args(&source));
+        }
+    });
+    let _ = show_input_box(&options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_input);
 }
 
 #[cfg(test)]
