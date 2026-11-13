@@ -558,3 +558,45 @@ and changed MCP tools both stay inactive.
 `scripts/prove-evals`, `praxis-vscode/src/plugins.rs`. `./scripts/verify` was not run, and none
 of the round 3 findings were reproduced with a test. The BOM and EOL behaviour in item 22 is
 VS Code's documented text model behaviour; it was not tried in a running editor.
+
+# Round 4: beta 1.2 (2026-11-13)
+
+Round 4 audits everything added since `v1.1.0-beta` (`git diff v1.1.0-beta..633a688`): subagent
+events and stops, session folders and delete, full-access mode, plugin details, the command menu.
+Same rules: one item per branch, write the test first, tick the box here.
+
+## Must fix
+
+- [ ] **25. A subagent's tool call can get the same id as the parent's `Agent` call**
+  (`crates/praxis-core/src/agent/mod.rs` `run_turn`, ids `text-call-{n}-{i}` and `constrained-{n}`)
+  - **What this is:** Calls recovered from text, or forced by a constrained tool, get an id built
+    from the agent's history length. Small local models (ADR 0002) take this path often.
+  - **Problem:** A subagent starts with a short history of its own, so its first recovered call
+    can be `text-call-2-0`, the same id as the parent's `Agent` call. The panel keys tool blocks by
+    id, so the child replaces the `Agent` block: its summary, Stop button and changed files break,
+    and replay nests the calls wrongly.
+  - **Fix:** Give the child agent the parent's call id as an id prefix (`"{parent}/"`), used by
+    both id formats. The parent's prefix stays empty, so its ids don't change.
+  - **Done when:** a test in `tests/agent.rs` runs a subagent whose calls are recovered from text
+    under a recovered `Agent` call, and every subagent `ToolStarted` id differs from the parent's.
+
+## Should fix
+
+- [ ] **26. Every word a subagent writes resends its whole text so far**
+  (`crates/praxis-cli/src/acp.rs` `subagent_update`)
+  - **What this is:** A subagent's text shows on its `Agent` call. Each `TextDelta` sends a
+    `tool_call_update` with all text so far, because ACP content replaces, not appends.
+  - **Problem:** The bytes sent grow with the square of the reply. A subagent writing 8 KB in
+    2,000 deltas sends about 8 MB over stdio, and the panel redraws the block 2,000 times.
+  - **Fix:** Send the update only when a delta holds a line break. The final reply still arrives
+    as the `Agent` call's result, so nothing is lost.
+  - **Done when:** an ACP test streams a subagent reply in many one-word deltas over two lines
+    and sees at most two content updates for the `Agent` call.
+
+**Not fixed, by decision:** replay shows every tool result as completed, because the log's
+`Message::Tool` has no error flag; the fix needs a log format change. `folders.json` is
+read-modified-written without a lock, so two windows moving sessions in the same instant can
+lose one move; acceptable for one user.
+
+**Not checked:** `praxis-vscode-ui/src/lib.rs` beyond the new tool-block and menu code, the
+`.vsix` packaging, and VS Code behaviour in a running editor.
