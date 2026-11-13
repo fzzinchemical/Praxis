@@ -633,6 +633,12 @@ fn update(update: &Value) -> Reaction {
             Some(text) => show(json!({"type": "user", "text": text})),
             None => Reaction::default(),
         },
+        // A subagent's prompt size is its own message, so it never resets the Agent call's status.
+        Some("tool_call_update") if update["_meta"]["praxis"]["subagentUsage"].is_object() => {
+            let usage = &update["_meta"]["praxis"]["subagentUsage"];
+            show(json!({"type": "subagent_usage", "id": update["toolCallId"],
+                "promptTokens": usage["promptTokens"], "contextLength": usage["contextLength"]}))
+        }
         Some("tool_call" | "tool_call_update") => {
             let texts: Vec<&str> = update["content"]
                 .as_array()
@@ -963,6 +969,21 @@ mod tests {
                 json!({"type": "tool", "id": "c1", "title": null, "status": "completed", "output": "fn a"}),
                 json!({"type": "text", "text": "done"}),
             ]
+        );
+    }
+
+    #[test]
+    fn a_subagents_prompt_size_reaches_the_panel_for_its_agent_call() {
+        let (mut client, _) = Client::start("/work");
+        let usage = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c0",
+            "_meta": {"praxis": {"subagentUsage": {"promptTokens": 12000, "contextLength": 32000}}}});
+        let line = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s1", "update": usage}});
+        assert_eq!(
+            client.on_line(&line.to_string()).show,
+            Some(
+                json!({"type": "subagent_usage", "id": "c0", "promptTokens": 12000, "contextLength": 32000})
+            )
         );
     }
 

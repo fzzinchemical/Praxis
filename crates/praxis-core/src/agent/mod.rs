@@ -405,7 +405,7 @@ impl Agent {
                 (reply, child.history)
             };
             // The parent's front end sees the subagent's text, tool calls and permission prompts,
-            // tagged with the `Agent` call, but not its token counts, which would read as the parent's.
+            // tagged with the `Agent` call. Its token counts are tagged too, so they never read as the parent's.
             let forward = async {
                 let mut ended = StopReason::EndTurn;
                 while let Some(event) = rx.recv().await {
@@ -415,7 +415,8 @@ impl Agent {
                         event @ (AgentEvent::TextDelta(_)
                         | AgentEvent::ToolStarted { .. }
                         | AgentEvent::ToolFinished { .. }
-                        | AgentEvent::PermissionRequest { .. }) => {
+                        | AgentEvent::PermissionRequest { .. }
+                        | AgentEvent::Usage { .. }) => {
                             let event = AgentEvent::Subagent {
                                 parent: parent.clone(),
                                 kind: def.skill.name.clone(),

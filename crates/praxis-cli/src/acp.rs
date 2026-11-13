@@ -742,6 +742,20 @@ fn subagent_update(
     event: AgentEvent,
     texts: &mut HashMap<ToolCallId, String>,
 ) -> Option<v1::SessionUpdate> {
+    // The subagent's prompt size goes on its Agent call only, never the parent's context gauge.
+    if let AgentEvent::Usage {
+        prompt_tokens,
+        context_size,
+        ..
+    } = event
+    {
+        let usage = json!({"promptTokens": prompt_tokens, "contextLength": context_size});
+        let meta = json!({"praxis": {"subagentUsage": usage}})
+            .as_object()
+            .cloned();
+        let update = v1::ToolCallUpdate::new(parent.clone(), v1::ToolCallUpdateFields::new());
+        return Some(v1::SessionUpdate::ToolCallUpdate(update.meta(meta)));
+    }
     if let AgentEvent::TextDelta(delta) = event {
         let text = texts.entry(parent.clone()).or_default();
         text.push_str(&delta);
@@ -1076,7 +1090,12 @@ mod tests {
                 "Write",
                 &json!({"file_path": "sub.txt", "content": "x"}),
             ),
-            text_body("found it"),
+            // The subagent reports 12000 prompt tokens, which must not show as the parent's.
+            sse(&[
+                json!({"choices": [{"delta": {"content": "found it"}, "finish_reason": null}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 12000, "completion_tokens": 3}}),
+            ]),
             text_body("done"),
         ])
         .await;
@@ -1161,6 +1180,28 @@ mod tests {
         let logged = log.collect::<String>();
         assert!(logged.contains(r#""subagent_of":"c0""#), "{logged}");
         assert!(!logged.contains(r#""subagent_of":"c1""#), "{logged}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagents_usage_goes_on_its_agent_call_not_the_parents_context() {
+        let dir = temp_dir("subagent-usage");
+        let (updates, _) = subagent_turn(&dir).await;
+        let usage = updates
+            .iter()
+            .find(|u| u["toolCallId"] == "c0" && u["_meta"]["praxis"]["subagentUsage"].is_object())
+            .expect("the Agent call carries the subagent's usage");
+        assert_eq!(
+            usage["_meta"]["praxis"]["subagentUsage"]["promptTokens"],
+            12000
+        );
+        assert!(usage["_meta"]["praxis"]["subagentUsage"]["contextLength"].is_u64());
+        // The parent's context gauge is unchanged by the subagent's prompt.
+        assert!(
+            !updates
+                .iter()
+                .any(|u| u["sessionUpdate"] == "usage_update" && u["used"] == 12003),
+            "{updates:?}"
+        );
     }
 
     /// Stands in for a turn whose task panicked, so its agent never comes back.

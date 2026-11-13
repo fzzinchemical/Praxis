@@ -49,7 +49,13 @@ pub fn suggestions<'a>(commands: &'a [Command], prompt: &str) -> Vec<(&'a str, V
 
 /// The one-line summary of a subagent's `Agent` call block. The caller sets it as text, never HTML,
 /// since the type name comes from the model.
-pub fn subagent_summary(kind: &str, calls: usize, status: &str) -> String {
+/// `usage` is the subagent's (prompt tokens, context length), once it has reported them.
+pub fn subagent_summary(
+    kind: &str,
+    calls: usize,
+    status: &str,
+    usage: Option<(u32, u32)>,
+) -> String {
     let state = match status {
         "pending" | "in_progress" => "running",
         "failed" => "failed",
@@ -60,7 +66,26 @@ pub fn subagent_summary(kind: &str, calls: usize, status: &str) -> String {
     } else {
         "tool calls"
     };
-    format!("{kind} · {calls} {noun} · {state}")
+    let line = format!("{kind} · {calls} {noun} · {state}");
+    match usage {
+        Some((prompt, context)) => {
+            format!(
+                "{line} · {} / {} tokens",
+                tokens_k(prompt),
+                tokens_k(context)
+            )
+        }
+        None => line,
+    }
+}
+
+/// Token counts in thousands, rounded to the nearest; counts under 1000 stay exact.
+fn tokens_k(count: u32) -> String {
+    if count < 1000 {
+        count.to_string()
+    } else {
+        format!("{}k", (count + 500) / 1000)
+    }
 }
 
 /// What the agent is doing, for the status line.
@@ -206,16 +231,24 @@ mod tests {
     #[test]
     fn a_subagent_summary_names_its_type_calls_and_status() {
         assert_eq!(
-            subagent_summary("Explore", 6, "in_progress"),
+            subagent_summary("Explore", 6, "in_progress", None),
             "Explore · 6 tool calls · running"
         );
         assert_eq!(
-            subagent_summary("general", 1, "completed"),
+            subagent_summary("general", 1, "completed", None),
             "general · 1 tool call · completed"
         );
         assert_eq!(
-            subagent_summary("general", 0, "failed"),
+            subagent_summary("general", 0, "failed", None),
             "general · 0 tool calls · failed"
+        );
+    }
+
+    #[test]
+    fn a_subagent_summary_shows_its_prompt_size_against_the_context() {
+        assert_eq!(
+            subagent_summary("general", 2, "in_progress", Some((12_000, 32_000))),
+            "general · 2 tool calls · running · 12k / 32k tokens"
         );
     }
 

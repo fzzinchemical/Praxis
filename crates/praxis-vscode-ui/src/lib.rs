@@ -37,12 +37,14 @@ struct Tool {
     kind: Option<String>,
     /// Calls nested under this one.
     calls: usize,
+    /// The subagent's (prompt tokens, context length), once it has reported them.
+    usage: Option<(u32, u32)>,
 }
 
 /// Sets a block's summary as text, never HTML: titles and types come from the model.
 fn show_summary(tool: &Tool) -> Result<(), JsValue> {
     let line = match &tool.kind {
-        Some(kind) => subagent_summary(kind, tool.calls, &tool.status),
+        Some(kind) => subagent_summary(kind, tool.calls, &tool.status, tool.usage),
         None => format!("{} ({})", tool.title, tool.status),
     };
     tool.summary.set_text_content(Some(&line));
@@ -658,6 +660,7 @@ impl Ui {
                 self.fill_picker(&mode, message)?;
             }
             "tool" => self.tool(message)?,
+            "subagent_usage" => self.subagent_usage(message)?,
             "permission" => self.permission(message)?,
             "usage" => {
                 if let (Some(used), Some(size)) =
@@ -721,6 +724,7 @@ impl Ui {
                 status: String::new(),
                 kind: None,
                 calls: 0,
+                usage: None,
             };
             self.tools.insert(id.clone(), tool);
         }
@@ -737,6 +741,22 @@ impl Ui {
         show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
             tool.pre.set_text_content(Some(output));
+        }
+        Ok(())
+    }
+
+    /// Sets the prompt size on an `Agent` call's block; the summary line shows it.
+    fn subagent_usage(&mut self, message: &Value) -> Result<(), JsValue> {
+        let id = message["id"].as_str().unwrap_or_default();
+        let (Some(prompt), Some(context)) = (
+            message["promptTokens"].as_u64(),
+            message["contextLength"].as_u64(),
+        ) else {
+            return Ok(());
+        };
+        if let Some(tool) = self.tools.get_mut(id) {
+            tool.usage = u32::try_from(prompt).ok().zip(u32::try_from(context).ok());
+            show_summary(tool)?;
         }
         Ok(())
     }

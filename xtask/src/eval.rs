@@ -346,6 +346,10 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     while let Some(event) = rx.recv().await {
         // Scored as before subagent events were tagged: a subagent's calls count as the run's.
         let event = match event {
+            // A subagent's prompt size isn't the run's, so it stays out of the token counts.
+            AgentEvent::Subagent { event, .. } if matches!(*event, AgentEvent::Usage { .. }) => {
+                continue;
+            }
             AgentEvent::Subagent { event, .. } => *event,
             other => other,
         };
