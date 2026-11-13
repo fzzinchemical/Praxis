@@ -146,6 +146,22 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### Known issues
+
+Tracked in [M10](docs/TASKS.md#m10-beta-1-feedback).
+
+- Reopening an old chat in VS Code shows only your messages, not the agent's replies or tool calls (T10.1).
+- Models aren't loaded automatically by default. Set `agent.auto_load = true` in `config.toml` (T10.2).
+- When a turn hits its request limit, VS Code doesn't say how to raise it. Set `praxis.agent.maxTurnRequests` in VS Code settings or `agent.max_turn_requests` in `config.toml` (default 50) (T10.3).
+- The agent asks for approval on almost every action, and `Bash` approvals can't be remembered (T10.7).
+
+### Planned features
+
+- Delete chats from the Sessions view (T10.4), then classify them (T10.5).
+- Plugin and skill commands listed in the chat panel, grouped by plugin, as in Claude Code (T10.6).
+- Settings to make the agent ask less and give it more access (T10.7).
+- See what subagents are doing: a collapsible block per subagent with its live tool calls and status (T10.8).
+
 ## Development
 
 ```sh
