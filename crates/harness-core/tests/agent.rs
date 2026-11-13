@@ -4,6 +4,7 @@
 #![cfg(test)]
 
 use harness_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
+use harness_core::hooks::{Hook, Matcher};
 use harness_core::permissions::Policy;
 use harness_core::provider::Provider;
 use harness_core::tools::ToolContext;
@@ -988,4 +989,41 @@ async fn a_worker_on_another_model_obeys_the_session_deny_rules() {
 
     assert!(events.contains(&"error:s1".to_owned()), "{events:?}");
     assert!(!workspace.join("x").exists());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pre_tool_hook_sees_the_absolute_path_of_a_relative_file_path() {
+    let workspace = new_workspace();
+    fs::write(workspace.join("a.txt"), "hi").unwrap();
+    let seen = workspace.join("seen.json");
+    let hook = Hook {
+        event: "PreToolUse".to_owned(),
+        matcher: Matcher::Names(vec!["Read".to_owned()]),
+        command: format!("cat > '{}'", seen.display()),
+        args: None,
+        timeout: std::time::Duration::from_secs(10),
+    };
+    let mut h = Harness::in_workspace(
+        workspace.clone(),
+        vec![
+            tool_reply(&[("r1", "Read", json!({"file_path": "a.txt"}))]),
+            text_reply("done"),
+        ],
+        50,
+    )
+    .await;
+    let agent = h
+        .agent
+        .take()
+        .unwrap()
+        .with_hooks(vec![(hook, workspace.clone())]);
+    h.agent = Some(agent);
+
+    h.turn("go", CancellationToken::new(), |_| None).await;
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&seen).unwrap()).unwrap();
+    assert_eq!(
+        payload["tool_input"]["file_path"],
+        json!(workspace.join("a.txt").to_str().unwrap())
+    );
 }

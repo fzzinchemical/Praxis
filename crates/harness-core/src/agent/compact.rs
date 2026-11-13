@@ -99,6 +99,8 @@ impl Agent {
                 continue;
             }
             if let Ok(input) = serde_json::from_str(&call.arguments) {
+                // Match the absolute paths that `check_call` now gives every call.
+                let input = self.absolute_paths(&call.name, input);
                 self.refetchable.push((call.name.clone(), input));
             }
         }

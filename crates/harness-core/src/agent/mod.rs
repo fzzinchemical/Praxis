@@ -917,7 +917,8 @@ impl Agent {
                 "Invalid arguments: expected a JSON object. Call the tool again with valid JSON."
                     .to_owned()
             })
-            .and_then(|input| self.validate(&call.name, &input).map(|()| input));
+            .and_then(|input| self.validate(&call.name, &input).map(|()| input))
+            .map(|input| self.absolute_paths(&call.name, input));
         if checked.is_ok() {
             self.call_failures.remove(&call.name);
         } else {
@@ -925,6 +926,28 @@ impl Agent {
             self.parse_failures += 1;
         }
         checked
+    }
+
+    /// Rewrites a relative path argument to its resolved absolute path, so hooks and the tool
+    /// see the same path (SPEC §6). A path that does not resolve is left for the tool to refuse.
+    fn absolute_paths(&self, name: &str, mut input: Value) -> Value {
+        let key = match name {
+            "Read" | "Write" | "Edit" => "file_path",
+            "Grep" | "Glob" => "path",
+            _ => return input,
+        };
+        let Some(raw) = input.get(key).and_then(Value::as_str) else {
+            return input;
+        };
+        let Ok(root) = self.tools.workspace().canonicalize() else {
+            return input;
+        };
+        if let Ok(abs) = confine::resolve(&root, raw)
+            && let Some(text) = abs.to_str()
+        {
+            input[key] = json!(text);
+        }
+        input
     }
 
     async fn observe_usage(&mut self, reply: &Reply, turn: &Turn<'_>) {
