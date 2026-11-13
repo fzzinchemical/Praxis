@@ -46,6 +46,8 @@ struct Tool {
     children: Vec<String>,
     /// The changed-files list an `Agent` call shows, inside its block.
     files: Option<Element>,
+    /// The Stop button an `Agent` call shows while its subagent runs.
+    stop: Option<Element>,
 }
 
 /// Sets a block's summary as text, never HTML: titles and types come from the model.
@@ -56,7 +58,15 @@ fn show_summary(tool: &Tool) -> Result<(), JsValue> {
     };
     tool.summary.set_text_content(Some(&line));
     tool.summary.set_attribute("data-title", &tool.title)?;
-    tool.summary.set_attribute("data-status", &tool.status)
+    tool.summary.set_attribute("data-status", &tool.status)?;
+    // Only a running subagent can be stopped.
+    if let Some(stop) = &tool.stop {
+        match tool.status.as_str() {
+            "pending" | "in_progress" => stop.remove_attribute("hidden")?,
+            _ => stop.set_attribute("hidden", "")?,
+        }
+    }
+    Ok(())
 }
 
 struct Ui {
@@ -387,6 +397,10 @@ pub fn start() -> Result<(), JsValue> {
         };
         if let Some(path) = button.get_attribute("data-open-change") {
             api.post_message(&json!({"type": "open_change", "path": path}).to_string());
+            return;
+        }
+        if let Some(id) = button.get_attribute("data-stop-subagent") {
+            api.post_message(&json!({"type": "stop_subagent", "id": id}).to_string());
             return;
         }
         let (Some(id), Some(option)) = (
@@ -741,6 +755,7 @@ impl Ui {
                 parent: message["parent"].as_str().map(str::to_owned),
                 children: Vec::new(),
                 files: None,
+                stop: None,
             };
             self.tools.insert(id.clone(), tool);
         }
@@ -752,6 +767,14 @@ impl Ui {
         }
         if let Some(kind) = message["subagent"].as_str() {
             tool.kind = Some(kind.to_owned());
+        }
+        if tool.kind.is_some() && tool.stop.is_none() {
+            let stop = self.document.create_element("button")?;
+            stop.set_attribute("type", "button")?;
+            stop.set_attribute("data-stop-subagent", &id)?;
+            stop.set_text_content(Some("Stop"));
+            tool.details.insert_before(&stop, Some(tool.pre.as_ref()))?;
+            tool.stop = Some(stop);
         }
         if tool.kind.is_some() && tool.files.is_none() {
             let files = self.document.create_element("div")?;

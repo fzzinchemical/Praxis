@@ -32,6 +32,8 @@ pub enum FromPanel {
     PermissionMode(String),
     /// A changed file the subagent panel asked to open; checked against the workspace before use.
     OpenChange(String),
+    /// The tool call id of a running subagent the panel asked to stop.
+    StopSubagent(String),
 }
 
 impl FromPanel {
@@ -54,6 +56,7 @@ impl FromPanel {
             "model" => Some(Self::Model(value["key"].as_str()?.to_owned())),
             "mode" => Some(Self::PermissionMode(value["key"].as_str()?.to_owned())),
             "open_change" => Some(Self::OpenChange(value["path"].as_str()?.to_owned())),
+            "stop_subagent" => Some(Self::StopSubagent(value["id"].as_str()?.to_owned())),
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -418,6 +421,17 @@ impl Client {
         let ids: Vec<Value> = self.pending.iter().map(|(id, _)| id.clone()).collect();
         let answers = ids.iter().filter_map(|id| self.answer(id, None));
         std::iter::once(cancel.to_string()).chain(answers).collect()
+    }
+
+    /// The `_praxis/cancel_subagent` notification for a running subagent, or `None` while no session
+    /// is open yet. A notification has no id, so the agent sends no answer.
+    pub fn stop_subagent(&self, id: &str) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "toolCallId": id});
+        Some(
+            json!({"jsonrpc": "2.0", "method": "_praxis/cancel_subagent", "params": params})
+                .to_string(),
+        )
     }
 
     pub fn on_line(&mut self, line: &str) -> Reaction {
@@ -826,6 +840,23 @@ mod tests {
         assert_eq!(change_target("/work", "/etc/passwd"), None);
         assert_eq!(change_target("/work", "../etc/passwd"), None);
         assert_eq!(change_target("/work", "/work/../etc/passwd"), None);
+    }
+
+    #[test]
+    fn stopping_a_subagent_sends_its_call_id_as_an_extension_notification() {
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"stop_subagent","id":"c0"}"#),
+            Some(FromPanel::StopSubagent("c0".to_owned()))
+        );
+        let line = session().stop_subagent("c0").expect("a session is open");
+        let sent: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(sent["method"], "_praxis/cancel_subagent");
+        assert_eq!(
+            sent["params"],
+            json!({"sessionId": "s1", "toolCallId": "c0"})
+        );
+        assert!(sent.get("id").is_none(), "a notification has no id: {sent}");
+        assert_eq!(Client::start("/work").0.stop_subagent("c0"), None);
     }
 
     #[test]

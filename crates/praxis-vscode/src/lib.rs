@@ -389,6 +389,14 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
             Some(FromPanel::AddFile) => add_files(&state),
             Some(FromPanel::Dropped(uris)) => drop_files(&state, &uris),
             Some(FromPanel::OpenChange(path)) => open_change(&state, &path),
+            Some(FromPanel::StopSubagent(id)) => {
+                let panel = state.borrow();
+                let line = panel
+                    .client
+                    .as_ref()
+                    .and_then(|client| client.stop_subagent(&id));
+                panel.send(line);
+            }
             Some(FromPanel::Cancel) => {
                 let mut panel = state.borrow_mut();
                 let lines = panel.client.as_mut().map(Client::cancel);

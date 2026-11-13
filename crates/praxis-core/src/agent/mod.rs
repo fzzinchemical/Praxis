@@ -204,6 +204,33 @@ pub struct Agent {
     limits: Option<(Option<Vec<String>>, Vec<String>)>,
     /// Shared with subagents, so a session tree counts every switch of model (ADR 0005).
     swaps: Arc<Mutex<ModelSwaps>>,
+    subagents: SubagentStops,
+}
+
+/// The stop token of each subagent running under an `Agent` call. The ACP server keeps a clone,
+/// since it can't reach the agent while a turn holds it (SPEC §11).
+#[derive(Clone, Default)]
+pub struct SubagentStops(Arc<Mutex<HashMap<ToolCallId, CancellationToken>>>);
+
+impl SubagentStops {
+    /// Cancels the subagent running under `parent`. Returns false if none is running.
+    pub fn stop(&self, parent: &str) -> bool {
+        let stops = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        stops.get(parent).is_some_and(|token| {
+            token.cancel();
+            true
+        })
+    }
+
+    fn register(&self, parent: ToolCallId, token: CancellationToken) {
+        let mut stops = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        stops.insert(parent, token);
+    }
+
+    fn finish(&self, parent: &str) {
+        let mut stops = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        stops.remove(parent);
+    }
 }
 
 /// The model of the last request in a session tree, and how often the next one differed.
@@ -280,6 +307,7 @@ impl Agent {
             agents: Vec::new(),
             limits: None,
             swaps: Arc::default(),
+            subagents: SubagentStops::default(),
         }
     }
 
@@ -393,7 +421,10 @@ impl Agent {
 
             let (tx, mut rx) = mpsc::channel(16);
             let prompt = field("prompt").to_owned();
-            let cancel = turn.cancel.clone();
+            // Under the turn's token, so the front end can stop this subagent without the turn.
+            let stop = turn.cancel.child_token();
+            self.subagents.register(parent.clone(), stop.clone());
+            let cancel = stop.clone();
             let run = async move {
                 child.run_turn(prompt, &tx, cancel).await;
                 let reply = child.history.iter().rev().find_map(|m| match m {
@@ -430,6 +461,7 @@ impl Agent {
                 ended
             };
             let ((reply, history), ended) = tokio::join!(run, forward);
+            self.subagents.finish(&parent);
             // Logged for replay only: the parent's own history must not gain the child's messages.
             for message in history
                 .iter()
@@ -443,6 +475,16 @@ impl Agent {
                     is_error: false,
                     structured: Value::Null,
                 },
+                // Stopped alone: a normal result, so the parent turn carries on.
+                (_, StopReason::Cancelled)
+                    if stop.is_cancelled() && !turn.cancel.is_cancelled() =>
+                {
+                    ToolOutput {
+                        content: "The user stopped this subagent.".to_owned(),
+                        is_error: false,
+                        structured: Value::Null,
+                    }
+                }
                 (reply, ended) => ToolOutput::error(format!(
                     "The agent stopped early ({ended:?}). Its last reply: {}",
                     reply.as_deref().unwrap_or("(none)")
@@ -629,6 +671,11 @@ impl Agent {
     /// The tools this agent runs, for `/undo` and checkpoint setup.
     pub fn tools(&self) -> &ToolContext {
         &self.tools
+    }
+
+    /// Lets the front end stop one running subagent while a turn holds this agent (SPEC §11).
+    pub fn subagent_stops(&self) -> SubagentStops {
+        self.subagents.clone()
     }
 
     /// Runs one prompt to completion. `TurnEnded` is always the last event. If the receiver

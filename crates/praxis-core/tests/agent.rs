@@ -138,6 +138,11 @@ impl Harness {
         let mut events = Vec::new();
         while let Some(event) = rx.recv().await {
             events.push(label(&event));
+            // A subagent's prompts arrive wrapped, and must be answered like the parent's.
+            let event = match event {
+                AgentEvent::Subagent { event, .. } => *event,
+                other => other,
+            };
             if let AgentEvent::PermissionRequest { name, respond, .. } = event
                 && let Some(answer) = reply(&name)
             {
@@ -282,6 +287,71 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
     let parent = h.request_messages(3).await;
     assert_eq!(parent.len(), 4);
     assert_eq!(parent[3]["content"], "found it in a.rs");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stopping_one_subagent_ends_it_and_the_parent_turn_still_ends() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "write it"}),
+        )]),
+        // The subagent asks to write, and is stopped while it waits for the answer.
+        tool_reply(&[("s1", "Write", json!({"file_path": "x", "content": "y"}))]),
+        text_reply("carrying on"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    let scout = praxis_core::plugin::AgentDef {
+        skill: praxis_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Writes things".into(),
+            body: "You write.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: Some(vec!["Write".into()]),
+        disallowed_tools: Vec::new(),
+        max_turns: Some(5),
+        model: None,
+    };
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
+    let stops = h.agent.as_ref().unwrap().subagent_stops();
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            assert!(
+                stops.stop("p1"),
+                "the subagent is registered under its Agent call"
+            );
+            Some(PermissionReply::Cancelled)
+        })
+        .await;
+
+    assert!(
+        events.contains(&"finished:p1".to_owned()),
+        "the Agent call completes: {events:?}"
+    );
+    assert_eq!(events.last().map(String::as_str), Some("ended:EndTurn"));
+    // The subagent made no further model request, and wrote nothing.
+    assert_eq!(
+        h.server.received_requests().await.unwrap().len(),
+        3,
+        "{events:?}"
+    );
+    assert!(!h.workspace.join("x").exists());
+    let parent = h.request_messages(2).await;
+    assert!(
+        parent
+            .iter()
+            .any(|m| m["content"] == "The user stopped this subagent."),
+        "{parent:?}"
+    );
+    assert!(
+        !stops.stop("p1"),
+        "a finished subagent is no longer registered"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]

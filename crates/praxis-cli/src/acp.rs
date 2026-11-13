@@ -2,10 +2,11 @@
 
 use agent_client_protocol::v1::{ConnectionTo, schema as v1};
 use agent_client_protocol::{
-    Agent as AcpAgent, Client, ConnectTo, Error, on_receive_notification, on_receive_request,
+    Agent as AcpAgent, Client, ConnectTo, Error, UntypedMessage, on_receive_notification,
+    on_receive_request,
 };
 use praxis_core::agent::{
-    Agent, AgentEvent, PermissionReply, StopReason, ToolCallId, ToolOutcome, title,
+    Agent, AgentEvent, PermissionReply, StopReason, SubagentStops, ToolCallId, ToolOutcome, title,
 };
 use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
@@ -46,6 +47,8 @@ pub struct Loaded {
 struct Slot {
     agent: Option<Agent>,
     cancel: CancellationToken,
+    /// Stops one running subagent, reachable while a turn holds the agent.
+    subagents: SubagentStops,
     /// The picker key of the model the session's turns use.
     model: String,
     /// The permission mode the session's turns use; session-only, so a new session starts on the config's.
@@ -66,6 +69,8 @@ struct Server<M> {
 /// Prompt text that makes the test build panic its turn task, where no tool can catch it.
 #[cfg(test)]
 const CRASH_PROMPT: &str = "crash this turn";
+/// Extension notification (`_`-prefixed, SPEC §11) that stops one subagent: `sessionId`, `toolCallId`.
+const STOP_SUBAGENT: &str = "_praxis/cancel_subagent";
 
 /// The session config option the client shows as the model picker (ACP "model" category).
 const MODEL_OPTION: &str = "model";
@@ -158,12 +163,14 @@ impl<M: Models> Server<M> {
             .filter(|e| e.subagent_of.is_none())
             .map(|e| e.message.clone())
             .collect();
+        let subagents = agent.subagent_stops();
         let agent = Some(agent.with_session(log, main));
         let cancel = CancellationToken::new();
         let model = self.models.default_key();
         let slot = Slot {
             agent,
             cancel,
+            subagents,
             model: model.clone(),
             mode,
         };
@@ -216,6 +223,14 @@ impl<M: Models> Server<M> {
     fn cancel(&self, id: &str) {
         if let Some(slot) = self.sessions().get(id) {
             slot.cancel.cancel();
+        }
+    }
+
+    /// Stops the subagent running under `tool_call` in session `id`. One that already finished
+    /// is no longer registered, so the request is then a no-op.
+    fn stop_subagent(&self, id: &str, tool_call: &str) {
+        if let Some(slot) = self.sessions().get(id) {
+            slot.subagents.stop(tool_call);
         }
     }
 
@@ -274,7 +289,18 @@ pub fn agent(
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
     });
-    let (for_init, for_new, for_load, for_list, for_prompt, for_cancel, for_set, for_close) = (
+    let (
+        for_init,
+        for_new,
+        for_load,
+        for_list,
+        for_prompt,
+        for_cancel,
+        for_set,
+        for_close,
+        for_stop,
+    ) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -529,6 +555,21 @@ pub fn agent(
         .on_receive_notification(
             async move |note: v1::CancelNotification, _cx| {
                 for_cancel.cancel(&note.session_id.to_string());
+                Ok(())
+            },
+            on_receive_notification!(),
+        )
+        .on_receive_notification(
+            async move |note: UntypedMessage, _cx| {
+                // Only the stop method is handled, so other notifications and malformed params are ignored.
+                if note.method() == STOP_SUBAGENT
+                    && let (Some(session), Some(tool_call)) = (
+                        note.params()["sessionId"].as_str(),
+                        note.params()["toolCallId"].as_str(),
+                    )
+                {
+                    for_stop.stop_subagent(session, tool_call);
+                }
                 Ok(())
             },
             on_receive_notification!(),
@@ -1292,8 +1333,10 @@ mod tests {
             policy: praxis_core::permissions::Policy::default(),
             masking: true,
         };
+        let agent = Agent::new(provider, tools, config);
         let slot = Slot {
-            agent: Some(Agent::new(provider, tools, config)),
+            subagents: agent.subagent_stops(),
+            agent: Some(agent),
             cancel: CancellationToken::new(),
             model: "m".into(),
             mode: Mode::Ask,
