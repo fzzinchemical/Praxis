@@ -728,6 +728,57 @@ async fn a_failed_log_write_stops_the_turn_before_any_request() {
     assert!(h.server.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn resuming_a_log_with_unanswered_tool_calls_answers_them_before_the_next_request() {
+    use harness_core::provider::{Message, ToolCall};
+    use harness_core::session::SessionLog;
+    let workspace = new_workspace();
+    let dir = new_workspace().join("sessions");
+    let call = |id: &str| ToolCall {
+        id: id.into(),
+        name: "Glob".into(),
+        arguments: "{\"pattern\":\"*\"}".into(),
+    };
+    let mut log = SessionLog::create(&dir, &workspace).unwrap();
+    let id = log.id().to_owned();
+    log.append(&Message::User {
+        content: "go".into(),
+    })
+    .unwrap();
+    log.append(&Message::Assistant {
+        content: None,
+        tool_calls: vec![call("c1"), call("c2"), call("c3")],
+    })
+    .unwrap();
+    log.append(&Message::Tool {
+        tool_call_id: "c1".into(),
+        content: "done".into(),
+    })
+    .unwrap();
+
+    let mut h = Harness::in_workspace(workspace.clone(), vec![text_reply("ok")], 50).await;
+    let (log, prior) = SessionLog::resume(&dir, &id).unwrap();
+    h.agent = Some(h.agent.take().unwrap().with_session(log, prior));
+    h.turn("more", CancellationToken::new(), never_asked).await;
+
+    let messages = h.request_messages(0).await;
+    let answered: Vec<&str> = messages
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["tool_call_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(answered, ["c1", "c2", "c3"]);
+    assert!(
+        messages[4]["content"]
+            .as_str()
+            .unwrap()
+            .contains("ended before")
+    );
+
+    let (_, all) = SessionLog::resume(&dir, &id).unwrap();
+    assert_eq!(all.len(), 7, "the repaired results are logged too");
+}
+
 /// SPEC §11: the prompt sits in the prefix, so it stays short and covers each contract point.
 #[test]
 fn system_prompt_covers_the_contract_within_budget() {

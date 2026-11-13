@@ -148,6 +148,7 @@ const MAX_CALL_FAILURES: u32 = 3;
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
 const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
 const LOG_NOT_RUN_RESULT: &str = "Not run: the session log could not be written.";
+const ORPHAN_NOT_RUN_RESULT: &str = "Not run: the session ended before this call finished.";
 const INTERRUPTED_REPLY: &str = "(interrupted)";
 
 /// One conversation. History stays valid for the next prompt however a turn ends: every tool
@@ -512,7 +513,39 @@ impl Agent {
     pub fn with_session(mut self, log: SessionLog, prior: Vec<Message>) -> Self {
         self.history.extend(prior);
         self.session = Some(log);
+        self.answer_orphan_calls();
         self
+    }
+
+    /// Answers the calls of a log that stopped mid-tool (a crash), so the next request pairs
+    /// every call with a result, and logs those results too.
+    fn answer_orphan_calls(&mut self) {
+        let Some(last) = self
+            .history
+            .iter()
+            .rposition(|m| !matches!(m, Message::Tool { .. }))
+        else {
+            return;
+        };
+        let Message::Assistant { tool_calls, .. } = &self.history[last] else {
+            return;
+        };
+        let answered = &self.history[last + 1..];
+        let orphans: Vec<String> = tool_calls
+            .iter()
+            .filter(|call| {
+                !answered.iter().any(
+                    |m| matches!(m, Message::Tool { tool_call_id, .. } if *tool_call_id == call.id),
+                )
+            })
+            .map(|call| call.id.clone())
+            .collect();
+        for tool_call_id in orphans {
+            self.record(Message::Tool {
+                tool_call_id,
+                content: ORPHAN_NOT_RUN_RESULT.to_owned(),
+            });
+        }
     }
 
     fn record(&mut self, message: Message) {
