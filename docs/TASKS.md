@@ -454,6 +454,16 @@ flowchart TB
     T5_1 --> T5_11
     T5_11 --> T5_12
     T5_3 --> T5_12
+    T5_13["T5.13<br/>Config split documented"]
+    T5_14["T5.14<br/>Session controls"]
+    T5_15["T5.15<br/>VS Code settings"]
+    T5_16["T5.16<br/>plugin list --json"]
+    T5_17["T5.17<br/>Plugins tree view"]
+    T6_6(["T6.6"])
+    T5_3 --> T5_14
+    T5_2 --> T5_15
+    T6_6 -.-> T5_16
+    T5_16 --> T5_17
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
@@ -461,6 +471,8 @@ flowchart TB
     class T5_1,T5_2,T5_3,T5_4,T5_5,T5_6 task
     class T0_5,T0_6,T3_2,T3_7 other
     class T5_7,T5_8,T5_9,T5_10,T5_11,T5_12 task
+    class T5_13,T5_14,T5_15,T5_16,T5_17 task
+    class T6_6 other
     class T3_8 other
 ```
 
@@ -518,6 +530,31 @@ flowchart TB
   - **Do:** an activity-bar icon (view container) with a sessions view for the current workspace: new session, open a previous one in the chat panel, refresh after each turn. Keyboard reachable with labelled items.
   - **Done when:** native tests cover mapping `session/list` results to view items; the checklist item "click the sidebar icon, pick an earlier session, see its history and continue it" passes; and sessions from another workspace never show.
   - **Status:** native tests and `./scripts/verify` pass; the VSIX builds with the icon. The manual checklist item (Sessions sidebar, T5.12 in `editors/vscode/CHECKLIST.md`) was **not run**: it needs a VS Code install. History replay skips user messages, since the webview doesn't map `user_message_chunk` yet.
+
+- [x] **T5.13 Config split documented** (§11) · *Should*
+  - **Needs:** T5.2.
+  - **Do:** SPEC §11 "Configuration surfaces": which keys live in the chat panel, in VS Code settings and in file-only `config.toml`, and why security-relevant keys are never VS Code settings.
+  - **Done when:** SPEC §11 has the three-bucket table and the precedence note, and the rule is checked against the settings list in T5.15.
+
+- [ ] **T5.14 Session controls in chat panel** (§11) · *Should*
+  - **Needs:** T5.3.
+  - **Do:** permission mode (read-only, ask, auto-edit) and agent picker next to the existing model select. Session-only: never written to config.
+  - **Done when:** tests confirm a mode or agent change reaches the next turn only in that session, and a new session or restart falls back to config defaults.
+
+- [ ] **T5.15 VS Code settings** (§11) · *Should*
+  - **Needs:** T5.2.
+  - **Do:** `harness.defaultModel`, `harness.lmstudio.baseUrl`, `harness.agent.maxTurnRequests`, `harness.context.maskKeepTurns`, `harness.context.filterOutput` in `editors/vscode/package.json`. Forwarded to the CLI as `--config-override` only when the user set them explicitly. No security-relevant keys (§11).
+  - **Done when:** native tests confirm an unset key adds no override, a set key adds exactly one, and `package.json` declares none of the file-only keys.
+
+- [ ] **T5.16 `harness plugin list --json`** (§8, §12) · *Should*
+  - **Needs:** T6.6.
+  - **Do:** a JSON output mode for `harness plugin list` with each plugin's name, source, enabled state and "can run" list, for the extension to read.
+  - **Done when:** a CLI test parses the output as JSON and checks the fields against the text output for the same fixture.
+
+- [ ] **T5.17 Plugins tree view in VS Code** (§11) · *Should*
+  - **Needs:** T5.16.
+  - **Do:** a tree view listing installed plugins, with an enable/disable toggle (enabling first shows the "can run" list in a modal), remove with confirm, and an install command taking a path or git URL. Shells out to the CLI; no plugin logic in the extension.
+  - **Done when:** native tests cover mapping `plugin list --json` to tree items; the checklist item "enable a plugin, see its can-run list, confirm, then remove it" passes; and no action runs without its confirm step.
 
 ---
 

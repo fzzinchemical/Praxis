@@ -887,6 +887,20 @@ If the child exits, show the error and last stderr lines, with a restart button.
 
 So far (T5.3): the panel is an editor-tab webview opened by `harness.open`, not a webview view. ACP lines are framed by hand with `serde_json` (`harness-vscode/src/protocol.rs`), not the `agent-client-protocol` crate, and become typed panel messages (`text`, `tool`, `permission`, `usage`, `done`, `notice`). Model text renders through `pulldown-cmark` with raw HTML escaped, links outside `http`, `https` and `vscode` dropped, and images reduced to alt text. Tool calls are collapsed `<details>`. Permission prompts are panel buttons; answers are checked against the open request and its offered options, and Stop sends `session/cancel` then answers open prompts `cancelled`. The status line shows phase, elapsed time and context used; "loading model" never shows because ACP sends no such event. On exit the panel shows the code, stderr is in the output channel, and an error notification offers Restart.
 
+### Configuration surfaces
+
+Config reaches the user through three surfaces. Each key lives in one of them:
+
+| Surface | Keys | Scope |
+|---|---|---|
+| Chat panel | `model`, `agent`, permission `mode` | Session only. Never written to a file; a new session falls back to config. |
+| VS Code settings | `harness.binaryPath` (machine scope), `harness.defaultModel`, `harness.lmstudio.baseUrl`, `harness.agent.maxTurnRequests`, `harness.context.maskKeepTurns`, `harness.context.filterOutput` | Forwarded to the CLI as `--config-override` only when the user set them. |
+| File only (`config.toml`) | `mcp`, `hooks`, `sandbox.*`, `permissions.allow`, `permissions.deny`, `anthropic.*`, `profiles.*`, `plugins` | Read from the user and project layers. |
+
+Rule: security-relevant keys are never VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `harness.binaryPath` is machine-scoped for the same reason.
+
+Precedence: an extension-supplied `--config-override` is a CLI flag, so it beats env and file layers, as §8 says. An unset VS Code setting adds no override, so the file and env values apply.
+
 ## 12. Plugins
 
 Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference.md), [components](https://code.claude.com/docs/en/plugins/components.md), [hooks](https://code.claude.com/docs/en/hooks.md). The formats belong to Claude Code and can change. Implement the subset below and warn clearly about anything skipped; never fail silently.
