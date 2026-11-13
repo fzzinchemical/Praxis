@@ -996,30 +996,33 @@ flowchart LR
     class T5_5,T5_6,T5_8,T3_8,T10_1,T2_10,T2_11 other
 ```
 
-- [ ] **T11.1 Find in chat** (§11) · *Should*
+- [x] **T11.1 Find in chat** (§11) · *Should*
   - **Needs:** none.
   - **Asked for:** OpenCode #4714.
   - **Done when:** the chat panel is created with `enableFindWidget: true`, so Ctrl+F searches the conversation; a test on the panel options asserts it.
 
-- [ ] **T11.2 Notify when a turn ends** (§11) · *Could*
+- [x] **T11.2 Notify when a turn ends** (§11) · *Could*
   - **Needs:** none.
   - **Asked for:** Codex #3962.
   - **Done when:** a turn that ends while the VS Code window is unfocused shows an information notification with the chat title and stop reason, and clicking it reveals the panel; a focused window shows none. Users silence it through VS Code's own notification settings, so there is no Praxis setting.
 
-- [ ] **T11.3 Diagnostics after edits** (§6, §11) · *Should*
+- [x] **T11.3 Diagnostics after edits** (§6, §11) · *Should*
   - **Needs:** T5.5.
   - **Asked for:** Codex #8745 (language-server feedback). It lets a small model see its own compile errors without another tool round.
   - **Done when:** in `praxis acp` with a client that supports it, a completed `Write` or `Edit` result ends with that file's error-severity problems (reusing `problems_of` in `praxis-vscode`, after VS Code's diagnostics settle or about 2 s pass, capped in lines); the CLI and plain ACP clients get unchanged results; diagnostics text is treated as untrusted tool output; a fake-server ACP test covers both cases; an eval run on one model shows no fall in success.
+  - **Status:** done except the eval run, which needs the GPU and is pending with T11.7. The extension waits a fixed 2 s for diagnostics (a `shortcut:` in `praxis-vscode`).
 
-- [ ] **T11.4 Diagnostics in the terminal** `HUMAN` picks the approach (§3, §6) · *Could*
+- [ ] ~~**T11.4 Diagnostics in the terminal**~~ `HUMAN` picks the approach (§3, §6) · *Could*
   - **Needs:** T11.3.
   - **Options:** a language-server client (a new dependency outside SPEC §3, so the owner must approve it); or a check command set in config (for example `cargo check --message-format short`), run through the `Bash` sandbox after edits, with no new dependency; or neither.
+  - **Cut from 1.3.0-beta** by the owner (2026-11-14).
   - **Done when:** the chosen option gives CLI `Edit` results the same appended errors as T11.3, with a test on the fake server.
 
 - [ ] **T11.5 Rewind chat and files** (§8, §11) · *Should*
   - **Needs:** T3.8, T10.1.
   - **Asked for:** Codex #9203 and #11626, Crush #1300. Today `/undo` restores files only.
   - **Done when:** `/rewind` in the REPL and a "Rewind to here" action on a user message in the panel restore the files to before that turn and cut the history back to it; the session log records the rewind, so a reloaded chat (T10.1) shows the shortened history and old logs still load; turns older than the `CHECKPOINT_TURNS` window can't be picked; the UI says `Bash` effects aren't undone. Each part has a test.
+  - **Status:** part 1 (core, session log, REPL `/rewind`) is done; the panel action remains.
 
 - [ ] **T11.6 Neovim over ACP** (§11) · *Could*
   - **Needs:** T5.6.
