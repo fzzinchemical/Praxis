@@ -719,7 +719,7 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 2. A repository can't run code or widen permissions without approval, and changed content requires re-approval.
 3. `Bash` never runs outside the sandbox unless the user turned it off in **user** config or a flag.
 4. Write and edit paths are checked after symlink resolution.
-5. **Hard denials,** even under `auto-edit`: `.git/hooks/**`, `.git/config`, `.harness/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
+5. **Hard denials,** even under `auto-edit`: `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.harness/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9).
 6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
 7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
 8. No network traffic except to the configured LM Studio server, the Anthropic API when enabled in user config or a flag, MCP servers, and whatever the user approves.

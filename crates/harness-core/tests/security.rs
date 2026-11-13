@@ -196,6 +196,34 @@ async fn write_and_edit_never_reach_hard_denied_paths_in_any_mode() {
     }
 }
 
+/// Invariant 1, git metadata: submodule hooks and config, and a worktree's `.git` file, all hold
+/// code or settings that git runs, so `Write` is refused in every mode.
+#[tokio::test(flavor = "multi_thread")]
+async fn git_metadata_is_never_written_in_any_mode() {
+    let submodule = temp_dir("submodule");
+    fs::create_dir_all(submodule.join(".git/modules/sub/hooks")).unwrap();
+    fs::write(
+        submodule.join(".git/modules/sub/hooks/pre-commit"),
+        "original",
+    )
+    .unwrap();
+    fs::write(submodule.join(".git/modules/sub/config"), "original").unwrap();
+    let worktree = temp_dir("worktree");
+    fs::write(worktree.join(".git"), "original").unwrap();
+    for mode in MODES {
+        for (workspace, path) in [
+            (&submodule, ".git/modules/sub/hooks/pre-commit"),
+            (&submodule, ".git/modules/sub/config"),
+            (&worktree, ".git"),
+        ] {
+            let write = json!({"file_path": workspace.join(path), "content": "gitdir: evil"});
+            let (outcome, _) = run(workspace, mode, "Write", write).await;
+            assert_eq!(outcome, Outcome::Denied, "Write {path} in {mode:?}");
+            assert_original(workspace, path);
+        }
+    }
+}
+
 /// Invariant 5, user config: it lives outside the workspace, so no mode lets a tool write it.
 #[tokio::test(flavor = "multi_thread")]
 async fn user_config_outside_the_workspace_is_never_written() {

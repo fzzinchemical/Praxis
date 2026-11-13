@@ -56,10 +56,11 @@ pub fn check_writable(workspace: &Path, path: &Path) -> Result<(), ToolError> {
             _ => None,
         })
         .collect();
-    let denied = names.iter().any(|n| *n == ".harness" || *n == ".mcp.json")
-        || names
-            .windows(2)
-            .any(|w| w[0] == ".git" && (w[1] == "hooks" || w[1] == "config"));
+    // Any `.git` component: submodules keep hooks and config under .git/modules/<name>, and a
+    // worktree's `.git` file points at a git dir that can be anywhere in the workspace.
+    let denied = names
+        .iter()
+        .any(|n| *n == ".harness" || *n == ".mcp.json" || *n == ".git");
     if denied {
         return Err(ToolError::HardDenied(path.display().to_string()));
     }
