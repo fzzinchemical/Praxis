@@ -933,7 +933,7 @@ flowchart LR
   - **Asked (2026-11-13, project owner):** beyond Claude Code's block: stop one subagent, show its context use, list the files it changed, and keep the nesting in the log. Split: stopping and changed files are T10.12.
   - **Done when:** the nesting is logged (`subagent_of`) so a reloaded chat (T10.1) shows the blocks again, and old logs still load; the block shows the subagent's prompt tokens against its context window, which never count as the parent's. Each part has a test.
 
-- [ ] **T10.12 Stop one subagent, list its files** (§11, §12) · *Should*
+- [x] **T10.12 Stop one subagent, list its files** (§11, §12) · *Should*
   - **Needs:** T10.11.
   - **Done when:** a stop button on a running subagent block cancels only that subagent (its own child cancellation token, reached through an ACP extension method), and the parent gets a cancelled result and keeps going; the block lists the files the subagent changed (completed `Write`/`Edit` calls), each opening its change in VS Code's diff view. Each part has a test.
 
