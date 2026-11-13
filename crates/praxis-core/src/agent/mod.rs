@@ -167,6 +167,8 @@ pub struct Agent {
     permissions: Permissions,
     /// Failures in a row per tool name, this turn.
     call_failures: HashMap<String, u32>,
+    /// Prepended to generated tool call ids; a subagent's is its `Agent` call id, so its ids never match the parent's.
+    call_prefix: String,
     parse_failures: u32,
     budget: Budget,
     /// A warning from `new`, which has no event channel, for the first turn to send.
@@ -285,6 +287,7 @@ impl Agent {
             history,
             permissions,
             call_failures: HashMap::new(),
+            call_prefix: String::new(),
             parse_failures: 0,
             budget,
             prefix_warning,
@@ -397,6 +400,7 @@ impl Agent {
                 }
             }
             let mut child = Agent::new(Arc::clone(&self.provider), Arc::clone(&self.tools), config);
+            child.call_prefix = format!("{parent}/");
             // The child inherits the parent's live mode and session grants, not just config.policy.
             child.permissions = self.permissions.clone();
             child.limits = Some((def.tools.clone(), def.disallowed_tools.clone()));
@@ -788,7 +792,8 @@ impl Agent {
             {
                 reply.calls.push(ToolCall {
                     id: format!(
-                        "constrained-{}",
+                        "{}constrained-{}",
+                        self.call_prefix,
                         self.history.len() + self.summarised_messages
                     ),
                     name: tool.name,
@@ -796,7 +801,8 @@ impl Agent {
                 });
             }
             let id_prefix = format!(
-                "text-call-{}",
+                "{}text-call-{}",
+                self.call_prefix,
                 self.history.len() + self.summarised_messages
             );
             let recovered = recovery::recover_calls(

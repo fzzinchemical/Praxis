@@ -290,6 +290,91 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_subagents_recovered_calls_never_reuse_the_parent_call_id() {
+    // Both replies are text-recovered calls, so their ids come from the history length.
+    let script = vec![
+        text_reply(
+            r#"<tool_call>{"name": "Agent", "arguments": {"subagent_type": "kit:scout", "prompt": "find it"}}</tool_call>"#,
+        ),
+        text_reply(r#"<tool_call>{"name": "Glob", "arguments": {"pattern": "*"}}</tool_call>"#),
+        text_reply("found it"),
+        text_reply("done"),
+    ];
+    let server = MockServer::start().await;
+    Mock::given(matchers::method("POST"))
+        .respond_with(Script {
+            bodies: script,
+            next: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+    let workspace = new_workspace();
+    let profile = praxis_core::agent::profile::ModelProfile {
+        tool_format: praxis_core::agent::recovery::ToolFormat::HermesText,
+        ..Default::default()
+    };
+    let agent = Agent::new(
+        Arc::new(Provider::new(&server.uri(), None).unwrap()),
+        Arc::new(ToolContext::new(&workspace).unwrap()),
+        AgentConfig {
+            model: "m".into(),
+            context_size: 100_000,
+            system_prompt: "sys".into(),
+            memory: Vec::new(),
+            scoped_rules: Vec::new(),
+            mask_keep_turns: 10,
+            max_turn_requests: 50,
+            profile,
+            seed: None,
+            policy: Policy::default(),
+            masking: true,
+        },
+    );
+    let scout = praxis_core::plugin::AgentDef {
+        skill: praxis_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: Some(vec!["Glob".into()]),
+        disallowed_tools: Vec::new(),
+        max_turns: Some(5),
+        model: None,
+    };
+    let mut agent = agent.with_agents(vec![scout]);
+    let (tx, mut rx) = mpsc::channel(64);
+    let task = tokio::spawn(async move {
+        agent
+            .run_turn("go".to_owned(), &tx, CancellationToken::new())
+            .await;
+        agent
+    });
+    let mut parent_id = None;
+    let mut child_ids = Vec::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::ToolStarted { id, name, .. } if name == "Agent" => parent_id = Some(id),
+            AgentEvent::Subagent { event, .. } => {
+                if let AgentEvent::ToolStarted { id, .. } = *event {
+                    child_ids.push(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    task.await.unwrap();
+
+    let parent_id = parent_id.expect("the parent started an Agent call");
+    assert!(!child_ids.is_empty(), "the subagent started a call");
+    for id in &child_ids {
+        assert_ne!(id, &parent_id, "subagent call id reuses the parent's");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn stopping_one_subagent_ends_it_and_the_parent_turn_still_ends() {
     let script = vec![
         tool_reply(&[(
