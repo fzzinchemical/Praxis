@@ -1032,3 +1032,42 @@ async fn a_pre_tool_hook_sees_the_absolute_path_of_a_relative_file_path() {
         json!(workspace.join("a.txt").to_str().unwrap())
     );
 }
+
+/// `.` and `..` are folded away before a hook sees the path, so the hook and the deny rules
+/// read the same spelling (audit 17 and 4).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pre_tool_hook_sees_a_dot_and_dotdot_path_folded_to_the_workspace_path() {
+    let workspace = new_workspace();
+    fs::write(workspace.join("a.txt"), "hi").unwrap();
+    let seen = workspace.join("seen.json");
+    let hook = Hook {
+        event: "PreToolUse".to_owned(),
+        matcher: Matcher::Names(vec!["Read".to_owned()]),
+        command: format!("cat > '{}'", seen.display()),
+        args: None,
+        timeout: std::time::Duration::from_secs(10),
+    };
+    let mut h = Harness::in_workspace(
+        workspace.clone(),
+        vec![
+            tool_reply(&[("r1", "Read", json!({"file_path": "./x/../a.txt"}))]),
+            text_reply("done"),
+        ],
+        50,
+    )
+    .await;
+    let agent = h
+        .agent
+        .take()
+        .unwrap()
+        .with_hooks(vec![(hook, workspace.clone())]);
+    h.agent = Some(agent);
+
+    h.turn("go", CancellationToken::new(), |_| None).await;
+
+    let payload: Value = serde_json::from_str(&fs::read_to_string(&seen).unwrap()).unwrap();
+    assert_eq!(
+        payload["tool_input"]["file_path"],
+        json!(workspace.join("a.txt").to_str().unwrap())
+    );
+}

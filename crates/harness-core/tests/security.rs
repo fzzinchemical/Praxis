@@ -93,6 +93,18 @@ enum Outcome {
 /// Runs one turn in `workspace` where the model makes `call`, under `mode` with [`ALLOW_ALL`].
 /// Every prompt is answered by dropping it, which denies.
 async fn run(workspace: &Path, mode: Mode, name: &str, args: Value) -> (Outcome, Vec<Value>) {
+    run_under(workspace, mode, &[], name, args).await
+}
+
+/// [`run`] with session deny rules in force.
+async fn run_under(
+    workspace: &Path,
+    mode: Mode,
+    deny: &[&str],
+    name: &str,
+    args: Value,
+) -> (Outcome, Vec<Value>) {
+    let deny: Vec<String> = deny.iter().map(|r| (*r).to_owned()).collect();
     let server = MockServer::start().await;
     Mock::given(matchers::method("POST"))
         .respond_with(Script {
@@ -115,7 +127,7 @@ async fn run(workspace: &Path, mode: Mode, name: &str, args: Value) -> (Outcome,
             max_turn_requests: 5,
             profile: ModelProfile::default(),
             seed: None,
-            policy: Policy::new(mode, &allow, &[]).unwrap(),
+            policy: Policy::new(mode, &allow, &deny).unwrap(),
             masking: true,
         },
     );
@@ -283,6 +295,25 @@ async fn symlinks_cannot_carry_writes_to_denied_or_outside_paths() {
         }
         assert_original(&workspace, ".git/hooks/pre-commit");
         assert!(!outside.join("planted").exists());
+    }
+}
+
+/// A deny rule names the path the model wrote, so a symlinked folder can't dodge it by resolving
+/// to its target.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deny_rule_on_a_symlinked_folder_holds_for_reads_through_the_link() {
+    let workspace = temp_dir("ws");
+    fs::create_dir_all(workspace.join("vendor/keys")).unwrap();
+    fs::write(workspace.join("vendor/keys/id"), "key material").unwrap();
+    std::os::unix::fs::symlink(workspace.join("vendor/keys"), workspace.join("secrets")).unwrap();
+    for mode in MODES {
+        let args = json!({"file_path": "secrets/id"});
+        let (outcome, _) = run_under(&workspace, mode, &["Read(secrets/**)"], "Read", args).await;
+        assert_eq!(
+            outcome,
+            Outcome::Denied,
+            "Read through the link in {mode:?}"
+        );
     }
 }
 

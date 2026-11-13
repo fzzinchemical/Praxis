@@ -26,7 +26,7 @@ use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
@@ -930,8 +930,10 @@ impl Agent {
         checked
     }
 
-    /// Rewrites a relative path argument to its resolved absolute path, so hooks and the tool
-    /// see the same path (SPEC §6). A path that does not resolve is left for the tool to refuse.
+    /// Makes a path argument absolute by joining it onto the workspace, so hooks and the tool see
+    /// the same path (SPEC §6). `.` and `..` are folded lexically and symlinks are not followed:
+    /// the permission check must see the name the model used, or a deny rule on a symlinked folder
+    /// is bypassed (audit 17), and a `..` left in place reaches hooks unfolded (audit 4).
     fn absolute_paths(&self, name: &str, mut input: Value) -> Value {
         let key = match name {
             "Read" | "Write" | "Edit" => "file_path",
@@ -941,12 +943,22 @@ impl Agent {
         let Some(raw) = input.get(key).and_then(Value::as_str) else {
             return input;
         };
-        let Ok(root) = self.tools.workspace().canonicalize() else {
-            return input;
-        };
-        if let Ok(abs) = confine::resolve(&root, raw)
-            && let Some(text) = abs.to_str()
-        {
+        let abs =
+            self.tools
+                .workspace()
+                .join(raw)
+                .components()
+                .fold(PathBuf::new(), |mut out, part| {
+                    match part {
+                        Component::CurDir => {}
+                        Component::ParentDir => {
+                            out.pop();
+                        }
+                        other => out.push(other),
+                    }
+                    out
+                });
+        if let Some(text) = abs.to_str() {
             input[key] = json!(text);
         }
         input
