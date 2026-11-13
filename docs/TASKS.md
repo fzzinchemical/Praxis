@@ -17,9 +17,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
-| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 11 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
+| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 12 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
 
-93 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+94 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -853,7 +853,8 @@ flowchart LR
     T10_8["T10.8<br/>Show subagent activity"]
     T10_9["T10.9<br/>Plugin details"]
     T10_10["T10.10<br/>Turns stop early"]
-    T10_11["T10.11<br/>Subagent controls"]
+    T10_11["T10.11<br/>Subagent log, context"]
+    T10_12["T10.12<br/>Stop subagent, files"]
     T3_7(["T3.7"])
     T5_12(["T5.12"])
     T6_2(["T6.2"])
@@ -872,12 +873,13 @@ flowchart LR
     T10_6 --> T10_9
     T10_8 --> T10_11
     T10_1 --> T10_11
+    T10_11 --> T10_12
     T8_9 -.-> T10_8
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8,T10_9,T10_10,T10_11 task
+    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8,T10_9,T10_10,T10_11,T10_12 task
     class T10_5,T10_7 human
     class T3_7,T5_12,T6_2,T9_4,T3_5,T6_5,T8_9 other
 ```
@@ -926,12 +928,16 @@ flowchart LR
   - **Plan:** tag forwarded events with the parent `Agent` call's `ToolCallId`; over ACP, send the subagent's tool calls with that parent id in `_meta` and its text as `tool_call_update` content on the `Agent` call, so plain ACP clients still see a flat list; the panel nests by parent id. Token counts stay the parent's.
   - **Done when:** on the fake server, a parent turn with one subagent emits the subagent's tool calls carrying the parent id and its text only on the `Agent` call; the panel test renders them nested and collapsed; a permission prompt from a subagent names the subagent.
 
-- [ ] **T10.11 Subagent controls and details** (§8, §11, §12) · *Should*
+- [x] **T10.11 Subagent log and context use** (§8, §11, §12) · *Should*
   - **Needs:** T10.8, T10.1.
-  - **Asked (2026-11-13, project owner):** beyond Claude Code's block: stop one subagent, show its context use, list the files it changed, and keep the nesting in the log.
-  - **Done when:** a stop button on a running subagent block cancels only that subagent, and the parent gets a cancelled result and keeps going; the block shows the subagent's tokens and how full its context window is; the block lists the files the subagent changed, each opening its diff; the nesting is logged so a reloaded chat (T10.1) shows the blocks again, and old logs still load. Each part has a test.
+  - **Asked (2026-11-13, project owner):** beyond Claude Code's block: stop one subagent, show its context use, list the files it changed, and keep the nesting in the log. Split: stopping and changed files are T10.12.
+  - **Done when:** the nesting is logged (`subagent_of`) so a reloaded chat (T10.1) shows the blocks again, and old logs still load; the block shows the subagent's prompt tokens against its context window, which never count as the parent's. Each part has a test.
 
-- [ ] **T10.9 Plugin details from the sidebar** (§12) · *Should*
+- [ ] **T10.12 Stop one subagent, list its files** (§11, §12) · *Should*
+  - **Needs:** T10.11.
+  - **Done when:** a stop button on a running subagent block cancels only that subagent (its own child cancellation token, reached through an ACP extension method), and the parent gets a cancelled result and keeps going; the block lists the files the subagent changed (completed `Write`/`Edit` calls), each opening its change in VS Code's diff view. Each part has a test.
+
+- [x] **T10.9 Plugin details from the sidebar** (§12) · *Should*
   - **Needs:** T10.6.
   - **Asked (2026-11-13, project owner):** clicking a plugin in the sidebar shows its documentation and commands.
   - **Decided (2026-11-13, project owner):** an editor tab, like VS Code's extension details page.
