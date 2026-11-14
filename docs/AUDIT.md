@@ -607,3 +607,35 @@ Reviewed the round 4 fixes (`fda1c12`, `30ac87e`) and the panel code round 4 lef
 (`praxis-vscode-ui/src/lib.rs`: tool blocks, subagent usage, changed files, Stop button, command
 menu). With call ids now unique per subagent, the panel's id-keyed tool map holds. No new
 findings, so the beta 1.2 audit loop ends here.
+
+# Round 6: beta 1.3.0 (2026-11-14)
+
+Round 6 audits everything added since `v1.2.0-beta` (`git diff v1.2.0-beta..9097a19`): rewind
+(`Agent::rewind_to_turn`, `ToolContext::rewind_to`, the log's rewind line), file revert, editor
+diagnostics after `Write` and `Edit`, Ctrl+F, the unfocused-turn notice, and change-set review.
+Same rules: one item per branch, write the test first, tick the box here.
+
+## Must fix
+
+- [ ] **27. Sending a prompt while a turn runs makes "Rewind to here" rewind the wrong turn**
+  (`crates/praxis-vscode-ui/src/lib.rs` `on_submit`, `user_bubble`)
+  - **What this is:** Each user bubble's "Rewind to here" sends the turn number the panel
+    counted. The agent rewinds the turn with that number in its own count.
+  - **Problem:** The panel accepts a prompt whenever the session is ready, even mid-turn, and
+    counts a bubble for it. ACP refuses it ("a prompt is already running"), so the agent counts
+    no turn. From then on every bubble is one ahead: rewinding bubble 3 rewinds the agent's
+    turn 3, which is the user's fourth prompt, so the files of the intended turn stay changed.
+  - **Fix:** Only accept a prompt while the panel is idle, as a pure `view::can_send(ready,
+    phase)`; a refused prompt stays in the box.
+  - **Done when:** a `view.rs` test shows `can_send` is false in every busy phase and while not
+    ready, and true only when ready and idle.
+
+**Not fixed, by decision:** every `Write` and `Edit` waits the panel's fixed 2 s for editor
+diagnostics (marked `shortcut:` in `praxis-vscode/src/lib.rs`), so a turn with ten edits takes
+about 20 s longer. Revisit if eval wall times show it.
+
+**Checked, no finding:** checkpoint steps keep turn order, expired turns are refused, a partly
+failed restore keeps the failed files for a retry; mid-turn memory is marked and kept out of turn
+numbers and replay; rewind is off after a summary and for resumed turns; diagnostics run inside
+`spawn_blocking`, so `block_on` is safe; revert and rewind refuse while a turn runs and go through
+`resolve` and `check_writable`.
