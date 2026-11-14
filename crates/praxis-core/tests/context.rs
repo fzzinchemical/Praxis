@@ -377,8 +377,9 @@ fn split_messages(raw: &str) -> (&str, String) {
 fn without_max_tokens(rest: &str) -> String {
     match rest.split_once("max_tokens\":") {
         Some((head, tail)) => {
-            let (_, after) = tail.split_once(',').unwrap();
-            format!("{head}{after}")
+            // The field may be the last key, so it ends at `,` or at the closing `}`.
+            let end = tail.find([',', '}']).unwrap();
+            format!("{head}{}", &tail[end..])
         }
         None => rest.to_owned(),
     }
