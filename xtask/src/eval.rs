@@ -386,22 +386,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             AgentEvent::Subagent { event, .. } => (*event, true),
             other => (other, false),
         };
-        if let AgentEvent::Usage {
-            prompt_tokens,
-            used_tokens,
-            first_token_ms,
-            model_ms,
-            ..
-        } = &event
-        {
-            requests.push(json!({
-                "subagent": subagent,
-                "prompt_tokens": prompt_tokens,
-                "completion_tokens": used_tokens.saturating_sub(*prompt_tokens),
-                "first_token_ms": first_token_ms,
-                "model_ms": model_ms,
-            }));
-        }
+        requests.extend(request_record(&event, subagent));
         // A subagent's prompt size isn't the run's, so it stays out of the token counts.
         if subagent && matches!(event, AgentEvent::Usage { .. }) {
             continue;
@@ -607,6 +592,27 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
 }
 
 /// `<board stem>-transcripts/<task>-<run>.json` beside the board.
+/// One request's tokens and timings for the transcript, or `None` for any other event.
+fn request_record(event: &AgentEvent, subagent: bool) -> Option<Value> {
+    let AgentEvent::Usage {
+        prompt_tokens,
+        used_tokens,
+        first_token_ms,
+        model_ms,
+        ..
+    } = event
+    else {
+        return None;
+    };
+    Some(json!({
+        "subagent": subagent,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": used_tokens.saturating_sub(*prompt_tokens),
+        "first_token_ms": first_token_ms,
+        "model_ms": model_ms,
+    }))
+}
+
 fn transcript_path(board: &Path, task: &str, run: u32) -> PathBuf {
     let stem = board.file_stem().unwrap_or_default().to_string_lossy();
     board
@@ -979,6 +985,34 @@ mod tests {
         let none = agent_spec(&task, &ready("google/other"), &options, Some(&home.0), 1);
         assert!(none["vendor"].is_null());
         assert!(agent_spec(&task, &ready("google/gemma"), &options, None, 1)["vendor"].is_null());
+    }
+
+    #[test]
+    fn a_usage_event_becomes_a_request_record_and_others_do_not() {
+        let usage = AgentEvent::Usage {
+            prompt_tokens: 100,
+            used_tokens: 130,
+            context_size: 32768,
+            cached_tokens: None,
+            first_token_ms: Some(5),
+            model_ms: 40,
+        };
+        assert_eq!(
+            request_record(&usage, true),
+            Some(json!({
+                "subagent": true,
+                "prompt_tokens": 100,
+                "completion_tokens": 30,
+                "first_token_ms": 5,
+                "model_ms": 40,
+            }))
+        );
+        let notice = AgentEvent::Notice {
+            severity: Severity::Info,
+            title: String::new(),
+            detail: None,
+        };
+        assert_eq!(request_record(&notice, false), None);
     }
 
     #[test]
