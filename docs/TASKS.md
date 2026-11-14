@@ -1062,19 +1062,19 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** `scripts/verify` runs the native tests through `cargo llvm-cov` instead of plain `cargo test`, and fails when line coverage falls below the floor for the workspace or for any native crate. The floors sit in `scripts/coverage-floors` and may only rise.
 
-- [ ] **T12.2 REPL commands** (US-61, §11)
+- [x] **T12.2 REPL commands** (US-61, §11)
   - **Needs:** none.
   - **Done when:** `crates/praxis-cli/tests/us61_repl_commands.rs` checks every acceptance point of US-61 against the fake server.
 
-- [ ] **T12.3 Session management** (US-62, §8)
+- [x] **T12.3 Session management** (US-62, §8)
   - **Needs:** none.
   - **Done when:** `crates/praxis-cli/tests/us62_sessions.rs` checks every acceptance point of US-62.
 
-- [ ] **T12.4 Stop reasons** (US-63, §11)
+- [x] **T12.4 Stop reasons** (US-63, §11)
   - **Needs:** none.
   - **Done when:** `crates/praxis-cli/tests/us63_stop_reasons.rs` checks every acceptance point of US-63 against the fake server.
 
-- [ ] **T12.5 MCP failures** (US-64, §13)
+- [x] **T12.5 MCP failures** (US-64, §13)
   - **Needs:** none.
   - **Done when:** `crates/praxis-core/tests/us64_mcp_failures.rs` checks every acceptance point of US-64 with the test MCP server.
 

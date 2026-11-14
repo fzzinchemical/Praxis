@@ -2,6 +2,8 @@
 
 // Clippy's `allow-unwrap-in-tests` only applies to helpers in files that start with this.
 #![cfg(test)]
+// Each test binary uses a different subset of these helpers, so the rest is unused there.
+#![allow(dead_code, unused_imports)]
 
 use serde_json::{Value, json};
 use std::fs;
@@ -103,8 +105,6 @@ pub enum ResponseOrScript {
     Script(Vec<String>),
     Hang,
 }
-// `Hang` is unused in binaries that never hang a reply; the glob import still exposes it.
-#[allow(unused_imports)]
 pub use ResponseOrScript::{Hang, Script as Replies};
 
 pub fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {

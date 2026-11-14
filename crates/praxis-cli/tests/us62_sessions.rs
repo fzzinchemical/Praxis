@@ -3,8 +3,6 @@
 // Clippy's `allow-unwrap-in-tests` only applies to helpers in files that start with this.
 #![cfg(test)]
 
-// This binary uses only some shared helpers; the rest are dead code here, not in the suite.
-#[allow(dead_code, unused_imports)]
 mod common;
 
 use common::*;

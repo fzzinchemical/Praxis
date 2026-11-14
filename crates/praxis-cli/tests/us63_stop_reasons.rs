@@ -2,8 +2,6 @@
 
 #![cfg(test)]
 
-// Each test binary uses only part of the shared helpers.
-#[allow(dead_code)]
 mod common;
 use common::*;
 

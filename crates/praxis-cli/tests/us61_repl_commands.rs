@@ -3,8 +3,6 @@
 // Lets clippy treat helper functions here as test code for `allow-unwrap-in-tests`.
 #![cfg(test)]
 
-// Each test binary uses only part of the shared helpers, so the rest is dead here by design.
-#[allow(dead_code)]
 mod common;
 
 use common::*;
@@ -53,6 +51,12 @@ async fn plan_runs_read_only_so_a_scripted_write_is_refused_and_the_task_is_sent
         chats[0]["messages"]
             .to_string()
             .contains("add a cache layer")
+    );
+    // A rejected approval also leaves no file, so check the model was told why.
+    let follow_up = chats[1]["messages"].to_string();
+    assert!(
+        follow_up.contains("can't run in read-only mode"),
+        "{follow_up}"
     );
 }
 
