@@ -1143,7 +1143,7 @@ flowchart LR
     T13_11 --> T13_12
 ```
 
-- [ ] **T13.1 Broken tool arguments** (§5.1, §5.3)
+- [x] **T13.1 Broken tool arguments** (§5.1, §5.3)
   - **Why:** unparsable `arguments` stay raw in the history, LM Studio then answers every request with HTTP 500, and the session is dead for good, after resume and in VS Code too. 3 of the 4 gemma provider errors followed a parse failure (`agent/recovery.rs`).
   - **Needs:** none.
   - **Done when:** a fake-server test shows a history holding unparsable tool-call arguments is sent with `{}` in their place, also after resuming a saved session.
@@ -1153,17 +1153,17 @@ flowchart LR
   - **Needs:** T13.1, so a retry never resends a poisoned history.
   - **Done when:** a fake-server test shows a 5xx or a dropped stream is retried up to 3 times with growing backoff and the request unchanged (cache stays warm), and a 4xx and the HTTP 200 `event: error` overflow are not retried.
 
-- [ ] **T13.3 Continue at the output limit** (§5.5, §7)
+- [x] **T13.3 Continue at the output limit** (§5.5, §7)
   - **Why:** `finish_reason=length` ends the turn, and `max_output` at 15% of the context (4915 at 32k) is too small for gemma (6 failed runs).
   - **Needs:** none.
   - **Done when:** a fake-server test shows a reply cut off by `length` without a complete tool call is continued up to 2 times with a short "cut off, make the next tool call" note, and that `max_tokens` follows the remaining context, clamped to [15% of C, the profile's `max_output`]. US-63 and `us63_stop_reasons.rs` change to match: the limit message and failure code come only after the last continuation (requirement change, said in the commit body).
 
-- [ ] **T13.4 Gentler loop stop** (§5.4)
+- [x] **T13.4 Gentler loop stop** (§5.4)
   - **Why:** the detector stops edit-test cycles and corrections: 4b add-test-slugify in all 3 runs right after a correct fix, gemma rereading a file it had just broken.
   - **Needs:** none.
   - **Done when:** tests show a successful `Edit` or `Write` resets the detector, a `Read` of a file changed since the last read is not a repeat, and the first detection skips the call and sends the model a note while only the second stops the turn.
 
-- [ ] **T13.5 Tolerant Edit** (§6)
+- [x] **T13.5 Tolerant Edit** (§6)
   - **Why:** `Edit` matches exactly, and the near-match hint names the wrong line; gemma failed 5 edits over `    }` against `}`.
   - **Needs:** none.
   - **Done when:** tests show that when the exact match fails, matches after normalising CRLF, Unicode quotes, dashes and NBSP, and then line by line without leading and trailing whitespace, are applied only if unique and to the original text; and the failure hint shows the whole candidate block with line numbers.
@@ -1178,12 +1178,12 @@ flowchart LR
   - **Needs:** T13.6.
   - **Done when:** a fake-server test shows a turn that changed files and ran no command after the last change gets one note before it may end, and no second one in the same turn.
 
-- [ ] **T13.8 Read and Grep budgets** (§6, §7) · *Should*
+- [x] **T13.8 Read and Grep budgets** (§6, §7) · *Should*
   - **Why:** `Read` of a file over about 270 lines drops its middle into a spool file, which `Read` numbers a second time; Grep builds up to 1000 results (109k characters) only to cut them.
   - **Needs:** none.
   - **Done when:** tool tests show a large `Read` returns one continuous page that fits the result budget with a note naming the next `offset`, a spooled file is not numbered twice, and Grep stops collecting at the budget.
 
-- [ ] **T13.9 Eval fidelity** (§14) · *Should*
+- [x] **T13.9 Eval fidelity** (§14) · *Should*
   - **Why:** seed 42 in every run made Praxis runs dependent (4b: 23 distinct trajectories in 39 runs); boards hold no transcripts; evals send JSON keys in a different order from the shipped `praxis` and lack the `Agent` tool; nothing records tokens and time per request.
   - **Needs:** none.
   - **Done when:** `cargo xtask eval` uses seed `42 + run` and writes each run's transcript and per-request prompt and completion tokens, model time and tool time next to the board; `praxis-core` turns on serde_json `preserve_order` (and the key-order gotcha goes); evals register the `Agent` tool. Checked by unit and fake-server tests. No eval is run.
