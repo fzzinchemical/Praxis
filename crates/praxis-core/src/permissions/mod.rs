@@ -39,6 +39,16 @@ const HARD_DENIED_TEXT: [&str; 7] = [
     ".config/praxis",
 ];
 
+/// Whether a `Bash` call's command text reaches a hard-denied path (SPEC §10).
+fn hard_denied_bash(input: &Value) -> bool {
+    let command = input
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let lower = command.to_lowercase();
+    HARD_DENIED_TEXT.iter().any(|t| lower.contains(t))
+}
+
 /// `Tool` or `Tool(glob)`, as in Claude Code: `Bash(git status*)`, `Edit(src/**)`.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -231,8 +241,9 @@ impl Permissions {
         match tool {
             _ if read_only => Decision::Allow,
             "Write" | "Edit" if self.policy.mode >= Mode::AutoEdit => Decision::Allow,
-            // Only a simple command reaches here allowed: hard-denied text leaves `allow` unset.
-            "Bash" if self.policy.mode == Mode::FullAccess && subjects.allow.is_some() => {
+            // Full access runs every Bash command, compound ones included. Hard-denied text still
+            // falls through to the ask below.
+            "Bash" if self.policy.mode == Mode::FullAccess && !hard_denied_bash(input) => {
                 Decision::Allow
             }
             mcp if self.policy.mode == Mode::FullAccess && mcp.starts_with("mcp__") => {
@@ -276,9 +287,7 @@ impl Permissions {
         let text = |key: &str| input.get(key).and_then(Value::as_str);
         if tool == "Bash" {
             let command = text("command").unwrap_or_default();
-            let lower = command.to_lowercase();
-            let simple = !COMPOUND.iter().any(|c| command.contains(c))
-                && !HARD_DENIED_TEXT.iter().any(|t| lower.contains(t));
+            let simple = !COMPOUND.iter().any(|c| command.contains(c)) && !hard_denied_bash(input);
             let mut deny = vec![command.trim().to_owned()];
             deny.extend(segments(command));
             return Subjects {
@@ -457,6 +466,12 @@ mod tests {
             (Mode::AutoEdit, &shell, Some(ASK_ONCE)),
             (Mode::FullAccess, &write, Some(Decision::Allow)),
             (Mode::FullAccess, &shell, Some(Decision::Allow)),
+            (
+                Mode::FullAccess,
+                &bash("cargo test && cargo fmt"),
+                Some(Decision::Allow),
+            ),
+            (Mode::FullAccess, &bash("cat .git/config"), Some(ASK_ONCE)),
             (Mode::FullAccess, &unknown, None),
         ] {
             let decision = permissions(mode, &[], &[]).decide(call.0, &call.1);
@@ -465,6 +480,16 @@ mod tests {
                 None => assert!(denied(&decision), "{mode:?} {call:?}: {decision:?}"),
             }
         }
+    }
+
+    #[test]
+    fn full_access_runs_a_compound_bash_command_without_asking() {
+        let p = permissions(Mode::FullAccess, &[], &[]);
+        assert_eq!(
+            p.decide("Bash", &bash("cargo test && cargo fmt").1),
+            Decision::Allow
+        );
+        assert_eq!(p.decide("Bash", &bash("ls | wc -l").1), Decision::Allow);
     }
 
     #[test]
