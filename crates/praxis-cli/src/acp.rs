@@ -1144,6 +1144,13 @@ mod tests {
                 .mount(&server)
                 .await;
         }
+        // Answers T13.7's check-your-change note after a turn that wrote a file, with an empty
+        // reply, so the event lists the tests expect stay as they were.
+        let empty = sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]);
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(empty, "text/event-stream"))
+            .mount(&server)
+            .await;
         server
     }
 
@@ -1294,7 +1301,9 @@ mod tests {
                 "Write",
                 &json!({"file_path": "sub.txt", "content": "x"}),
             ),
+            // The subagent wrote a file, so T13.7's note asks it once more before it ends.
             reply,
+            sse(&[json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})]),
             text_body("done"),
         ])
         .await;
@@ -2770,7 +2779,13 @@ mod tests {
             "the rewind must restore the file"
         );
         let requests = server.received_requests().await.unwrap();
-        let body = requests[2].body_json::<Value>().unwrap().to_string();
+        // requests[2] answers T13.7's note after the Write; the next turn is the last request.
+        let body = requests
+            .last()
+            .unwrap()
+            .body_json::<Value>()
+            .unwrap()
+            .to_string();
         assert!(body.contains("again"), "{body}");
         assert!(
             !body.contains("make ok.txt"),

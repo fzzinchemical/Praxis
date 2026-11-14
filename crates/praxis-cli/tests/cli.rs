@@ -526,8 +526,11 @@ async fn rewind_restores_the_file_and_the_chat_to_before_the_turn() {
         Replies(vec![
             tool_reply("Write", &json!({"file_path": kept, "content": "x"})),
             text_reply("wrote kept"),
+            // Each turn wrote a file, so T13.7's check note asks once more.
+            text_reply("no checks here"),
             tool_reply("Write", &json!({"file_path": undone, "content": "x"})),
             text_reply("wrote undone"),
+            text_reply("no checks here"),
             text_reply("fresh start"),
         ]),
     )

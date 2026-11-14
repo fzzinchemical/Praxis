@@ -446,10 +446,11 @@ impl Agent {
             let cancel = stop.clone();
             let run = async move {
                 child.run_turn(prompt, &tx, cancel).await;
+                // Skips an empty last reply, such as one answering T13.7's check note.
                 let reply = child.history.iter().rev().find_map(|m| match m {
                     Message::Assistant {
                         content: Some(c), ..
-                    } => Some(c.clone()),
+                    } if !c.is_empty() => Some(c.clone()),
                     _ => None,
                 });
                 (reply, child.history)
