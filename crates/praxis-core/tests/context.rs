@@ -308,9 +308,7 @@ async fn user_agents_md_is_labelled_as_instructions_and_repo_agents_md_is_not() 
     let home = new_workspace();
     fs::write(home.join("AGENTS.md"), "USER-RULES").unwrap();
     fs::write(workspace.join("AGENTS.md"), "REPO-RULES").unwrap();
-    assert!(
-        praxis_core::agent::system_prompt(&workspace).contains("\"Instructions from:\" heading")
-    );
+    assert!(praxis_core::agent::system_prompt().contains("\"Instructions from:\" heading"));
     let mut cfg = config(100_000);
     cfg.memory =
         praxis_core::context::prefix::load_memory(&workspace, &workspace, None, Some(&home));

@@ -1086,10 +1086,17 @@ async fn resuming_a_log_with_unanswered_tool_calls_answers_them_before_the_next_
     assert_eq!(all.len(), 7, "the repaired results are logged too");
 }
 
+/// The facts block already names the working directory; repeating it here breaks the prompt cache between folders.
+#[test]
+fn system_prompt_does_not_repeat_the_workspace_path() {
+    let prompt = praxis_core::agent::system_prompt();
+    assert!(!prompt.contains('/'), "{prompt}");
+}
+
 /// SPEC §11: the prompt sits in the prefix, so it stays short and covers each contract point.
 #[test]
 fn system_prompt_covers_the_contract_within_budget() {
-    let prompt = praxis_core::agent::system_prompt(std::path::Path::new("/w")).to_lowercase();
+    let prompt = praxis_core::agent::system_prompt().to_lowercase();
     for point in ["assumptions", "unsure", "disagree", "small", "verified"] {
         assert!(prompt.contains(point), "missing {point:?}: {prompt}");
     }

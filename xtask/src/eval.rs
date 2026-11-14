@@ -328,7 +328,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         AgentConfig {
             model: instance,
             context_size: u32::try_from(number("context")?)?,
-            system_prompt: system_prompt(Path::new(WORK)),
+            system_prompt: system_prompt(),
             // No user-level dirs: only the task repo's own AGENTS.md and rules, as OpenCode sees them.
             memory: if spec["agents_md"] == true {
                 praxis_core::context::prefix::load_memory(

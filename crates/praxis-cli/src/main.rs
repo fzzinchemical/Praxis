@@ -1163,7 +1163,7 @@ async fn run(
     let agent_config = AgentConfig {
         model: ready.instance_id,
         context_size: ready.context_length,
-        system_prompt: system_prompt(&workspace),
+        system_prompt: system_prompt(),
         memory: praxis_core::context::prefix::load_memory(
             &workspace,
             &workspace,
