@@ -245,6 +245,8 @@ pub struct Reaction {
     pub models: Option<Value>,
     /// The permission mode picker's state, sent after `show`.
     pub modes: Option<Value>,
+    /// A changed file and its content before the agent's call, kept by the panel for Open diff.
+    pub original: Option<(String, String)>,
 }
 
 /// One saved session as the sessions view lists it.
@@ -768,7 +770,12 @@ fn update(update: &Value) -> Reaction {
             if let Some(file) = meta["filePath"].as_str() {
                 message["file"] = file.into();
             }
-            show(message)
+            let mut reaction = show(message);
+            if let (Some(file), Some(before)) = (meta["filePath"].as_str(), meta["before"].as_str())
+            {
+                reaction.original = Some((file.to_owned(), before.to_owned()));
+            }
+            reaction
         }
         Some("usage_update") => {
             show(json!({"type": "usage", "used": update["used"], "size": update["size"]}))
@@ -985,6 +992,24 @@ mod tests {
         let shown = client.on_line(&line.to_string()).show.expect("shown");
         assert_eq!(shown["file"], "/work/a.rs");
         assert_eq!(shown["parent"], "c0");
+    }
+
+    #[test]
+    fn a_write_carries_the_file_as_it_was_before_the_call() {
+        let (mut client, _) = Client::start("/work");
+        let edit = json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Edit a.rs",
+            "status": "pending", "_meta": {"praxis": {"filePath": "/work/a.rs", "before": "old\n"}}});
+        let line = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s1", "update": edit}});
+        let reaction = client.on_line(&line.to_string());
+        assert_eq!(
+            reaction.original,
+            Some(("/work/a.rs".to_owned(), "old\n".to_owned()))
+        );
+        assert!(
+            reaction.show.expect("shown")["before"].is_null(),
+            "the webview never gets the content"
+        );
     }
 
     #[test]

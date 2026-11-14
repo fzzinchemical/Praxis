@@ -16,7 +16,7 @@ use protocol::{
 };
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::rc::{Rc, Weak};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -253,6 +253,8 @@ struct Panel {
     disposables: Vec<Disposable>,
     /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
     closures: Vec<Closure<dyn FnMut(JsValue)>>,
+    /// Each changed file's content before the agent first changed it this session, for Open diff.
+    originals: HashMap<String, String>,
 }
 
 /// The child's listeners. `close` is a once-closure, so it frees itself when it runs.
@@ -424,6 +426,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         profile: ProfileJobs::default(),
         disposables: Vec::new(),
         closures: Vec::new(),
+        originals: HashMap::new(),
         resume,
     }));
 
@@ -824,8 +827,9 @@ fn drop_files(state: &Shared, uris: &[String]) {
     attach(&webview, &cwd, protocol::dropped_paths(uris));
 }
 
-/// Opens a subagent's changed file as VS Code's Git diff, or as the file when git can't show it
-/// (no repository). Paths outside the workspace are refused.
+/// Opens a changed file beside the chat: a diff from its content before the agent's first change
+/// when the panel saw it, else VS Code's Git diff, or the file when git can't show it. Paths
+/// outside the workspace are refused.
 fn open_change(state: &Shared, path: &str) {
     let Some(cwd) = workspace_dir() else {
         return;
@@ -837,6 +841,16 @@ fn open_change(state: &Shared, path: &str) {
             .notify(&format!("Not opened, outside the workspace: {path}"));
         return;
     };
+    let (before, output) = {
+        let panel = state.borrow();
+        (panel.originals.get(&path).cloned(), panel.output.clone())
+    };
+    if let Some(before) = before {
+        if let Err(error) = open_before_diff(&path, &before, &output) {
+            output.append(&format!("could not open the diff: {error:?}\n"));
+        }
+        return;
+    }
     let uri = Uri::file_uri(&path);
     let fallback = {
         let uri = uri.clone();
@@ -847,6 +861,27 @@ fn open_change(state: &Shared, path: &str) {
     let _ = execute_uri_command("git.openChange", &uri)
         .unchecked_into::<Thenable>()
         .catch_once(&fallback);
+}
+
+/// Opens `path` beside the chat, diffed against `before`, the content it had before the agent's
+/// first change. The `before` side is an untitled document, as in `open_review`.
+fn open_before_diff(path: &str, before: &str, output: &OutputChannel) -> Result<(), JsValue> {
+    let right = Uri::file_uri(path);
+    let title = format!("{path} (before and after the agent's changes)");
+    let (failed_open, failed_diff) = (failure_logger(output), failure_logger(output));
+    let on_left = Closure::once_into_js(move |left: JsValue| {
+        let left = left.unchecked_into::<TextDocument>().uri();
+        let options = Object::new();
+        let _ = Reflect::set(&options, &"viewColumn".into(), &VIEW_COLUMN_BESIDE.into());
+        let _ = execute_command("vscode.diff", &left, &right, &title, &options)
+            .unchecked_into::<Thenable>()
+            .catch_once(&failed_diff);
+    });
+    untitled(before)?
+        .unchecked_into::<Thenable>()
+        .then_once(&on_left)
+        .catch_once(&failed_open);
+    Ok(())
 }
 
 /// Posts the paths inside the workspace as picked files and says which ones were refused.
@@ -950,6 +985,9 @@ fn react(state: &Shared, mut reaction: Reaction) {
         if let Some(text) = turn_notice(window_focused(), CHAT_TITLE, reason) {
             notify_turn_end(state.borrow().handle.clone(), &text);
         }
+    }
+    if let Some((file, before)) = reaction.original {
+        state.borrow_mut().originals.entry(file).or_insert(before);
     }
     let panel = state.borrow();
     if let Some(message) = reaction.show {

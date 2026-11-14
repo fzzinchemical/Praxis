@@ -1079,6 +1079,16 @@ impl Ui {
             tool.files = Some(files);
         }
         if let Some(file) = message["file"].as_str() {
+            if tool.file.is_none() {
+                // Beside the collapsed block, so it shows without opening the call.
+                let open_diff = self.document.create_element("button")?;
+                open_diff.set_attribute("type", "button")?;
+                open_diff.set_attribute("data-open-change", file)?;
+                open_diff.set_text_content(Some("Open diff"));
+                if let Some(parent) = tool.details.parent_node() {
+                    parent.insert_before(&open_diff, tool.details.next_sibling().as_ref())?;
+                }
+            }
             tool.file = Some(file.to_owned());
             if !self.changed.contains(&id) {
                 self.changed.push(id.clone());
@@ -1177,8 +1187,6 @@ impl Ui {
                     chunks.append_child(&row)?;
                 }
                 item.append_child(&chunks)?;
-                let open_diff = self.button("Open diff", "data-open-change", &group.file)?;
-                item.append_child(&open_diff)?;
                 if !self.reverted.contains(&group.file) {
                     let revert = self.button("Revert file", "data-revert-file", &group.file)?;
                     item.append_child(&revert)?;

@@ -80,6 +80,8 @@ pub enum AgentEvent {
         name: String,
         input: Value,
         title: String,
+        /// A `Write` or `Edit` call's file content before the call, for the editor's diff.
+        before: Option<String>,
     },
     ToolFinished {
         id: ToolCallId,
@@ -1337,11 +1339,15 @@ impl Agent {
         let call = inner.as_ref().unwrap_or(call);
         let checked = self.check_call(call);
         let input = checked.as_ref().ok();
+        let before = input
+            .and_then(|input| tools::proposed_diff(&call.name, input, self.tools.workspace()))
+            .map(|diff| diff.old.unwrap_or_default());
         turn.emit(AgentEvent::ToolStarted {
             id: call.id.clone(),
             name: call.name.clone(),
             input: input.cloned().unwrap_or(Value::Null),
             title: title(&call.name, input),
+            before,
         })
         .await;
         if let Ok(input) = &checked

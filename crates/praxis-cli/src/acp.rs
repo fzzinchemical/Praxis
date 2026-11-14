@@ -850,6 +850,7 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
             name,
             input,
             title,
+            before,
         } => {
             let call = v1::ToolCall::new(id, title)
                 .kind(tool_kind(&name))
@@ -867,6 +868,10 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
             }
             if let Some(file) = file {
                 praxis.insert("filePath".into(), file.into());
+                // Lets the editor show the diff from before the first change; see `before` on the event.
+                if let Some(before) = before {
+                    praxis.insert("before".into(), before.into());
+                }
             }
             let meta = (!praxis.is_empty())
                 .then(|| serde_json::Map::from_iter([("praxis".to_owned(), praxis.into())]));
@@ -1030,6 +1035,7 @@ fn replayed_call(call: ToolCall) -> AgentEvent {
         name: call.name,
         input: input.unwrap_or(Value::Null),
         title,
+        before: None,
     }
 }
 
@@ -2599,6 +2605,7 @@ mod tests {
             name: "Bash".into(),
             input: json!({}),
             title: "Run ls".into(),
+            before: None,
         });
         assert_eq!(
             started,
