@@ -107,6 +107,9 @@ extern "C" {
     fn show_warning_message(message: &str, options: &JsValue, button: &str) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = showInputBox)]
     fn show_input_box(options: &JsValue) -> Promise;
+    /// `vscode.window.withProgress`; `task` returns a promise that ends the progress indicator.
+    #[wasm_bindgen(js_namespace = window, js_name = withProgress)]
+    fn with_progress(options: &JsValue, task: &JsValue) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = createTreeView)]
     fn create_tree_view(id: &str, options: &JsValue) -> JsValue;
     #[wasm_bindgen(js_namespace = languages, js_name = getDiagnostics)]
@@ -1631,12 +1634,14 @@ fn refresh_plugins() {
 
 /// Runs a CLI action, then refreshes the view whatever its outcome.
 fn run_action(args: Vec<String>) {
-    run_cli(args, None, |result| {
-        if let Err(error) = result {
-            plugin_log(&format!("plugins: {error}\n"));
-        }
-        refresh_plugins();
-    });
+    run_cli(args, None, finish_action);
+}
+
+fn finish_action(result: Result<String, String>) {
+    if let Err(error) = result {
+        plugin_log(&format!("plugins: {error}\n"));
+    }
+    refresh_plugins();
 }
 
 /// Shows a modal with one button and runs `on_confirm` only if that button is picked.
@@ -1687,12 +1692,33 @@ fn install_plugin() {
     let on_input = Closure::once_into_js(move |input: JsValue| {
         let source = input.as_string().map(|text| text.trim().to_owned());
         if let Some(source) = source.filter(|text| !text.is_empty()) {
-            run_action(install_args(&source));
+            install_with_progress(install_args(&source));
         }
     });
     let _ = show_input_box(&options)
         .unchecked_into::<Thenable>()
         .then_once(&on_input);
+}
+
+/// Runs the install under a notification spinner that stays until the CLI exits.
+fn install_with_progress(args: Vec<String>) {
+    let mut args = Some(args);
+    let task = Closure::once_into_js(move || {
+        JsValue::from(Promise::new(&mut |resolve, _reject| {
+            if let Some(args) = args.take() {
+                run_cli(args, None, move |result| {
+                    finish_action(result);
+                    let _ = resolve.call0(&JsValue::UNDEFINED);
+                });
+            }
+        }))
+    });
+    // 15 is vscode.ProgressLocation.Notification.
+    let options = node(&[
+        ("location", JsValue::from_f64(15.0)),
+        ("title", JsValue::from_str("Installing plugin")),
+    ]);
+    let _ = with_progress(&options, &task);
 }
 
 #[cfg(test)]

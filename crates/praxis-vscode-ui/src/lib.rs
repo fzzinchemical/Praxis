@@ -14,7 +14,8 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
     Document, DragEvent, Element, Event, HtmlElement, HtmlFormElement, HtmlInputElement,
-    HtmlOptionElement, HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MessageEvent,
+    HtmlOptionElement, HtmlSelectElement, HtmlTextAreaElement, KeyboardEvent, MediaQueryList,
+    MessageEvent,
 };
 #[wasm_bindgen]
 extern "C" {
@@ -295,6 +296,18 @@ fn save_profile(fields: &Element, api: &VsCodeApi) -> Result<(), JsValue> {
 }
 
 /// A disabled control carries the attribute, which browsers and screen readers both honour.
+/// Whether the user asked the OS for less motion.
+fn reduced_motion() -> bool {
+    web_sys::window()
+        .and_then(|window| {
+            window
+                .match_media("(prefers-reduced-motion: reduce)")
+                .ok()
+                .flatten()
+        })
+        .is_some_and(|query: MediaQueryList| query.matches())
+}
+
 fn set_enabled(element: &Element, enabled: bool) -> Result<(), JsValue> {
     if enabled {
         element.remove_attribute("disabled")
@@ -733,6 +746,14 @@ impl Ui {
         self.ended = None;
         self.status.phase = Phase::ProcessingPrompt;
         self.output.set_attribute("aria-busy", "true")?;
+        // Static markup with no user text; CSS draws the animation and `show_status` fills the word.
+        let indicator = self.document.create_element("div")?;
+        indicator.set_id("working");
+        indicator.set_class_name("working");
+        indicator.set_inner_html(
+            r#"<span class="working-pac" aria-hidden="true"><span class="working-man"></span><span class="working-dots"><i></i><i></i><i></i><i></i></span></span><span id="working-word" class="working-word" aria-live="polite"></span>"#,
+        );
+        self.output.append_child(&indicator)?;
         set_enabled(&self.stop, true)?;
         self.sync_pickers()?;
         self.show_status();
@@ -745,6 +766,9 @@ impl Ui {
         self.status.phase = Phase::Idle;
         self.ended = Some(js_sys::Date::now());
         self.output.remove_attribute("aria-busy")?;
+        if let Some(indicator) = self.document.get_element_by_id("working") {
+            indicator.remove();
+        }
         set_enabled(&self.stop, false)?;
         self.sync_pickers()
     }
@@ -853,6 +877,18 @@ impl Ui {
         let elapsed = ((end - self.started) / 1000.0).max(0.0) as u64;
         self.status_line
             .set_text_content(Some(&self.status.line(elapsed)));
+        self.set_working_word(elapsed);
+    }
+
+    /// Cycles the busy indicator's word. Writes only on change, so a screen reader announces each change once.
+    fn set_working_word(&self, elapsed: u64) {
+        let Some(word) = self.document.get_element_by_id("working-word") else {
+            return;
+        };
+        let text = format!("{}\u{2026}", view::working_word(elapsed, reduced_motion()));
+        if word.text_content().as_deref() != Some(text.as_str()) {
+            word.set_text_content(Some(&text));
+        }
     }
 
     fn handle(&mut self, message: &Value) -> Result<(), JsValue> {

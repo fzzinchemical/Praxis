@@ -219,6 +219,17 @@ impl Status {
     }
 }
 
+/// The playful words the busy indicator cycles through, one every two seconds.
+pub const WORKING_WORDS: [&str; 5] = ["Chomping", "Munching", "Pondering", "Crunching", "Nibbling"];
+
+/// The indicator's word `elapsed_secs` into a turn. Reduced motion keeps one static word.
+pub fn working_word(elapsed_secs: u64, reduced_motion: bool) -> &'static str {
+    if reduced_motion {
+        return "Working";
+    }
+    WORKING_WORDS[(elapsed_secs / 2) as usize % WORKING_WORDS.len()]
+}
+
 /// The child index that a rewind to user turn `turn` (1-based) cuts the chat at: the `user`
 /// bubble that starts it. None when the chat has no such turn.
 pub fn cut_at_turn(classes: &[String], turn: usize) -> Option<usize> {
@@ -431,6 +442,20 @@ mod tests {
             subagent_summary("general", 2, "in_progress", Some((12_000, 32_000))),
             "general · 2 tool calls · running · 12k / 32k tokens"
         );
+    }
+
+    #[test]
+    fn working_word_cycles_every_two_seconds_and_wraps() {
+        assert_eq!(working_word(0, false), "Chomping");
+        assert_eq!(working_word(1, false), "Chomping");
+        assert_eq!(working_word(2, false), "Munching");
+        assert_eq!(working_word(10, false), "Chomping");
+    }
+
+    #[test]
+    fn reduced_motion_keeps_one_static_word() {
+        assert_eq!(working_word(0, true), "Working");
+        assert_eq!(working_word(7, true), "Working");
     }
 
     #[test]
