@@ -1078,6 +1078,6 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** `crates/praxis-core/tests/us64_mcp_failures.rs` checks every acceptance point of US-64 with the test MCP server.
 
-- [ ] **T12.6 Raise the gate**
+- [x] **T12.6 Raise the gate**
   - **Needs:** T12.1 to T12.5.
   - **Done when:** the floors in `scripts/coverage-floors` are raised to the new measured values, rounded down.
