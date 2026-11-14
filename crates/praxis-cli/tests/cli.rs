@@ -139,6 +139,35 @@ fn err(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn the_workspace_agents_md_reaches_the_system_prompt() {
+    const MARKER: &str = "MARKER-7f3a use tabs";
+
+    let with = workspace();
+    fs::write(with.join("AGENTS.md"), format!("# Rules\n{MARKER}\n")).unwrap();
+    let first = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let output = run(&first, &with, &["--model", "m", "say hi"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let chats = requests_to(&first, CHAT).await;
+    let system = &chats[0]["messages"][0];
+    assert_eq!(system["role"], "system");
+    assert!(
+        system.to_string().contains(MARKER),
+        "marker missing: {}",
+        chats[0]
+    );
+
+    let without = workspace();
+    let fake = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let output = run(&fake, &without, &["--model", "m", "say hi"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let chats = requests_to(&fake, CHAT).await;
+    assert!(
+        !chats[0].to_string().contains(MARKER),
+        "marker leaked without AGENTS.md"
+    );
+}
+
 async fn requests_to(server: &MockServer, route: &str) -> Vec<Value> {
     server
         .received_requests()
