@@ -1046,7 +1046,7 @@ Start with tools, then resources and prompts.
 
 **Fixtures** are recorded from real servers by T0.3 and stored as-is, including malformed output. Never hand-edit them to make a test pass; if behaviour changes, re-record.
 
-`scripts/verify` runs `cargo fmt --all --check`, then `cargo clippy` and `cargo test` on the workspace excluding wasm crates, then `cargo clippy` (which includes the check) for wasm crates with `--target wasm32-unknown-unknown`. Add `cargo audit` if the human approves the tool; it isn't installed.
+`scripts/verify` runs `cargo fmt --all --check`, then `cargo clippy` and the native tests on the workspace excluding wasm crates, run through `cargo llvm-cov` with line-coverage floors in `scripts/coverage-floors`, then `cargo clippy` (which includes the check) for wasm crates with `--target wasm32-unknown-unknown`. Add `cargo audit` if the human approves the tool; it isn't installed.
 
 ### Evals
 

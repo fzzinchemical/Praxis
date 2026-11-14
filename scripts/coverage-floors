@@ -1,0 +1,6 @@
+# <name> <path-regex> <min-line-percent>
+# Floors may only rise (T12.6). Sandboxed children can't write profiles (Landlock, exec), so sandbox.rs reads low.
+workspace crates/.*/src/|xtask/src/ 93.1
+praxis-core crates/praxis-core/src/ 95.7
+praxis-cli crates/praxis-cli/src/ 92.2
+xtask xtask/src/ 73.3

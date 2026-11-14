@@ -10,7 +10,7 @@ native=(--workspace --exclude praxis-vscode --exclude praxis-vscode-ui)
 
 cargo fmt --all --check
 cargo clippy "${native[@]}" --all-targets -- -D warnings
-cargo test -q "${native[@]}"
+./scripts/coverage
 
 for crate in "${wasm_crates[@]}"; do
     # Their pure logic (message mapping) is tested natively; the bindings only link on wasm.

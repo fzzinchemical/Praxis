@@ -1058,7 +1058,7 @@ flowchart LR
     T12_5 --> T12_6
 ```
 
-- [ ] **T12.1 Coverage gate** (§14)
+- [x] **T12.1 Coverage gate** (§14)
   - **Needs:** none.
   - **Done when:** `scripts/verify` runs the native tests through `cargo llvm-cov` instead of plain `cargo test`, and fails when line coverage falls below the floor for the workspace or for any native crate. The floors sit in `scripts/coverage-floors` and may only rise.
 
