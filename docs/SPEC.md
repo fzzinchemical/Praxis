@@ -339,7 +339,7 @@ constrained_retry = true      # on once LM Studio reports the model
 
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning.
 
-**Runaway stop (T13.10).** While a reply streams, reasoning and content deltas feed a detector over the last ~400 words (whitespace-split). If the last words repeat one unit of 1 to 50 words 8 times in a row, the stream is closed and the reply is handled as a `finish_reason=length` stop, so the continuation of T13.3 applies and its limit still counts. Only the stream's own text is checked, and a complete tool call already received is still run.
+**Runaway stop (T13.10).** While a reply streams, reasoning and content deltas feed a detector over the last ~400 words (whitespace-split). If the last words repeat one unit of 1 to 50 words 8 times in a row, over at least 64 words (so a short run like eight closing `}` is not a runaway), the stream is closed and the reply is handled as a `finish_reason=length` stop, so the continuation of T13.3 applies and its limit still counts. Only the stream's own text is checked, and a complete tool call already received is still run.
 
 ### 5.6 Anthropic facts
 

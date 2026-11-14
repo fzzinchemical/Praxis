@@ -676,7 +676,7 @@ async fn a_command_after_the_last_change_means_no_nudge() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_reply_repeating_one_phrase_is_cut_off_and_continued_like_a_length_stop() {
     let runaway = sse(&[
-        json!({"choices": [{"delta": {"content": "I will check it again. ".repeat(12)}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {"content": "I will check it again. ".repeat(16)}, "finish_reason": null}]}),
         json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
     ]);
     let mut h = Harness::new(vec![runaway, text_reply("ok")], 50).await;

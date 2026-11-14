@@ -8,6 +8,8 @@ const WINDOW_WORDS: usize = 400;
 const MAX_PERIOD: usize = 50;
 /// Repeats of one unit, in a row, that count as a runaway.
 const REPEATS: usize = 8;
+/// Fewest words a runaway spans, so short legitimate runs such as eight closing `}` don't count.
+const MIN_SPAN: usize = 64;
 
 /// Feeds on each streamed delta and says when the last words repeat one unit too often.
 #[derive(Default)]
@@ -43,7 +45,7 @@ impl RunawayDetector {
 fn repeats(words: &VecDeque<String>) -> bool {
     let len = words.len();
     (1..=MAX_PERIOD).any(|period| {
-        let span = period * REPEATS;
+        let span = (period * REPEATS).max(MIN_SPAN);
         len >= span && (len - span..len - period).all(|i| words[i] == words[i + period])
     })
 }
@@ -57,21 +59,30 @@ mod tests {
     }
 
     #[test]
-    fn detects_one_word_repeated_eight_times() {
+    fn detects_one_word_repeated_over_the_minimum_span() {
         let mut detector = RunawayDetector::default();
-        assert!(feed(&mut detector, &"the ".repeat(8)));
+        assert!(feed(&mut detector, &"thought ".repeat(MIN_SPAN)));
     }
 
     #[test]
-    fn ignores_seven_repeats() {
+    fn ignores_a_short_run_of_one_word() {
         let mut detector = RunawayDetector::default();
-        assert!(!feed(&mut detector, &"the ".repeat(7)));
+        assert!(!feed(&mut detector, &"} ".repeat(MIN_SPAN - 1)));
+    }
+
+    #[test]
+    fn ignores_seven_repeats_of_a_long_unit() {
+        let mut detector = RunawayDetector::default();
+        assert!(!feed(
+            &mut detector,
+            &"one two three four five six seven eight nine ".repeat(7)
+        ));
     }
 
     #[test]
     fn detects_a_multi_word_unit_across_chunk_boundaries() {
         let mut detector = RunawayDetector::default();
-        let text = "let x = 1; ".repeat(8);
+        let text = "let x = 1; ".repeat(16);
         // Split mid-word, so a word spans two deltas.
         let pieces: Vec<&str> = text
             .as_bytes()
