@@ -2,12 +2,12 @@
 //! a recovered call still goes through schema validation and the permission path.
 
 use crate::provider::{ToolCall, ToolSchema};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// How a model expresses tool calls. Text formats are parsed only from the assistant's own
 /// reply, never from tool results.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ToolFormat {
     Native,

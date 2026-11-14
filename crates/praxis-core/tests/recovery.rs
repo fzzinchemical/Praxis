@@ -7,7 +7,7 @@ use futures::StreamExt;
 use praxis_core::agent::profile::{self, ModelProfile};
 use praxis_core::agent::recovery::{ToolFormat, recover_calls};
 use praxis_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply};
-use praxis_core::provider::{Capabilities, ChatChunk, ChatRequest, Provider, ToolCall};
+use praxis_core::provider::{Capabilities, ChatChunk, ChatRequest, Provider, Sampling, ToolCall};
 use praxis_core::tools::{self, ToolContext};
 use serde_json::{Value, json};
 use std::fs;
@@ -161,7 +161,7 @@ async fn decode(bytes: Vec<u8>) -> (String, Vec<ToolCall>) {
         messages: Vec::new(),
         tools: Vec::new(),
         max_tokens: None,
-        temperature: None,
+        sampling: Sampling::default(),
         seed: None,
         stop: Vec::new(),
         response_format: None,
@@ -343,7 +343,7 @@ async fn a_model_with_no_tool_support_is_warned_about_then_uses_text_calling() {
     let capabilities = Capabilities {
         trained_for_tool_use: false,
     };
-    let profile = profile::resolve("some-model", Some(&capabilities), &[]);
+    let profile = profile::resolve("some-model", Some(&capabilities), None, &[]);
     let call = r#"<tool_call>{"name":"Read","arguments":{"file_path":"a.txt"}}</tool_call>"#;
     let run = run_with(vec![text_reply(call), text_reply("done")], profile, &dir).await;
 
@@ -363,7 +363,11 @@ async fn profile_settings_reach_the_request() {
     let dir = workspace();
     let profile = ModelProfile {
         max_output: Some(50),
-        temperature: Some(0.2),
+        sampling: Sampling {
+            temperature: Some(0.2),
+            top_k: Some(20),
+            ..Sampling::default()
+        },
         stop: vec!["END".to_owned()],
         ..ModelProfile::default()
     };
@@ -371,6 +375,8 @@ async fn profile_settings_reach_the_request() {
     let body = run.body(0).await;
     assert_eq!(body["max_tokens"], 50);
     assert_eq!(body["temperature"], 0.2);
+    assert_eq!(body["top_k"], 20);
+    assert!(body.get("top_p").is_none());
     assert_eq!(body["stop"], json!(["END"]));
     assert!(body.get("tools").is_some());
 }

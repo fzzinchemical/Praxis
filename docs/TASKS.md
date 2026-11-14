@@ -210,6 +210,12 @@ flowchart LR
     T2_2 --> T2_12
     T0_3 -.-> T2_12
     T1_9 -.-> T2_13
+    T2_14["T2.14<br/>Vendor presets"]
+    T2_15["T2.15<br/>Profile show and set"]
+    T2_16["T2.16<br/>Agent sampling layer"]
+    T2_3 --> T2_14
+    T2_14 --> T2_15
+    T2_14 --> T2_16
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
@@ -217,7 +223,7 @@ flowchart LR
     class T2_1,T2_2,T2_3,T2_4,T2_5,T2_6,T2_7,T2_8 task
     class T2_9 human
     class T0_4,T1_7,T1_9 other
-    class T2_10,T2_11,T2_12,T2_13 task
+    class T2_10,T2_11,T2_12,T2_13,T2_14,T2_15,T2_16 task
     class T0_3 other
 ```
 
@@ -283,6 +289,18 @@ flowchart LR
   - **Needs:** T1.9.
   - **Done when:** the prompt stays within budget and covers each point in §11, with eval success no lower than before.
   - **Result (2026-11-12):** 4b board, 3 runs × 13 tasks, seed 42: success 54% against 46% before (`qwen3.5-4b.m2.json`, 1 run). Mean turns rose 12.3 → 16.1 and wall time 31 → 41 s, mostly from injection-test-data and seeded-bug-duration (`evals/results/qwen3.5-4b.t2-13.json`).
+
+- [x] **T2.14 Vendor presets** (§5.5) · *Should*
+  - **Needs:** T2.3.
+  - **Done when:** the vendor's sampling preset from LM Studio's local `model.yaml` is the lowest profile layer, and is used only for a loopback server and a plain `publisher/name` key; the CLI and evals use it; `top_p`, `top_k`, `min_p` and `repeat_penalty` reach the request only when a layer sets them.
+
+- [ ] **T2.15 Profile show and set** (§5.5) · *Should*
+  - **Needs:** T2.14.
+  - **Done when:** `praxis profile show [model]` prints each effective field with the layer it came from, and `praxis profile set <field> <value>` writes it to the user's `[profiles."<key>"]`.
+
+- [ ] **T2.16 Agent sampling layer** (§5.5) · *Should*
+  - **Needs:** T2.14.
+  - **Done when:** a built-in, model-independent sampling override over the vendor preset (for example a temperature cap) is kept only if a 3-run eval on both chosen models shows higher success with no worse wall time than the vendor preset alone; otherwise the result is recorded and the task closed.
 
 ---
 

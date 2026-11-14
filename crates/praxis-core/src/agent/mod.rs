@@ -400,8 +400,9 @@ impl Agent {
                     Ok(ready) => {
                         config.model = ready.instance_id;
                         config.context_size = ready.context_length;
-                        // shortcut: built-in profile layers only, no user profiles or capabilities; upgrade when a subagent needs them.
-                        config.profile = crate::agent::profile::resolve(&model.model, None, &[]);
+                        // shortcut: built-in profile layers only, no vendor preset, user profiles or capabilities; upgrade when a subagent needs them.
+                        config.profile =
+                            crate::agent::profile::resolve(&model.model, None, None, &[]);
                     }
                     Err(message) => return ToolOutput::error(message),
                 }
@@ -1160,7 +1161,7 @@ impl Agent {
                     .max_output
                     .map_or(reserve, |limit| limit.min(reserve))
             }),
-            temperature: profile.temperature,
+            sampling: profile.sampling.clone(),
             seed: self.config.seed,
             stop: profile.stop.clone(),
             response_format: constrained,
@@ -1464,7 +1465,7 @@ fn assemble_prefix(
             _ => Vec::new(),
         },
         max_tokens: None,
-        temperature: None,
+        sampling: crate::provider::Sampling::default(),
         seed: None,
         stop: Vec::new(),
         response_format: None,

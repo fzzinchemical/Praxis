@@ -5,6 +5,7 @@
 //! runs through `praxis-core`, so the product binary needs no approve-everything switch.
 
 use anyhow::{Context, Result, bail, ensure};
+use praxis_core::agent::profile::ProfileLayer;
 use praxis_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, Severity, StopReason, system_prompt,
 };
@@ -306,7 +307,13 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         .iter()
         .find(|m| m.loaded_instances.iter().any(|i| i.id == instance));
     let key = reported.map_or(instance.as_str(), |m| m.key.as_str());
-    let profile = praxis_core::agent::profile::resolve(key, reported.map(|m| &m.capabilities), &[]);
+    let vendor: Option<ProfileLayer> = serde_json::from_value(spec["vendor"].clone())?;
+    let profile = praxis_core::agent::profile::resolve(
+        key,
+        reported.map(|m| &m.capabilities),
+        vendor.as_ref(),
+        &[],
+    );
     let mut agent = Agent::new(
         Arc::new(provider),
         // Same sandbox as the CLI, applied inside the eval's own bwrap container.
@@ -442,6 +449,24 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     Ok(())
 }
 
+/// What the sandboxed agent is told. The vendor preset is read here: the sandbox has no home.
+fn agent_spec(task: &Task, ready: &ReadyModel, options: &Options, home: Option<&Path>) -> Value {
+    let vendor = home.and_then(|home| {
+        praxis_core::agent::profile::vendor_layer(&options.base_url, home, &ready.instance_id)
+    });
+    json!({
+        "instance": ready.instance_id,
+        "context": ready.context_length,
+        "prompt": task.prompt,
+        "max_turns": task.max_turns,
+        "wall_secs": task.wall_secs,
+        "mask_keep_turns": options.mask_keep_turns,
+        "filter_output": options.filter_output,
+        "agents_md": options.agents_md,
+        "vendor": vendor,
+    })
+}
+
 async fn try_run_agent(
     task: &Task,
     ready: &ReadyModel,
@@ -454,16 +479,8 @@ async fn try_run_agent(
         UnixListener::bind(&socket)?,
         server_address(&options.base_url)?,
     ));
-    let spec = json!({
-        "instance": ready.instance_id,
-        "context": ready.context_length,
-        "prompt": task.prompt,
-        "max_turns": task.max_turns,
-        "wall_secs": task.wall_secs,
-        "mask_keep_turns": options.mask_keep_turns,
-        "filter_output": options.filter_output,
-        "agents_md": options.agents_md,
-    });
+    let home = env::var_os("HOME").map(PathBuf::from);
+    let spec = agent_spec(task, ready, options, home.as_deref());
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
     command.arg("--ro-bind").arg(&socket).arg(SOCKET);
@@ -865,6 +882,37 @@ mod tests {
             assert!(board[metric].is_null(), "{metric}");
             assert!(board["null_reasons"][metric].is_string(), "{metric}");
         }
+    }
+
+    #[test]
+    fn the_agent_spec_carries_the_vendor_preset() {
+        let home = TempDir::new().unwrap();
+        let dir = home.0.join(".lmstudio/hub/models/google/gemma");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("model.yaml"),
+            "- key: llm.prediction.topKSampling\n  value: 64\n",
+        )
+        .unwrap();
+        let options =
+            parse_options(&["--model".to_owned(), "m".to_owned()], Path::new("/")).unwrap();
+        let task = Task {
+            name: "t".to_owned(),
+            dir: PathBuf::new(),
+            prompt: "p".to_owned(),
+            max_turns: 1,
+            wall_secs: 1,
+            context: 1,
+        };
+        let ready = |id: &str| ReadyModel {
+            instance_id: id.to_owned(),
+            context_length: 1,
+        };
+        let spec = agent_spec(&task, &ready("google/gemma"), &options, Some(&home.0));
+        assert_eq!(spec["vendor"]["top_k"], 64);
+        let none = agent_spec(&task, &ready("google/other"), &options, Some(&home.0));
+        assert!(none["vendor"].is_null());
+        assert!(agent_spec(&task, &ready("google/gemma"), &options, None)["vendor"].is_null());
     }
 
     #[test]

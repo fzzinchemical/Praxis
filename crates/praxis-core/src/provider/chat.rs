@@ -16,13 +16,23 @@ pub struct ChatRequest {
     pub messages: Vec<Message>,
     pub tools: Vec<ToolSchema>,
     pub max_tokens: Option<u32>,
-    pub temperature: Option<f64>,
+    pub sampling: Sampling,
     /// Makes sampling repeatable where the server supports it (evals, SPEC §14).
     pub seed: Option<u64>,
     pub stop: Vec<String>,
     /// Constrains the reply's `content` to this tool's arguments. LM Studio then returns no
     /// `tool_calls`, and `tools` must stay empty or some models fail (SPEC §5.3).
     pub response_format: Option<ToolSchema>,
+}
+
+/// Sampling fields; unset ones are left to the server's own defaults.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Sampling {
+    pub temperature: Option<f64>,
+    pub top_p: Option<f64>,
+    pub top_k: Option<u32>,
+    pub min_p: Option<f64>,
+    pub repeat_penalty: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,8 +156,20 @@ fn request_body(req: &ChatRequest) -> Value {
             "name": tool.name, "strict": true, "schema": tool.parameters,
         }});
     }
-    if let Some(temperature) = req.temperature {
-        body["temperature"] = temperature.into();
+    let sampling = &req.sampling;
+    let floats = [
+        ("temperature", sampling.temperature),
+        ("top_p", sampling.top_p),
+        ("min_p", sampling.min_p),
+        ("repeat_penalty", sampling.repeat_penalty),
+    ];
+    for (name, value) in floats {
+        if let Some(value) = value {
+            body[name] = value.into();
+        }
+    }
+    if let Some(top_k) = sampling.top_k {
+        body["top_k"] = top_k.into();
     }
     if let Some(seed) = req.seed {
         body["seed"] = seed.into();

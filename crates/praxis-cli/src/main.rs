@@ -7,7 +7,7 @@ mod acp;
 use agent_client_protocol::ConnectTo;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use praxis_core::agent::profile::ProfileLayer;
+use praxis_core::agent::profile::{ModelProfile, ProfileLayer};
 use praxis_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, StopReason, ToolOutcome, system_prompt,
 };
@@ -16,7 +16,9 @@ use praxis_core::config::{self, Config, SandboxMode, Sources};
 use praxis_core::hooks::Hook;
 use praxis_core::permissions::{Mode, Policy};
 use praxis_core::plugin::{AgentDef, Skill, Store, run_command, standalone, standalone_agents};
-use praxis_core::provider::{LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel};
+use praxis_core::provider::{
+    Capabilities, LoadPolicy, Message, ModelInfo, Provider, ProviderError, ReadyModel,
+};
 use praxis_core::sandbox::Sandbox;
 use praxis_core::session::{self, SessionLog};
 use praxis_core::summary::summarize;
@@ -471,6 +473,16 @@ fn user_profiles(config: &Config) -> Vec<(String, ProfileLayer)> {
     config.profiles.clone().into_iter().collect()
 }
 
+/// The model's profile with every layer: the vendor's preset, built-ins, `capabilities` and
+/// the user's `[profiles]`.
+fn model_profile(config: &Config, key: &str, capabilities: Option<&Capabilities>) -> ModelProfile {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let vendor = home.and_then(|home| {
+        praxis_core::agent::profile::vendor_layer(&config.lmstudio.base_url, &home, key)
+    });
+    praxis_core::agent::profile::resolve(key, capabilities, vendor.as_ref(), &user_profiles(config))
+}
+
 /// Lines typed at the terminal, shared by the REPL and approvals. Stdin only ever counts as a
 /// person when it's a terminal: piped input could come from anywhere, so it can't approve.
 type Terminal = mpsc::UnboundedReceiver<String>;
@@ -690,7 +702,7 @@ fn first_loaded(models: &[ModelInfo]) -> Option<(&ModelInfo, u32)> {
 
 fn load_context(model: &str, requested: Option<u32>, profiles: &[(String, ProfileLayer)]) -> u32 {
     requested
-        .or(praxis_core::agent::profile::resolve(model, None, profiles).context)
+        .or(praxis_core::agent::profile::resolve(model, None, None, profiles).context)
         .unwrap_or(DEFAULT_CONTEXT)
 }
 
@@ -938,8 +950,7 @@ impl acp::Models for Picker {
             .iter()
             .find(|model| model.key == key)
             .map(|model| &model.capabilities);
-        let profile =
-            praxis_core::agent::profile::resolve(key, capabilities, &user_profiles(&self.config));
+        let profile = model_profile(&self.config, key, capabilities);
         Ok(acp::Loaded {
             instance_id: ready.instance_id,
             context_size: ready.context_length,
@@ -1040,11 +1051,7 @@ async fn run(
     });
     let key = reported.map_or(ready.instance_id.as_str(), |m| m.key.as_str());
     let default = key.to_owned();
-    let profile = praxis_core::agent::profile::resolve(
-        key,
-        reported.map(|m| &m.capabilities),
-        &user_profiles(&config),
-    );
+    let profile = model_profile(&config, key, reported.map(|m| &m.capabilities));
     // Plan mode (SPEC §11) switches back to this mode on `/execute`.
     let configured = config.permissions.mode;
     let claude_dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"));

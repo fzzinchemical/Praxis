@@ -5,8 +5,8 @@
 
 use futures::{StreamExt, pin_mut};
 use praxis_core::provider::{
-    ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, ToolCall,
-    ToolSchema,
+    ChatChunk, ChatRequest, FinishReason, LoadPolicy, Message, Provider, ProviderError, Sampling,
+    ToolCall, ToolSchema,
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -38,7 +38,7 @@ fn request() -> ChatRequest {
         }],
         tools: vec![],
         max_tokens: None,
-        temperature: None,
+        sampling: Sampling::default(),
         seed: None,
         stop: Vec::new(),
         response_format: None,
@@ -275,7 +275,7 @@ async fn sends_an_openai_shaped_request_with_auth() {
             parameters: json!({"type": "object"}),
         }],
         max_tokens: Some(16),
-        temperature: None,
+        sampling: Sampling::default(),
         seed: Some(42),
         stop: Vec::new(),
         response_format: None,

@@ -311,14 +311,16 @@ Stop with `LoopDetected` when any of these happen:
 
 ### 5.5 Model profiles
 
-Layered: built-in by name pattern, then capabilities reported by LM Studio, then user config.
+Layered: the vendor's preset, then built-in by name pattern, then capabilities reported by LM Studio, then user config. A later layer overrides only the fields it sets.
+
+The vendor preset is the `llm.prediction.*` sampling fields (`temperature`, `topPSampling`, `topKSampling`, `minPSampling`, `repeatPenalty`; a `checked: false` value is off) from `~/.lmstudio/hub/models/<publisher>/<name>/model.yaml`. LM Studio's API doesn't report them. It's read only when the LM Studio URL is loopback and the key is a plain `publisher/name`; anything else, or no file, means no vendor layer. Evals read it on the host and pass it into the sandbox.
 
 ```toml
 [profiles."qwen3*"]
 context = 64000
 max_output = 8192
 tool_format = "native"        # native | hermes-text | ...; qwen2.5-coder is text-only (ADR 0002)
-temperature = 0.2
+temperature = 0.2               # also top_p, top_k, min_p, repeat_penalty; unset ones are not sent
 stop = []
 strip_thinking = true
 constrained_retry = true      # on once LM Studio reports the model

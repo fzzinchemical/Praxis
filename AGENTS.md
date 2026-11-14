@@ -109,3 +109,4 @@ Known before implementation. Details are in SPEC.
 - In `agent-client-protocol` 5.0.0, a `cx.spawn` task is dropped when its connection ends, so a running task never sees a `send_notification` error. Don't write tests that expect it to (docs/AUDIT.md F1).
 - Mid-turn memory and scoped rules are recorded as `Message::User` with `MEMORY_MARK`, so count turns with `Message::starts_turn()`, never by counting user messages (rewind, resume, `cut_turn`).
 - Stale objects in a checkout's `llvm-cov` target can count a source file twice and drop coverage below the floors. If one checkout fails where another passes, run `cargo llvm-cov clean --workspace` before blaming the code.
+- LM Studio's API reports no sampling presets. The vendor's values are only in `~/.lmstudio/hub/models/<key>/model.yaml`, and sending any sampling field overrides what LM Studio would apply for it (`profile::vendor_layer`).
