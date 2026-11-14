@@ -103,6 +103,8 @@ pub enum ResponseOrScript {
     Script(Vec<String>),
     Hang,
 }
+// `Hang` is unused in binaries that never hang a reply; the glob import still exposes it.
+#[allow(unused_imports)]
 pub use ResponseOrScript::{Hang, Script as Replies};
 
 pub fn command(server_url: &str, dir: &Path, args: &[&str]) -> Command {
