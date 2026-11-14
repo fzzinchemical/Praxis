@@ -384,8 +384,12 @@ pub fn start() -> Result<(), JsValue> {
     let on_submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         event.prevent_default();
         let text = input.value();
-        // Before the session is ready a prompt would only be refused, so the text stays in the box.
-        if !text.trim().is_empty() && state.borrow().ready {
+        // Before the session is ready, or while a turn runs, a prompt would only be refused, so the text stays in the box.
+        let sendable = {
+            let ui = state.borrow();
+            view::can_send(ui.ready, &ui.status.phase)
+        };
+        if !text.trim().is_empty() && sendable {
             let ui = state.borrow();
             let message = json!({"type": "prompt", "text": text, "file": ui.attached_file(),
                 "files": ui.added, "problems": ui.problems.checked()});

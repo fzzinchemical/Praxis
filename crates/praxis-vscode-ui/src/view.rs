@@ -10,6 +10,11 @@ pub fn enter_sends(key: &str, shift: bool, composing: bool) -> bool {
     key == "Enter" && !shift && !composing
 }
 
+/// A prompt is accepted only between turns, so the panel's turn numbers match the agent's (rewind).
+pub fn can_send(ready: bool, phase: &Phase) -> bool {
+    ready && *phase == Phase::Idle
+}
+
 /// A command or skill the agent announced (`available_commands_update`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Command {
@@ -272,6 +277,15 @@ mod tests {
         assert!(!enter_sends("Enter", true, false));
         assert!(!enter_sends("Enter", false, true));
         assert!(!enter_sends("a", false, false));
+    }
+
+    #[test]
+    fn a_prompt_is_accepted_only_when_ready_and_idle() {
+        assert!(can_send(true, &Phase::Idle));
+        assert!(!can_send(false, &Phase::Idle));
+        assert!(!can_send(true, &Phase::ProcessingPrompt));
+        assert!(!can_send(true, &Phase::Generating));
+        assert!(!can_send(true, &Phase::RunningTool));
     }
 
     fn command(name: &str, source: &str) -> Command {
