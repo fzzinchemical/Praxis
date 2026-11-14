@@ -1,12 +1,13 @@
 //! The plugin details tab (SPEC §12, T10.9): builds the page from a listed plugin. Pure, so it
-//! tests natively. Plugin text is untrusted: everything but the README is escaped, and the README
-//! is rendered with raw HTML escaped and unsafe links dropped.
+//! tests natively. Plugin text is untrusted: names and state are escaped, and every markdown
+//! text (the README and component descriptions) is rendered by the sanitizer with raw HTML
+//! dropped and unsafe links removed, so one format shows and no markup leaks as text.
 
 use crate::plugins::PluginItem;
 // The chat panel's sanitizer, shared as a file because praxis-vscode-ui is a cdylib.
 #[path = "../../praxis-vscode-ui/src/sanitize.rs"]
 mod sanitize;
-use sanitize::markdown;
+use sanitize::markdown_dropping_html as markdown;
 
 /// The whole page for one plugin: its README, then its commands, skills and agents.
 pub fn details_page(item: &PluginItem) -> String {
@@ -22,7 +23,7 @@ pub fn details_page(item: &PluginItem) -> String {
                 "<li><strong>{}</strong> <em>{}</em>: {}</li>\n",
                 escape(&c.name),
                 c.kind.label(),
-                escape(&c.description)
+                markdown(&c.description).trim_end()
             )
         })
         .collect();
@@ -37,8 +38,9 @@ pub fn details_page(item: &PluginItem) -> String {
 <title>{name}</title>\n\
 <style>body {{ font-family: var(--vscode-font-family); color: var(--vscode-foreground); \
 background: var(--vscode-editor-background); line-height: 1.5; max-width: 60rem; margin: 0 auto; padding: 1rem; }}\n\
-code, pre {{ font-family: var(--vscode-editor-font-family); }}</style>\n\
-</head>\n<body>\n<main>\n<h1>{name}</h1>\n<p>{state}</p>\n\
+code, pre {{ font-family: var(--vscode-editor-font-family); }}\n\
+.badge {{ border: 1px solid var(--vscode-panel-border); border-radius: 3px; padding: 0 0.4em; font-weight: bold; }}</style>\n\
+</head>\n<body>\n<main>\n<h1>{name}</h1>\n<p>Status: <span class=\"badge\">{state}</span></p>\n\
 <section aria-labelledby=\"readme\"><h2 id=\"readme\">README</h2>\n{readme}</section>\n\
 <section aria-labelledby=\"components\"><h2 id=\"components\">Commands, skills and agents</h2>\n{components}</section>\n\
 </main>\n</body>\n</html>\n",
@@ -88,14 +90,39 @@ mod tests {
     }
 
     #[test]
-    fn keeps_raw_html_in_the_readme_escaped() {
+    fn drops_raw_html_from_the_readme_without_showing_it() {
         let page = details_page(&plugin(
-            Some("<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>"),
+            Some(
+                "<script>alert(1)</script>\n\n<img src=x onerror=alert(2)>\n\n<p align=\"center\">x</p>",
+            ),
             Vec::new(),
         ));
         assert!(!page.contains("<script>alert"), "{page}");
         assert!(!page.contains("<img src"), "{page}");
-        assert!(page.contains("&lt;script&gt;"), "{page}");
+        assert!(!page.contains("&lt;"), "{page}");
+    }
+
+    #[test]
+    fn renders_no_raw_markdown_markers_in_readme_or_descriptions() {
+        let page = details_page(&plugin(
+            Some("# Review\n\n**Checks** `diffs`."),
+            vec![command("review:fmt", "Formats **code** with `fmt`")],
+        ));
+        assert!(page.contains("<h1>Review</h1>"), "{page}");
+        assert!(page.contains("<strong>code</strong>"), "{page}");
+        assert!(page.contains("<code>fmt</code>"), "{page}");
+        assert!(!page.contains("**"), "{page}");
+        assert!(!page.contains('`'), "{page}");
+        assert!(!page.contains("# Review"), "{page}");
+    }
+
+    #[test]
+    fn shows_the_enabled_state_as_a_badge() {
+        let page = details_page(&plugin(None, Vec::new()));
+        assert!(
+            page.contains(r#"Status: <span class="badge">enabled</span>"#),
+            "{page}"
+        );
     }
 
     #[test]
