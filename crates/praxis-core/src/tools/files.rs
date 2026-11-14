@@ -9,6 +9,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::fs::{self, File, OpenOptions};
 use std::hash::{Hash, Hasher};
 use std::io::{self, Write as _};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -200,17 +201,121 @@ pub fn write(input: WriteInput, ctx: &ToolContext) -> Result<ToolOutput, ToolErr
     Ok(output)
 }
 
-/// The first file line resembling `old`'s first line, ignoring surrounding whitespace.
-fn near_match(text: &str, old: &str) -> Option<String> {
-    let wanted = old.lines().map(str::trim).find(|l| !l.is_empty())?;
-    let (index, line) = text
-        .lines()
-        .enumerate()
-        .find(|(_, line)| line.contains(wanted))?;
-    Some(format!(
-        " Line {} is close, check its whitespace: {line:?}",
-        index + 1
-    ))
+/// Folds the typographic characters a model often gets wrong to their ASCII forms.
+fn normalise(line: &str) -> String {
+    line.chars()
+        .map(|c| match c {
+            '\u{2018}'..='\u{201B}' => '\'',
+            '\u{201C}'..='\u{201F}' => '"',
+            '\u{2010}'..='\u{2015}' => '-',
+            '\u{00A0}' => ' ',
+            c => c,
+        })
+        .collect()
+}
+
+/// Byte ranges where `old` occurs: exact matches first, then whole lines after `normalise`, then
+/// the same with surrounding whitespace ignored. A looser tier is tried only when the stricter one
+/// finds nothing, so a unique strict match is never lost to a loose one.
+fn find_spans(text: &str, old: &str) -> Vec<Range<usize>> {
+    let exact: Vec<Range<usize>> = text
+        .match_indices(old)
+        .map(|(start, found)| start..start + found.len())
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    for trim in [false, true] {
+        let spans = line_spans(text, old, trim);
+        if !spans.is_empty() {
+            return spans;
+        }
+    }
+    Vec::new()
+}
+
+/// Non-overlapping runs of whole lines in `text` whose normalised text equals `old`'s.
+fn line_spans(text: &str, old: &str, trim: bool) -> Vec<Range<usize>> {
+    let key = |line: &str| {
+        let line = normalise(line);
+        if trim { line.trim().to_owned() } else { line }
+    };
+    let lines = line_bounds(text);
+    let keys: Vec<String> = lines
+        .iter()
+        .map(|l| key(&text[l.content.clone()]))
+        .collect();
+    let wanted: Vec<String> = old.lines().map(key).collect();
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i + wanted.len() <= keys.len() {
+        if keys[i..i + wanted.len()] == wanted[..] {
+            let last = &lines[i + wanted.len() - 1];
+            // A trailing newline in `old` also takes the matched line's terminator.
+            let end = if old.ends_with('\n') {
+                last.terminated.end
+            } else {
+                last.content.end
+            };
+            spans.push(lines[i].content.start..end);
+            i += wanted.len();
+        } else {
+            i += 1;
+        }
+    }
+    spans
+}
+
+/// Where a line's text and its terminator sit in the file.
+struct LineBounds {
+    content: Range<usize>,
+    terminated: Range<usize>,
+}
+
+fn line_bounds(text: &str) -> Vec<LineBounds> {
+    let mut start = 0;
+    text.split_inclusive('\n')
+        .map(|segment| {
+            let content_end = start + segment.trim_end_matches(['\n', '\r']).len();
+            let bounds = LineBounds {
+                content: start..content_end,
+                terminated: start..start + segment.len(),
+            };
+            start += segment.len();
+            bounds
+        })
+        .collect()
+}
+
+/// The block of lines that best matches `old`, numbered, so the retry can copy it exactly.
+fn near_match(text: &str, old: &str) -> String {
+    let key = |line: &str| normalise(line).trim().to_owned();
+    let wanted: Vec<String> = old.lines().map(key).collect();
+    let lines: Vec<&str> = text.lines().collect();
+    let keys: Vec<String> = lines.iter().map(|l| key(l)).collect();
+    let best = (0..keys.len())
+        .map(|start| {
+            let score = wanted
+                .iter()
+                .enumerate()
+                .filter(|(k, w)| keys.get(start + k) == Some(w))
+                .count();
+            (score, start)
+        })
+        .filter(|(score, _)| *score > 0)
+        .max_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
+    let Some((_, start)) = best else {
+        return String::new();
+    };
+    let end = (start + wanted.len()).min(lines.len());
+    let block: String = (start..end)
+        .map(|i| format!("\n{:>6} | {}", i + 1, lines[i]))
+        .collect();
+    format!(
+        " The closest block is at lines {}-{}:{block}",
+        start + 1,
+        end
+    )
 }
 
 pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
@@ -235,10 +340,11 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
     }
     let text = text_of(&bytes, &path)?;
 
-    let count = text.matches(&input.old_string).count();
+    let spans = find_spans(text, &input.old_string);
+    let count = spans.len();
     let replace_all = input.replace_all.unwrap_or(false);
     if count == 0 {
-        let hint = near_match(text, &input.old_string).unwrap_or_default();
+        let hint = near_match(text, &input.old_string);
         return refuse(format!("old_string was not found in {shown}.{hint}"));
     }
     if count > 1 && !replace_all {
@@ -247,11 +353,22 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
              Add surrounding lines or set replace_all."
         ));
     }
-    store(
-        &path,
-        &text.replace(&input.old_string, &input.new_string),
-        ctx,
-    )?;
+    // A CRLF file gets CRLF in the new text, whatever line endings the model used.
+    let crlf = spans.iter().any(|span| text[span.clone()].contains("\r\n"));
+    let new = if crlf {
+        input.new_string.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        input.new_string.clone()
+    };
+    let mut updated = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in &spans {
+        updated.push_str(&text[last..span.start]);
+        updated.push_str(&new);
+        last = span.end;
+    }
+    updated.push_str(&text[last..]);
+    store(&path, &updated, ctx)?;
     let mut output = ToolOutput::ok(
         format!(
             "Edited {shown}: {count} replacement(s), {} line(s) became {}.",
@@ -438,6 +555,114 @@ mod tests {
             "{}",
             output.content
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Reads `name` as the model would, then runs `Edit` on it. The caller removes `dir`.
+    fn edit_after_read(
+        name: &str,
+        bytes: &[u8],
+        old: &str,
+        new: &str,
+    ) -> (PathBuf, PathBuf, Result<ToolOutput, ToolError>) {
+        let (dir, target, ctx) = workspace_with(name, bytes);
+        read(
+            ReadInput {
+                file_path: name.to_owned(),
+                offset: None,
+                limit: None,
+            },
+            &ctx,
+        )
+        .unwrap();
+        let result = edit(
+            EditInput {
+                file_path: name.to_owned(),
+                old_string: old.to_owned(),
+                new_string: new.to_owned(),
+                replace_all: None,
+            },
+            &ctx,
+        );
+        (dir, target, result)
+    }
+
+    #[test]
+    fn edit_applies_a_block_that_differs_only_in_line_endings() {
+        let (dir, target, result) = edit_after_read(
+            "crlf.rs",
+            b"fn a() {\r\n    x();\r\n}\r\n",
+            "fn a() {\n    x();\n}\n",
+            "fn a() {\n    y();\n}\n",
+        );
+
+        result.unwrap();
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "fn a() {\r\n    y();\r\n}\r\n"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edit_applies_when_quotes_and_dashes_differ_from_the_file() {
+        let (dir, target, result) = edit_after_read(
+            "typography.txt",
+            "let s = \u{201C}hi\u{201D} \u{2013} ok;\n".as_bytes(),
+            "let s = \"hi\" - ok;",
+            "let s = 1;",
+        );
+
+        result.unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "let s = 1;\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edit_applies_when_only_surrounding_whitespace_differs() {
+        let (dir, target, result) = edit_after_read(
+            "indent.rs",
+            b"fn a() {\n    b();\n}\n\nfn c() {\n    d();\n}\n",
+            "  d();\n  }",
+            "    e();\n}",
+        );
+
+        result.unwrap();
+        assert_eq!(
+            fs::read_to_string(&target).unwrap(),
+            "fn a() {\n    b();\n}\n\nfn c() {\n    e();\n}\n"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edit_refuses_a_tolerant_match_that_is_not_unique() {
+        let (dir, target, result) =
+            edit_after_read("twice.txt", b"k\r\nv\r\nk\r\nv\r\n", "k\nv\n", "w\n");
+
+        assert!(
+            matches!(result, Err(ToolError::Refused(ref m)) if m.contains("not unique")),
+            "expected a uniqueness refusal, got {result:?}"
+        );
+        assert_eq!(fs::read_to_string(&target).unwrap(), "k\r\nv\r\nk\r\nv\r\n");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_edit_shows_the_whole_closest_block_with_line_numbers() {
+        let (dir, _, result) = edit_after_read(
+            "miss.rs",
+            b"fn a() {\n    b();\n}\n\nfn c() {\n    d();\n}\n",
+            "fn c() {\n    e();\n}",
+            "fn c() {}",
+        );
+
+        let Err(ToolError::Refused(message)) = result else {
+            panic!("expected a refusal, got {result:?}");
+        };
+        assert!(message.contains("5 | fn c() {"), "{message}");
+        assert!(message.contains("6 |     d();"), "{message}");
+        assert!(message.contains("7 | }"), "{message}");
         fs::remove_dir_all(&dir).unwrap();
     }
 }

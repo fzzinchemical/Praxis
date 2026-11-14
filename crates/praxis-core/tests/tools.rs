@@ -299,7 +299,8 @@ async fn edit_reports_a_missing_string_with_a_near_match() {
     f.read("a.rs").await;
     let output = f.edit("a.rs", "  run();\n  stop();", "x").await;
     err(&output, "not found");
-    err(&output, "Line 2 is close");
+    err(&output, "closest block is at lines 2-3");
+    err(&output, "2 |     run();");
     err(&f.edit("a.rs", "absent", "x").await, "not found");
 }
 
