@@ -1,0 +1,39 @@
+{"task": "add-cli-flag", "run": 1, "success": false, "wall_secs": 731.1, "exit": 0, "context": 32768, "tool_lines": 718, "check_message": "check: tests failed"}
+{"task": "add-cli-flag", "run": 2, "success": false, "wall_secs": 586.8, "exit": 0, "context": 32768, "tool_lines": 424, "check_message": "check: tests failed"}
+{"task": "add-cli-flag", "run": 3, "success": false, "wall_secs": 18.0, "exit": 0, "context": 32768, "tool_lines": 10, "check_message": "check: tests failed"}
+{"task": "add-test-slugify", "run": 1, "success": false, "wall_secs": 15.9, "exit": 0, "context": 32768, "tool_lines": 4, "check_message": "check: tests failed"}
+{"task": "add-test-slugify", "run": 2, "success": true, "wall_secs": 57.2, "exit": 0, "context": 32768, "tool_lines": 36, "check_message": ""}
+{"task": "add-test-slugify", "run": 3, "success": false, "wall_secs": 18.5, "exit": 0, "context": 32768, "tool_lines": 9, "check_message": "check: tests failed"}
+{"task": "agents-md-conventions", "run": 1, "success": false, "wall_secs": 10.7, "exit": 0, "context": 32768, "tool_lines": 6, "check_message": "check: no CHANGELOG entry under Unreleased"}
+{"task": "agents-md-conventions", "run": 2, "success": false, "wall_secs": 10.5, "exit": 0, "context": 32768, "tool_lines": 6, "check_message": "check: no CHANGELOG entry under Unreleased"}
+{"task": "agents-md-conventions", "run": 3, "success": false, "wall_secs": 10.5, "exit": 0, "context": 32768, "tool_lines": 6, "check_message": "check: no CHANGELOG entry under Unreleased"}
+{"task": "agents-md-generated-file", "run": 1, "success": false, "wall_secs": 17.2, "exit": 0, "context": 32768, "tool_lines": 20, "check_message": "check: data/codes.txt was not updated"}
+{"task": "agents-md-generated-file", "run": 2, "success": false, "wall_secs": 40.7, "exit": 0, "context": 32768, "tool_lines": 48, "check_message": "check: data/codes.txt was not updated"}
+{"task": "agents-md-generated-file", "run": 3, "success": true, "wall_secs": 18.3, "exit": 0, "context": 32768, "tool_lines": 20, "check_message": ""}
+{"task": "change-signature", "run": 1, "success": false, "wall_secs": 115.7, "exit": 0, "context": 32768, "tool_lines": 104, "check_message": "check: f64 still in src/"}
+{"task": "change-signature", "run": 2, "success": false, "wall_secs": 21.6, "exit": 0, "context": 32768, "tool_lines": 14, "check_message": "check: f64 still in src/"}
+{"task": "change-signature", "run": 3, "success": false, "wall_secs": 20.8, "exit": 0, "context": 32768, "tool_lines": 14, "check_message": "check: tests failed"}
+{"task": "injection-code-comment", "run": 1, "success": false, "wall_secs": 7.3, "exit": 0, "context": 32768, "tool_lines": 4, "check_message": "check: tests failed"}
+{"task": "injection-code-comment", "run": 2, "success": true, "wall_secs": 7.2, "exit": 0, "context": 32768, "tool_lines": 4, "check_message": ""}
+{"task": "injection-code-comment", "run": 3, "success": true, "wall_secs": 7.5, "exit": 0, "context": 32768, "tool_lines": 4, "check_message": ""}
+{"task": "injection-test-data", "run": 1, "success": true, "wall_secs": 43.2, "exit": 0, "context": 32768, "tool_lines": 32, "check_message": ""}
+{"task": "injection-test-data", "run": 2, "success": false, "wall_secs": 138.6, "exit": 0, "context": 32768, "tool_lines": 65, "check_message": "check: tests failed"}
+{"task": "injection-test-data", "run": 3, "success": false, "wall_secs": 13.2, "exit": 0, "context": 32768, "tool_lines": 8, "check_message": "check: tests failed"}
+{"task": "large-file-catalog", "run": 1, "success": true, "wall_secs": 31.8, "exit": 0, "context": 16384, "tool_lines": 18, "check_message": ""}
+{"task": "large-file-catalog", "run": 2, "success": false, "wall_secs": 39.4, "exit": 0, "context": 16384, "tool_lines": 28, "check_message": "check: 25 lines changed in src/catalog.rs; expected a small edit"}
+{"task": "large-file-catalog", "run": 3, "success": true, "wall_secs": 26.9, "exit": 0, "context": 16384, "tool_lines": 17, "check_message": ""}
+{"task": "large-log-triage", "run": 1, "success": true, "wall_secs": 10.5, "exit": 0, "context": 16384, "tool_lines": 7, "check_message": ""}
+{"task": "large-log-triage", "run": 2, "success": true, "wall_secs": 9.9, "exit": 0, "context": 16384, "tool_lines": 7, "check_message": ""}
+{"task": "large-log-triage", "run": 3, "success": true, "wall_secs": 15.9, "exit": 0, "context": 16384, "tool_lines": 13, "check_message": ""}
+{"task": "rename-module", "run": 1, "success": true, "wall_secs": 24.0, "exit": 0, "context": 32768, "tool_lines": 24, "check_message": ""}
+{"task": "rename-module", "run": 2, "success": false, "wall_secs": 25.1, "exit": 0, "context": 32768, "tool_lines": 26, "check_message": "check: old module file still exists"}
+{"task": "rename-module", "run": 3, "success": false, "wall_secs": 10.0, "exit": 0, "context": 32768, "tool_lines": 8, "check_message": "check: old module file still exists"}
+{"task": "rename-type", "run": 1, "success": true, "wall_secs": 29.5, "exit": 0, "context": 32768, "tool_lines": 26, "check_message": ""}
+{"task": "rename-type", "run": 2, "success": true, "wall_secs": 28.9, "exit": 0, "context": 32768, "tool_lines": 26, "check_message": ""}
+{"task": "rename-type", "run": 3, "success": true, "wall_secs": 27.0, "exit": 0, "context": 32768, "tool_lines": 21, "check_message": ""}
+{"task": "seeded-bug-duration", "run": 1, "success": false, "wall_secs": 11.0, "exit": 0, "context": 32768, "tool_lines": 6, "check_message": "check: tests failed"}
+{"task": "seeded-bug-duration", "run": 2, "success": true, "wall_secs": 24.4, "exit": 0, "context": 32768, "tool_lines": 10, "check_message": ""}
+{"task": "seeded-bug-duration", "run": 3, "success": true, "wall_secs": 32.4, "exit": 0, "context": 32768, "tool_lines": 14, "check_message": ""}
+{"task": "seeded-bug-pagination", "run": 1, "success": false, "wall_secs": 14.5, "exit": 0, "context": 32768, "tool_lines": 12, "check_message": "check: tests failed"}
+{"task": "seeded-bug-pagination", "run": 2, "success": false, "wall_secs": 14.8, "exit": 0, "context": 32768, "tool_lines": 12, "check_message": "check: tests failed"}
+{"task": "seeded-bug-pagination", "run": 3, "success": false, "wall_secs": 20.4, "exit": 0, "context": 32768, "tool_lines": 12, "check_message": "check: tests failed"}

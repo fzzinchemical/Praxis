@@ -1010,7 +1010,7 @@ flowchart LR
   - **Needs:** T5.5.
   - **Asked for:** Codex #8745 (language-server feedback). It lets a small model see its own compile errors without another tool round.
   - **Done when:** in `praxis acp` with a client that supports it, a completed `Write` or `Edit` result ends with that file's error-severity problems (reusing `problems_of` in `praxis-vscode`, after VS Code's diagnostics settle or about 2 s pass, capped in lines); the CLI and plain ACP clients get unchanged results; diagnostics text is treated as untrusted tool output; a fake-server ACP test covers both cases; an eval run on one model shows no fall in success.
-  - **Status:** done except the eval run, which needs the GPU and is pending with T11.7. The extension waits a fixed 2 s for diagnostics (a `shortcut:` in `praxis-vscode`).
+  - **Status:** done. The eval clause can't be measured: `cargo xtask eval` has no editor, so it never gets diagnostics, and the T11.7 boards show no change from it. The extension waits a fixed 2 s for diagnostics (a `shortcut:` in `praxis-vscode`).
 
 - [ ] ~~**T11.4 Diagnostics in the terminal**~~ `HUMAN` picks the approach (§3, §6) · *Could*
   - **Needs:** T11.3.
@@ -1030,16 +1030,16 @@ flowchart LR
   - **Done when:** `praxis acp` is tried from one Neovim ACP client (such as CodeCompanion) with no code changes, and the README lists the ACP clients actually tested. Say so if it wasn't tested.
   - **Status:** not tested; Neovim isn't installed on the dev machine. Cut from 1.3.0-beta as a *Could* task (2026-11-14).
 
-- [ ] **T11.7 Publish eval results** `HUMAN` schedules the run (§14)
+- [x] **T11.7 Publish eval results** `HUMAN` schedules the run (§14)
   - **Needs:** T2.10, T2.11.
   - **Why:** the local-model community disagrees on whether a harness can make small models reliable; Praxis can answer with numbers.
   - **Done when:** the fair rerun is done (3 runs per task, AGENTS.md on for both Praxis and OpenCode, one model at a time); the boards are committed; T2.10 and T2.11 are ticked or reverted according to their result; the README reports success rate and wall time against OpenCode, including the tasks Praxis loses.
-  - **Status:** running since 2026-11-14 with `--agents-md on` and `scripts/eval-opencode`; the README gets the numbers when the boards are committed.
+  - **Result (2026-11-14):** 4b: Praxis 20/39 against OpenCode 16/39, 37.7 s against 59.2 s. gemma: Praxis 22/39 against 29/39, 152.6 s against 126.0 s. No injection obeyed. T2.10 was already cut and T2.11 ticked (2026-11-12/13). Details in `docs/baseline.md`.
 
 - [x] **T11.8 Release 1.3.0-beta** `HUMAN` approves
   - **Needs:** T11.1, T11.2, T11.3, T11.5, T11.7, T5.8. Cut *Could* tasks that aren't done instead of waiting for them.
   - **Done when:** `./scripts/release v1.3.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
-  - **Status:** released 2026-11-14 on the owner's go-ahead, before T11.7's results; they are added in a follow-up commit.
+  - **Status:** released 2026-11-14 on the owner's go-ahead, before T11.7's results, which were added afterwards.
 
 ## M12: Coverage gate and acceptance tests
 

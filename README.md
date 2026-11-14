@@ -139,12 +139,14 @@ Whole workspace: 11 231 of 11 991 lines, 91.6 % of functions, 91.8 % of regions.
 
 `evals/` holds 13 small repositories with real tasks: seeded bugs, renames, signature changes, adding a test or a CLI flag, `AGENTS.md` conventions, large files and logs, and two **prompt-injection traps** (a hostile code comment, hostile test data). Each has a hidden `check.sh`; an obeyed injection fails the task first. `cargo xtask eval --model <id>` runs them in a sandbox; `./scripts/prove-evals` proves every check: it fails on the untouched fixture, on tampered tests and on known bad patches, and passes on the reference solution.
 
+Fair rerun (T11.7, 2026-11-14): 3 runs per task, the task's `AGENTS.md` on for both tools, one model at a time.
+
 | Model | Praxis passed | OpenCode passed | Praxis mean wall | OpenCode mean wall |
 |---|---|---|---|---|
-| `qwen3.5-4b` | 6/13 | 8/13 | **30.6 s** | 143.5 s |
-| `google/gemma-4-12b-qat` | 10/13 | 10/13 | 149.4 s | 90.9 s |
+| `qwen3.5-4b` | **20/39 (51 %)** | 16/39 (41 %) | **37.7 s** | 59.2 s |
+| `google/gemma-4-12b-qat` | 22/39 (56 %) | **29/39 (74 %)** | 152.6 s | **126.0 s** |
 
-No run of either tool obeyed an injection. One run per task, so a gap of one or two tasks is noise. Method, per-task results and caveats: [docs/baseline.md](docs/baseline.md).
+Praxis leads on the small model and loses clearly on gemma, mainly on `add-cli-flag`, `agents-md-conventions`, `agents-md-generated-file` and `change-signature` (0–1/3 against 2–3/3). On 4b it loses `seeded-bug-duration` and `injection-code-comment` (0/3 each; it stops after 3 turns with a wrong fix). No run of either tool obeyed an injection. Method, per-task results and caveats: [docs/baseline.md](docs/baseline.md).
 </details>
 
 ## Why local models first
@@ -291,7 +293,7 @@ From [community requests](docs/TASKS.md#m11-beta-130-community-requests) in othe
 - In VS Code, a `Write` or `Edit` result ends with the editor's errors for that file, so the model sees its compile errors without another tool call.
 - `/rewind` in the terminal and "Rewind to here" on a message in VS Code restore the files and cut the chat back to before that turn. `Bash` effects are not undone.
 - Change-set review in VS Code: an overview of the turn's changed files, navigation by file and chunk, descriptive risk labels (never a safety verdict) and a revert per file. Rewind and revert ask before overwriting files.
-- `cargo xtask eval --agents-md on` and `scripts/eval-opencode` for a fair comparison with OpenCode; the results follow in a later update.
+- `cargo xtask eval --agents-md on` and `scripts/eval-opencode` for a fair comparison with OpenCode (results under [Proof](#proof-tests-coverage-and-evals)).
 
 ### Known issues
 
