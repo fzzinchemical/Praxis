@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.3.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.4.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -284,16 +284,21 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
-### New in 1.3.0-beta
+### New in 1.4.0-beta
 
-From [community requests](docs/TASKS.md#m11-beta-130-community-requests) in other coding agents' issue trackers:
+Harness fixes from the [performance notes](docs/TASKS.md#m13-beta-140-harness-fixes-from-the-performance-notes). Each is covered by tests against a fake server, but **none has been measured with a model yet**: no eval was run for this release.
 
-- Ctrl+F searches the chat panel.
-- A turn that ends while VS Code is in the background shows a notification; its button brings the chat back.
-- In VS Code, a `Write` or `Edit` result ends with the editor's errors for that file, so the model sees its compile errors without another tool call.
-- `/rewind` in the terminal and "Rewind to here" on a message in VS Code restore the files and cut the chat back to before that turn. `Bash` effects are not undone.
-- Change-set review in VS Code: an overview of the turn's changed files, navigation by file and chunk, descriptive risk labels (never a safety verdict) and a revert per file. Rewind and revert ask before overwriting files.
-- `cargo xtask eval --agents-md on` and `scripts/eval-opencode` for a fair comparison with OpenCode (results under [Proof](#proof-tests-coverage-and-evals)).
+- A tool call with broken arguments no longer kills the session with HTTP 500 on every later request.
+- HTTP 5xx errors and dropped connections are retried up to 3 times before any output arrives.
+- A reply cut off at the output limit is continued up to 2 times, and the output limit follows the room left in the context.
+- A reply stuck repeating one phrase is stopped and continued like a reply cut off at the output limit.
+- The first tool-loop detection warns the model; only the second stops the turn. A successful `Edit` or `Write` counts as progress.
+- `Edit` tolerates differences in line endings, quotes, dashes and indentation when the match is unique, and its failure hint shows the closest block.
+- A turn that changed files and ran no command gets one note to check its change.
+- `Read` returns one continuous page with the next offset instead of cutting out the middle of large files; `Grep` stops at the result budget.
+- A repository's `AGENTS.md` or `CLAUDE.md` is followed as instructions once you approve its exact text at the terminal; any change asks again. Without approval it is read as context, as before.
+- Model profiles: the vendor's sampling preset is the lowest layer, `praxis profile show` and `praxis profile set` edit it, and VS Code has a gear next to the model picker.
+- MCP servers connect while the model loads, and evals vary the seed per run and save transcripts.
 
 ### Known issues
 
@@ -302,6 +307,7 @@ From [community requests](docs/TASKS.md#m11-beta-130-community-requests) in othe
 - Every `Write` or `Edit` in VS Code waits up to 2 s for diagnostics.
 - A rewind that fails part-way can leave some files already restored. After the first context summary in a session, rewind is no longer offered.
 - A file revert is not written to the session log, so a reopened chat still shows the change.
+- The approval prompt for a repository's `AGENTS.md` shows its path, not its text. Memory files found in subdirectories during a session are never followed as instructions.
 
 ## Development
 
@@ -317,7 +323,7 @@ All product code is Rust ([ADR 0001](docs/adr/0001-rust-only-with-minimal-vscode
 
 ### Releases
 
-Releases are built locally; there is no CI. `./scripts/release` checks that the tree is clean, `HEAD` is on `main` and the tag matches the crate version, runs `./scripts/verify`, and builds the Linux binary, the `.vsix` and `SHA256SUMS` into `target/dist`. With `--publish` it also tags, pushes the tag and creates the GitHub release with `gh`. A tag with a suffix (`v1.3.0-beta`) becomes a pre-release.
+Releases are built locally; there is no CI. `./scripts/release` checks that the tree is clean, `HEAD` is on `main` and the tag matches the crate version, runs `./scripts/verify`, and builds the Linux binary, the `.vsix` and `SHA256SUMS` into `target/dist`. With `--publish` it also tags, pushes the tag and creates the GitHub release with `gh`. A tag with a suffix (`v1.4.0-beta`) becomes a pre-release.
 
 ```sh
 ./scripts/release v1.2.0             # build only
