@@ -5,6 +5,7 @@
 
 mod details;
 mod plugins;
+mod profile;
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
@@ -15,6 +16,7 @@ use protocol::{
 };
 use serde_json::Value;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -242,6 +244,8 @@ struct Panel {
     closed: bool,
     /// The session a sidebar click asked to open, loaded instead of a new one.
     resume: Option<String>,
+    /// Profile saves waiting for the CLI; see `run_profile_jobs`.
+    profile: ProfileJobs,
     /// Webview and editor registrations, disposed when the panel closes.
     disposables: Vec<Disposable>,
     /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
@@ -414,6 +418,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         client: None,
         lines: Lines::default(),
         closed: false,
+        profile: ProfileJobs::default(),
         disposables: Vec::new(),
         closures: Vec::new(),
         resume,
@@ -481,6 +486,8 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
                     .and_then(|client| client.set_model(&key));
                 panel.send(line);
             }
+            Some(FromPanel::ProfileShow) => show_profile(&state),
+            Some(FromPanel::ProfileSet { field, value }) => set_profile(&state, &field, &value),
             Some(FromPanel::PermissionMode(key)) => {
                 let mut panel = state.borrow_mut();
                 let line = panel
@@ -660,6 +667,75 @@ fn start(state: &Shared) {
     });
     panel.client = Some(client);
     panel.lines = Lines::default();
+}
+
+/// Profile saves not yet written. `profile set` rewrites the whole config file, so saves run one at a time.
+#[derive(Default)]
+struct ProfileJobs {
+    queue: VecDeque<Vec<String>>,
+    busy: bool,
+}
+
+/// Sends the popover the picker's model profile. Runs in the workspace, so the project config counts.
+fn show_profile(state: &Shared) {
+    let panel = state.borrow();
+    let Some(key) = panel.client.as_ref().and_then(Client::current_model) else {
+        return panel.webview.notify("Pick a model first.");
+    };
+    let key = key.to_owned();
+    let state = state.clone();
+    run_cli(
+        profile::show_args(&key),
+        workspace_dir().as_deref(),
+        move |result| {
+            let panel = state.borrow();
+            match result.and_then(|json| profile::parse_rows(&json)) {
+                Ok(rows) => panel
+                    .webview
+                    .post_message(&profile::rows_message(&key, &rows).to_string()),
+                Err(error) => panel.webview.notify(error.trim()),
+            }
+        },
+    );
+}
+
+/// Queues one `profile set` for the picker's model, then runs the queue.
+fn set_profile(state: &Shared, field: &str, value: &str) {
+    let mut panel = state.borrow_mut();
+    let Some(key) = panel.client.as_ref().and_then(Client::current_model) else {
+        return panel.webview.notify("Pick a model first.");
+    };
+    let args = profile::set_args(key, field, value);
+    panel.profile.queue.push_back(args);
+    if panel.profile.busy {
+        return;
+    }
+    drop(panel);
+    run_profile_jobs(state);
+}
+
+/// Runs the queued saves in turn, then reloads the popover once the queue is empty.
+fn run_profile_jobs(state: &Shared) {
+    let mut panel = state.borrow_mut();
+    let Some(args) = panel.profile.queue.pop_front() else {
+        panel.profile.busy = false;
+        drop(panel);
+        return show_profile(state);
+    };
+    panel.profile.busy = true;
+    drop(panel);
+    let next = state.clone();
+    run_cli(args, workspace_dir().as_deref(), move |result| {
+        {
+            let panel = next.borrow();
+            match result {
+                // A running model keeps the profile it loaded with, so the change applies to the next chat.
+                Ok(_) => panel.webview.notify("Saved. Applies from the next chat."),
+                Err(error) => panel.webview.notify(error.trim()),
+            }
+        }
+        run_profile_jobs(&next);
+    });
 }
 
 /// Tells the webview which file the active editor shows, so its chip follows the editor.

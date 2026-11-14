@@ -217,9 +217,27 @@ pub fn cut_at_turn(classes: &[String], turn: usize) -> Option<usize> {
         .nth(turn.checked_sub(1)?)
 }
 
+/// A profile value as the popover's input shows it: strings as they are, lists and numbers as TOML
+/// (what `profile set` reads back), and nothing for an unset value.
+pub fn profile_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Null => String::new(),
+        serde_json::Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_values_show_as_text_and_unset_as_empty() {
+        assert_eq!(profile_text(&serde_json::Value::Null), "");
+        assert_eq!(profile_text(&serde_json::json!("chatml")), "chatml");
+        assert_eq!(profile_text(&serde_json::json!(4096)), "4096");
+        assert_eq!(profile_text(&serde_json::json!(["a", "b"])), r#"["a","b"]"#);
+    }
 
     #[test]
     fn a_rewind_cuts_the_chat_at_the_user_bubble_of_that_turn() {

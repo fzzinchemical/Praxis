@@ -38,6 +38,13 @@ pub enum FromPanel {
     Rewind(u64),
     /// The file the review asked to revert to its state before the change set.
     RevertFile(String),
+    /// The gear next to the model picker asked for the selected model's profile.
+    ProfileShow,
+    /// One profile field the popover saved; `field` is one of `profile::FIELDS`.
+    ProfileSet {
+        field: String,
+        value: String,
+    },
 }
 
 impl FromPanel {
@@ -63,6 +70,20 @@ impl FromPanel {
             "stop_subagent" => Some(Self::StopSubagent(value["id"].as_str()?.to_owned())),
             "rewind" => Some(Self::Rewind(value["turn"].as_u64()?)),
             "revert_file" => Some(Self::RevertFile(value["path"].as_str()?.to_owned())),
+            "profile_show" => Some(Self::ProfileShow),
+            "profile_set" => {
+                // The value goes to the CLI's argv and then into the config file, so a newline could write extra lines.
+                let field = value["field"]
+                    .as_str()
+                    .filter(|f| crate::profile::FIELDS.contains(f))?;
+                let text = value["value"]
+                    .as_str()
+                    .filter(|v| !v.contains(['\n', '\r']))?;
+                Some(Self::ProfileSet {
+                    field: field.to_owned(),
+                    value: text.to_owned(),
+                })
+            }
             "permission" => Some(Self::Permission(
                 request_id(&value["id"])?.clone(),
                 value["option"].as_str().map(str::to_owned),
@@ -412,6 +433,11 @@ impl Client {
         let session = self.session.as_deref()?;
         let params = json!({"sessionId": session, "configId": "model", "value": key});
         Some(request(SET_MODEL, "session/set_config_option", params))
+    }
+
+    /// The model key the picker last showed as current, once the agent has answered.
+    pub fn current_model(&self) -> Option<&str> {
+        self.picker.as_ref()?["current"].as_str()
     }
 
     /// `session/set_config_option` for the permission mode picker, or `None` while no session is open yet.
@@ -831,6 +857,33 @@ mod tests {
         assert_eq!(
             shown["text"],
             "Could not rewind: turn 9 can't be rewound to"
+        );
+    }
+
+    #[test]
+    fn profile_requests_parse_and_reject_unknown_fields_or_multiline_values() {
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"profile_show"}"#),
+            Some(FromPanel::ProfileShow)
+        );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"profile_set","field":"top_k","value":"-1"}"#),
+            Some(FromPanel::ProfileSet {
+                field: "top_k".into(),
+                value: "-1".into()
+            })
+        );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"profile_set","field":"bogus","value":"1"}"#),
+            None
+        );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"profile_set","field":"top_k","value":"1\n[x]"}"#),
+            None
+        );
+        assert_eq!(
+            FromPanel::parse(r#"{"type":"profile_set","field":"top_k"}"#),
+            None
         );
     }
 

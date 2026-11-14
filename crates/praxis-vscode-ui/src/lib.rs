@@ -96,6 +96,9 @@ struct Ui {
     model: HtmlSelectElement,
     /// The permission mode picker, enabled under the same rule as the model picker.
     mode: HtmlSelectElement,
+    /// The gear beside the model picker, its popover and the popover's field list.
+    gear: HtmlElement,
+    profile_fields: Element,
     input: HtmlTextAreaElement,
     /// User turns shown so far, so each bubble's "Rewind to here" knows its turn number.
     turns: usize,
@@ -246,6 +249,50 @@ impl Ui {
     }
 }
 
+/// Shows the popover, asks the extension for the model's rows and moves focus into it.
+fn open_profile(
+    gear: &HtmlElement,
+    pop: &HtmlElement,
+    fields: &Element,
+    api: &VsCodeApi,
+) -> Result<(), JsValue> {
+    fields.set_text_content(Some("Loading..."));
+    pop.remove_attribute("hidden")?;
+    gear.set_attribute("aria-expanded", "true")?;
+    api.post_message(&json!({"type": "profile_show"}).to_string());
+    pop.focus()
+}
+
+/// Hides the popover and returns focus to the gear that opened it.
+fn close_profile(gear: &HtmlElement, pop: &HtmlElement) -> Result<(), JsValue> {
+    pop.set_attribute("hidden", "")?;
+    gear.set_attribute("aria-expanded", "false")?;
+    gear.focus()
+}
+
+/// Posts one `profile_set` per field the user changed; an empty field keeps its value.
+fn save_profile(fields: &Element, api: &VsCodeApi) -> Result<(), JsValue> {
+    let inputs = fields.query_selector_all("input")?;
+    for index in 0..inputs.length() {
+        let Some(node) = inputs.item(index) else {
+            continue;
+        };
+        let input: HtmlInputElement = node.dyn_into()?;
+        let value = input.value();
+        let value = value.trim();
+        let Some(field) = input.get_attribute("data-field") else {
+            continue;
+        };
+        if value.is_empty() || value == input.default_value() {
+            continue;
+        }
+        api.post_message(
+            &json!({"type": "profile_set", "field": field, "value": value}).to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// A disabled control carries the attribute, which browsers and screen readers both honour.
 fn set_enabled(element: &Element, enabled: bool) -> Result<(), JsValue> {
     if enabled {
@@ -281,6 +328,10 @@ pub fn start() -> Result<(), JsValue> {
     let chips = by_id(&document, "chips")?;
     let model: HtmlSelectElement = by_id(&document, "model")?.dyn_into()?;
     let mode: HtmlSelectElement = by_id(&document, "mode")?.dyn_into()?;
+    let gear: HtmlElement = by_id(&document, "profile-gear")?.dyn_into()?;
+    let profile: HtmlElement = by_id(&document, "profile-popover")?.dyn_into()?;
+    let profile_fields = by_id(&document, "profile-fields")?;
+    let profile_save: HtmlElement = by_id(&document, "profile-save")?.dyn_into()?;
     let menu = by_id(&document, "commands")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
@@ -311,6 +362,8 @@ pub fn start() -> Result<(), JsValue> {
         problems: problems.clone(),
         model: model.clone(),
         mode: mode.clone(),
+        gear: gear.clone(),
+        profile_fields: profile_fields.clone(),
         input: input.clone(),
         commands: Vec::new(),
         menu: menu.clone(),
@@ -417,6 +470,55 @@ pub fn start() -> Result<(), JsValue> {
     });
     mode.add_event_listener_with_callback("change", on_mode.as_ref().unchecked_ref())?;
     on_mode.forget();
+
+    let (api, gear_c, pop, fields) = (
+        vscode.clone(),
+        gear.clone(),
+        profile.clone(),
+        profile_fields.clone(),
+    );
+    let on_gear = Closure::<dyn FnMut()>::new(move || {
+        let _ = if pop.has_attribute("hidden") {
+            open_profile(&gear_c, &pop, &fields, &api)
+        } else {
+            close_profile(&gear_c, &pop)
+        };
+    });
+    gear.add_event_listener_with_callback("click", on_gear.as_ref().unchecked_ref())?;
+    on_gear.forget();
+
+    let (api, fields) = (vscode.clone(), profile_fields.clone());
+    let on_save = Closure::<dyn FnMut()>::new(move || {
+        let _ = save_profile(&fields, &api);
+    });
+    profile_save.add_event_listener_with_callback("click", on_save.as_ref().unchecked_ref())?;
+    on_save.forget();
+
+    let (api, gear_c, pop, fields) = (
+        vscode.clone(),
+        gear.clone(),
+        profile.clone(),
+        profile_fields.clone(),
+    );
+    let on_profile_key = Closure::<dyn FnMut(KeyboardEvent)>::new(move |event: KeyboardEvent| {
+        let typing = event
+            .target()
+            .is_some_and(|t| t.is_instance_of::<HtmlInputElement>());
+        match event.key().as_str() {
+            "Escape" => {
+                event.prevent_default();
+                let _ = close_profile(&gear_c, &pop);
+            }
+            // Enter saves here and never submits the chat form the popover sits in.
+            "Enter" if typing => {
+                event.prevent_default();
+                let _ = save_profile(&fields, &api);
+            }
+            _ => {}
+        }
+    });
+    profile.add_event_listener_with_callback("keydown", on_profile_key.as_ref().unchecked_ref())?;
+    on_profile_key.forget();
 
     let api = vscode.clone();
     let on_stop = Closure::<dyn FnMut()>::new(move || {
@@ -697,7 +799,39 @@ impl Ui {
         let idle = self.status.phase == Phase::Idle;
         let open = self.ready && idle;
         set_enabled(&self.model, open && self.model.length() > 0)?;
-        set_enabled(&self.mode, open && self.mode.length() > 0)
+        set_enabled(&self.mode, open && self.mode.length() > 0)?;
+        set_enabled(&self.gear, open && self.model.length() > 0)
+    }
+
+    /// Fills the popover with the `profile` message's rows: a labelled input per field, its source as text.
+    fn render_profile(&self, message: &Value) -> Result<(), JsValue> {
+        self.profile_fields.set_text_content(Some(""));
+        for row in message["rows"].as_array().into_iter().flatten() {
+            let field = row["field"].as_str().unwrap_or_default();
+            let id = format!("profile-{field}");
+            let line = self.document.create_element("div")?;
+            line.set_class_name("profile-row");
+            let label = self.document.create_element("label")?;
+            label.set_attribute("for", &id)?;
+            label.set_text_content(Some(field));
+            let input: HtmlInputElement = self.document.create_element("input")?.dyn_into()?;
+            let text = view::profile_text(&row["value"]);
+            input.set_id(&id);
+            input.set_attribute("data-field", field)?;
+            input.set_attribute("placeholder", "unset")?;
+            input.set_default_value(&text);
+            input.set_value(&text);
+            let source = self.document.create_element("span")?;
+            source.set_id(&format!("{id}-source"));
+            source.set_class_name("profile-source");
+            source.set_text_content(Some(row["source"].as_str().unwrap_or_default()));
+            input.set_attribute("aria-describedby", &format!("{id}-source"))?;
+            line.append_child(&label)?;
+            line.append_child(&input)?;
+            line.append_child(&source)?;
+            self.profile_fields.append_child(&line)?;
+        }
+        Ok(())
     }
 
     /// Fills `select` from the extension's `models` or `modes` message and selects the current option.
@@ -806,6 +940,7 @@ impl Ui {
                 let mode = self.mode.clone();
                 self.fill_picker(&mode, message)?;
             }
+            "profile" => self.render_profile(message)?,
             "tool" => self.tool(message)?,
             "subagent_usage" => self.subagent_usage(message)?,
             "permission" => self.permission(message)?,

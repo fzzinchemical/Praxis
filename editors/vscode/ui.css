@@ -315,6 +315,50 @@ body.dragging {
   max-width: 100%;
 }
 
+/* Anchored to the model bar; hidden with the `hidden` attribute, so display is set only while open. */
+.model-bar {
+  position: relative;
+}
+
+.profile-popover:not([hidden]) {
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  bottom: 100%;
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  left: 0;
+  margin-bottom: 6px;
+  max-width: calc(100vw - 32px);
+  padding: 10px;
+  position: absolute;
+  width: 300px;
+  z-index: 10;
+}
+
+.profile-row {
+  display: grid;
+  gap: 2px;
+}
+
+.profile-row input {
+  background: var(--vscode-input-background);
+  border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
+  color: var(--vscode-input-foreground);
+}
+
+.profile-source,
+.profile-hint {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  margin: 0;
+}
+
+.profile-popover #profile-save {
+  align-self: flex-end;
+}
+
 .composer-actions {
   display: flex;
   gap: 6px;

@@ -890,6 +890,7 @@ Features:
 | Other permissions | Prompt in the panel, including "always" |
 | Tool activity | Collapsible items with status |
 | Model picker | Backed by `models` data and config |
+| Model settings | A gear beside the picker opens a popover that lists the selected model's profile fields with their source; saves run `praxis profile set` one at a time and apply from the next chat |
 | Context | Active file and selection attached as prompt resources; diagnostics on request |
 | Output channel | Praxis stderr |
 

@@ -17,10 +17,10 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
-| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 12 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
+| **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 13 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
 | **M11** | [Beta 1.3.0: community requests](#m11-beta-130-community-requests) | 8 | Ship the most-wanted features of other agents that fit a local, single-GPU harness. |
 
-102 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+103 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -874,6 +874,8 @@ flowchart LR
     T10_10["T10.10<br/>Turns stop early"]
     T10_11["T10.11<br/>Subagent log, context"]
     T10_12["T10.12<br/>Stop subagent, files"]
+    T10_13["T10.13<br/>Profile settings in VS Code"]
+    T2_15(["T2.15"])
     T3_7(["T3.7"])
     T5_12(["T5.12"])
     T6_2(["T6.2"])
@@ -894,13 +896,14 @@ flowchart LR
     T10_1 --> T10_11
     T10_11 --> T10_12
     T8_9 -.-> T10_8
+    T2_15 -.-> T10_13
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
-    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8,T10_9,T10_10,T10_11,T10_12 task
+    class T10_1,T10_2,T10_3,T10_4,T10_6,T10_8,T10_9,T10_10,T10_11,T10_12,T10_13 task
     class T10_5,T10_7 human
-    class T3_7,T5_12,T6_2,T9_4,T3_5,T6_5,T8_9 other
+    class T3_7,T5_12,T6_2,T9_4,T3_5,T6_5,T8_9,T2_15 other
 ```
 
 - [x] **T10.1 Replay whole chats** (§8, §11)
@@ -955,6 +958,10 @@ flowchart LR
 - [x] **T10.12 Stop one subagent, list its files** (§11, §12) · *Should*
   - **Needs:** T10.11.
   - **Done when:** a stop button on a running subagent block cancels only that subagent (its own child cancellation token, reached through an ACP extension method), and the parent gets a cancelled result and keeps going; the block lists the files the subagent changed (completed `Write`/`Edit` calls), each opening its change in VS Code's diff view. Each part has a test.
+
+- [x] **T10.13 Profile settings in VS Code** (§5.5, §11)
+  - **Needs:** T2.15.
+  - **Done when:** the gear next to the model picker shows each profile field with its source and saving writes it through `praxis profile set`.
 
 - [x] **T10.9 Plugin details from the sidebar** (§12) · *Should*
   - **Needs:** T10.6.
