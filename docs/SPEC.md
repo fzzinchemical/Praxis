@@ -960,6 +960,8 @@ Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/
 
 `plugin list --json` also carries each plugin's `readme` (its root `README.md` text, or `null`, never read through a link out of the plugin root) and `components`, one `{kind: command|skill|agent, name, description}` per command, skill and agent. The VS Code Plugins view opens a read-only details tab per plugin on click (T10.9): the README rendered with raw HTML escaped and unsafe links dropped, then the components. The page is built from the listing already in memory, under a CSP with no scripts. Agents are listed without resolving `model`, so one whose model is not enabled still shows.
 
+Each listed plugin also carries `settings`, one `{key, description, sensitive, set, value}` per `userConfig` key; `value` is null for a `sensitive` key, which shows only `set`. `praxis plugin config <plugin> <key> <value>` stores one value (`set_option`). The details tab's Settings section links each key to a `command:praxis.setPluginOption` URI, which asks for the value in a masked input box for a `sensitive` key and then runs that command.
+
 ### Skills
 
 The prompt has an index of `name: description`, frozen at session start and subject to the budget. The `Skill` tool returns the body on demand, as an appended message. Substitute `$ARGUMENTS` (`UNVERIFIED` for the full list of substitutions; see Claude Code's skills doc).

@@ -9,7 +9,7 @@ mod profile;
 mod protocol;
 
 use js_sys::{Array, Object, Promise, Reflect};
-use plugins::{PluginItem, Verb, install_args, list_args, plugin_items, verb_args};
+use plugins::{PluginItem, Verb, config_args, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection,
     SessionItem, folder_args, folder_names, session_items,
@@ -331,6 +331,12 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     command(&context, "praxis.showPlugin", |name| {
         if let Some(name) = name.as_string() {
             show_details(name);
+        }
+    })?;
+    command(&context, "praxis.setPluginOption", |arg| {
+        let field = |key: &str| Reflect::get(&arg, &key.into()).ok()?.as_string();
+        if let (Some(name), Some(key)) = (field("plugin"), field("key")) {
+            set_plugin_option(name, key);
         }
     })?;
     command(&context, "praxis.installPlugin", |_| install_plugin())?;
@@ -1565,11 +1571,15 @@ fn show_details(name: String) {
 
 /// Creates the read-only details tab and forgets it when VS Code closes it.
 fn open_details(name: &str, page: &str) -> Result<(), JsValue> {
+    // Command URIs allowlisted to the Settings links only, so a README link can never run any other
+    // command even if the sanitizer misses one; the page still has no scripts.
+    let allowed = Array::of1(&JsValue::from_str("praxis.setPluginOption"));
+    let options: Object = node(&[("enableCommandUris", allowed.into())]).unchecked_into();
     let panel = create_webview_panel(
         "praxis.plugin",
         &format!("{name} (plugin)"),
         VIEW_COLUMN_ACTIVE,
-        &Object::new(),
+        &options,
     )?;
     panel.webview().set_html(page);
     let key = name.to_owned();
@@ -1594,6 +1604,59 @@ fn publish_plugins(items: Vec<PluginItem>) {
     if let Some(emitter) = emitter {
         emitter.fire(&JsValue::UNDEFINED);
     }
+    redraw_details();
+}
+
+/// Rebuilds each open details tab from the fresh listing, so a changed setting shows at once.
+fn redraw_details() {
+    PLUGINS.with(|plugins| {
+        let plugins = plugins.borrow();
+        let Some(plugins) = plugins.as_ref() else {
+            return;
+        };
+        DETAILS.with(|panels| {
+            for (name, panel) in panels.borrow().iter() {
+                if let Some(item) = plugins.items.iter().find(|item| &item.name == name) {
+                    panel.webview().set_html(&details::details_page(item));
+                }
+            }
+        });
+    });
+}
+
+/// Asks for a new value for one `userConfig` key, then saves it through the CLI. A blank answer
+/// changes nothing. The input is masked for a `sensitive` key.
+fn set_plugin_option(name: String, key: String) {
+    let sensitive = PLUGINS.with(|plugins| {
+        plugins.borrow().as_ref().and_then(|plugins| {
+            plugins
+                .items
+                .iter()
+                .find(|item| item.name == name)?
+                .settings
+                .iter()
+                .find(|setting| setting.key == key)
+                .map(|setting| setting.sensitive)
+        })
+    });
+    let Some(sensitive) = sensitive else {
+        return plugin_log(&format!("plugins: {name} has no setting {key}\n"));
+    };
+    let options = node(&[
+        (
+            "prompt",
+            JsValue::from_str(&format!("New value for {key} ({name})")),
+        ),
+        ("password", JsValue::from_bool(sensitive)),
+    ]);
+    let on_input = Closure::once_into_js(move |input: JsValue| {
+        if let Some(value) = input.as_string().filter(|value| !value.is_empty()) {
+            run_action(config_args(&name, &key, &value));
+        }
+    });
+    let _ = show_input_box(&options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_input);
 }
 
 fn plugin_log(text: &str) {

@@ -110,6 +110,12 @@ enum PluginCommand {
     Disable {
         name: String,
     },
+    /// Set one `userConfig` value. `sensitive` values are stored 0600 and never printed.
+    Config {
+        name: String,
+        key: String,
+        value: String,
+    },
     /// Remove the plugin. Its data is kept unless removal is confirmed separately.
     Remove {
         name: String,
@@ -150,6 +156,30 @@ fn components(plugin: &praxis_core::plugin::Plugin) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Each `userConfig` key with its description and value. A `sensitive` value is never listed, only `set`.
+fn settings(
+    plugin: &praxis_core::plugin::Plugin,
+    data_root: &std::path::Path,
+) -> Result<Vec<serde_json::Value>, String> {
+    let options = plugin.options(data_root)?;
+    let Some(schema) = plugin.user_config.as_ref().and_then(|c| c.as_object()) else {
+        return Ok(Vec::new());
+    };
+    Ok(schema
+        .iter()
+        .map(|(key, spec)| {
+            let sensitive = spec["sensitive"].as_bool().unwrap_or(false);
+            serde_json::json!({
+                "key": key,
+                "description": spec["description"].as_str().unwrap_or(""),
+                "sensitive": sensitive,
+                "set": options.contains_key(key),
+                "value": options.get(key).filter(|_| !sensitive),
+            })
+        })
+        .collect())
+}
+
 /// `praxis plugin ...`: no model or server needed.
 fn plugin_command(command: PluginCommand) -> Result<u8> {
     let root = xdg_path("XDG_DATA_HOME", ".local/share", "plugins")
@@ -181,13 +211,15 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
                     Ok((_, plugin)) => (
                         plugin.readme(),
                         components(&plugin),
-                        plugin.runs(&store.data_root()),
+                        plugin
+                            .runs(&store.data_root())
+                            .and_then(|runs| Ok((runs, settings(&plugin, &store.data_root())?))),
                     ),
                     Err(error) => (None, Vec::new(), Err(error)),
                 };
-                let (can_run, error) = match loaded {
-                    Ok(runs) => (runs, None),
-                    Err(error) => (Vec::new(), Some(error)),
+                let (can_run, settings, error) = match loaded {
+                    Ok((runs, settings)) => (runs, settings, None),
+                    Err(error) => (Vec::new(), Vec::new(), Some(error)),
                 };
                 plugins.push(serde_json::json!({
                     "name": name,
@@ -198,6 +230,7 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
                     "error": error,
                     "readme": readme,
                     "components": components,
+                    "settings": settings,
                 }));
             }
             println!("{}", serde_json::Value::Array(plugins));
@@ -211,6 +244,13 @@ fn plugin_command(command: PluginCommand) -> Result<u8> {
                     sanitize(&entry.source)
                 );
             }
+        }
+        PluginCommand::Config { name, key, value } => {
+            let (_, plugin) = store.get(&name).map_err(anyhow::Error::msg)?;
+            plugin
+                .set_option(&store.data_root(), &key, &value)
+                .map_err(anyhow::Error::msg)?;
+            println!("Set {key} for {name}.");
         }
         PluginCommand::Enable { name } => {
             show(&store.get(&name).map_err(anyhow::Error::msg)?.1)?;

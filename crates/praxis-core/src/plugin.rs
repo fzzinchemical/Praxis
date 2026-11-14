@@ -535,7 +535,8 @@ impl Plugin {
         .map_err(fail)
     }
 
-    fn options(&self, data_root: &Path) -> Result<BTreeMap<String, String>, String> {
+    /// The values set so far, keyed by `userConfig` key. Callers must not print `sensitive` ones.
+    pub fn options(&self, data_root: &Path) -> Result<BTreeMap<String, String>, String> {
         let path = self.data_dir(data_root).join("options.json");
         match fs::read_to_string(&path) {
             Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),

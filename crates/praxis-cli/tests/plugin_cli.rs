@@ -328,3 +328,41 @@ fn list_json_still_lists_a_plugin_whose_manifest_is_broken() {
     );
     assert_eq!(other["can_run"], serde_json::json!([]), "{other}");
 }
+
+#[test]
+fn config_sets_a_user_config_value_and_list_json_shows_it_unless_sensitive() {
+    let home = temp("config");
+    let src = home.join("src");
+    fs::create_dir_all(src.join(".claude-plugin")).unwrap();
+    fs::write(
+        src.join(".claude-plugin/plugin.json"),
+        r#"{"name": "demo", "userConfig": {
+            "token": {"description": "API token", "sensitive": true},
+            "level": {"description": "Verbosity"}}}"#,
+    )
+    .unwrap();
+    git(&src, &["init", "--quiet"]);
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "--quiet", "-m", "one"]);
+    stdout(&praxis(&home, &["install", src.to_str().unwrap()]));
+
+    stdout(&praxis(&home, &["config", "--", "demo", "level", "high"]));
+    stdout(&praxis(&home, &["config", "--", "demo", "token", "s3cret"]));
+    let unknown = praxis(&home, &["config", "--", "demo", "nope", "x"]);
+    assert!(!unknown.status.success());
+
+    let listed = stdout(&praxis(&home, &["list", "--json"]));
+    assert!(!listed.contains("s3cret"), "{listed}");
+    let rows: serde_json::Value = serde_json::from_str(&listed).unwrap();
+    let settings = rows[0]["settings"].as_array().expect("settings array");
+    let by_key = |key: &str| settings.iter().find(|s| s["key"] == key).unwrap().clone();
+    let level = by_key("level");
+    assert_eq!(level["description"], "Verbosity");
+    assert_eq!(level["sensitive"], false);
+    assert_eq!(level["set"], true);
+    assert_eq!(level["value"], "high");
+    let token = by_key("token");
+    assert_eq!(token["sensitive"], true);
+    assert_eq!(token["set"], true);
+    assert!(token["value"].is_null(), "{token}");
+}

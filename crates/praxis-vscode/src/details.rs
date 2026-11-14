@@ -32,6 +32,7 @@ pub fn details_page(item: &PluginItem) -> String {
     } else {
         format!("<ul>\n{components}</ul>")
     };
+    let settings = settings_list(item);
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
 <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n\
@@ -43,10 +44,54 @@ code, pre {{ font-family: var(--vscode-editor-font-family); }}\n\
 </head>\n<body>\n<main>\n<h1>{name}</h1>\n<p>Status: <span class=\"badge\">{state}</span></p>\n\
 <section aria-labelledby=\"readme\"><h2 id=\"readme\">README</h2>\n{readme}</section>\n\
 <section aria-labelledby=\"components\"><h2 id=\"components\">Commands, skills and agents</h2>\n{components}</section>\n\
+<section aria-labelledby=\"settings\"><h2 id=\"settings\">Settings</h2>\n{settings}</section>\n\
 </main>\n</body>\n</html>\n",
         name = escape(&item.name),
         state = escape(&item.description()),
     )
+}
+
+/// Each `userConfig` key with its description, current value and a link that asks for a new one.
+/// The link is a `command:` URI, which the webview allows without scripts; its single argument is
+/// a JSON object, so the handler reads named fields. A sensitive value is never shown.
+fn settings_list(item: &PluginItem) -> String {
+    if item.settings.is_empty() {
+        return "<p>No settings.</p>".to_owned();
+    }
+    let rows: String = item
+        .settings
+        .iter()
+        .map(|s| {
+            let value = match (s.sensitive, &s.value) {
+                (true, _) if s.set => "set (hidden)".to_owned(),
+                (true, _) => "not set".to_owned(),
+                (false, Some(value)) => value.clone(),
+                (false, None) => "not set".to_owned(),
+            };
+            let arg = serde_json::json!({"plugin": item.name, "key": s.key}).to_string();
+            format!(
+                "<li><strong>{key}</strong>: {description}<br>Current value: {value} \
+<a href=\"command:praxis.setPluginOption?{arg}\" aria-label=\"Change {key}\">Change</a></li>\n",
+                key = escape(&s.key),
+                description = escape(&s.description),
+                value = escape(&value),
+                arg = percent_encode(&arg),
+            )
+        })
+        .collect();
+    format!("<ul>\n{rows}</ul>")
+}
+
+/// Percent-encodes everything but unreserved characters, as a command URI's query needs.
+fn percent_encode(text: &str) -> String {
+    text.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                char::from(b).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
 }
 
 fn escape(text: &str) -> String {
@@ -60,7 +105,7 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plugins::{Component, Kind};
+    use crate::plugins::{Component, Kind, Setting};
 
     fn plugin(readme: Option<&str>, components: Vec<Component>) -> PluginItem {
         PluginItem {
@@ -71,6 +116,17 @@ mod tests {
             error: None,
             readme: readme.map(str::to_owned),
             components,
+            settings: Vec::new(),
+        }
+    }
+
+    fn setting(key: &str, value: Option<&str>, sensitive: bool) -> Setting {
+        Setting {
+            key: key.to_owned(),
+            description: format!("About {key}"),
+            sensitive,
+            set: value.is_some(),
+            value: value.map(str::to_owned),
         }
     }
 
@@ -152,6 +208,52 @@ mod tests {
         assert!(page.contains("No README"), "{page}");
         assert!(page.contains("review:hello"), "{page}");
         assert!(page.contains("Says hi"), "{page}");
+    }
+
+    #[test]
+    fn lists_each_setting_with_its_description_and_current_value() {
+        let mut item = plugin(None, Vec::new());
+        item.settings = vec![
+            setting("level", Some("high"), false),
+            setting("mode", None, false),
+        ];
+        let page = details_page(&item);
+        assert!(page.contains("<h2 id=\"settings\">Settings</h2>"), "{page}");
+        assert!(
+            page.contains("<strong>level</strong>: About level"),
+            "{page}"
+        );
+        assert!(page.contains("Current value: high"), "{page}");
+        assert!(page.contains("Current value: not set"), "{page}");
+    }
+
+    #[test]
+    fn a_sensitive_setting_shows_only_whether_it_is_set() {
+        let mut item = plugin(None, Vec::new());
+        item.settings = vec![setting("token", Some("s3cret"), true)];
+        let page = details_page(&item);
+        assert!(!page.contains("s3cret"), "{page}");
+        assert!(page.contains("Current value: set (hidden)"), "{page}");
+    }
+
+    #[test]
+    fn change_link_passes_the_plugin_and_key_as_one_object() {
+        let mut item = plugin(None, Vec::new());
+        item.settings = vec![setting("level", None, false)];
+        let page = details_page(&item);
+        // {"key":"level","plugin":"review"} (keys sorted), percent-encoded.
+        assert!(
+            page.contains(
+                "command:praxis.setPluginOption?%7B%22key%22%3A%22level%22%2C%22plugin%22%3A%22review%22%7D"
+            ),
+            "{page}"
+        );
+    }
+
+    #[test]
+    fn says_so_when_a_plugin_has_no_settings() {
+        let page = details_page(&plugin(None, Vec::new()));
+        assert!(page.contains("No settings."), "{page}");
     }
 
     #[test]

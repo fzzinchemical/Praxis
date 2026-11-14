@@ -16,6 +16,18 @@ pub struct PluginItem {
     pub readme: Option<String>,
     /// Commands, skills and agents, in the order the CLI lists them.
     pub components: Vec<Component>,
+    /// The `userConfig` keys, in the order the CLI lists them.
+    pub settings: Vec<Setting>,
+}
+
+/// One `userConfig` key. A `sensitive` key never carries its value, only whether it is set.
+#[derive(Debug, PartialEq)]
+pub struct Setting {
+    pub key: String,
+    pub description: String,
+    pub sensitive: bool,
+    pub set: bool,
+    pub value: Option<String>,
 }
 
 /// What a plugin component is, as `plugin list --json` names it.
@@ -112,6 +124,30 @@ fn plugin_item(row: &Value) -> Result<PluginItem, String> {
             .iter()
             .map(component)
             .collect::<Result<_, _>>()?,
+        settings: row["settings"]
+            .as_array()
+            .ok_or("plugin row without a `settings` array")?
+            .iter()
+            .map(setting)
+            .collect::<Result<_, _>>()?,
+    })
+}
+
+fn setting(row: &Value) -> Result<Setting, String> {
+    let text = |key: &str| {
+        row[key]
+            .as_str()
+            .map(str::to_owned)
+            .ok_or_else(|| format!("setting without a string `{key}`"))
+    };
+    Ok(Setting {
+        key: text("key")?,
+        description: text("description")?,
+        sensitive: row["sensitive"]
+            .as_bool()
+            .ok_or("setting without a `sensitive` flag")?,
+        set: row["set"].as_bool().ok_or("setting without a `set` flag")?,
+        value: row["value"].as_str().map(str::to_owned),
     })
 }
 
@@ -161,6 +197,11 @@ pub fn install_args(source: &str) -> Vec<String> {
     args(&["install", "--", source])
 }
 
+/// Sets one `userConfig` value; the value is the last argument, so it may start with `-`.
+pub fn config_args(name: &str, key: &str, value: &str) -> Vec<String> {
+    args(&["config", "--", name, key, value])
+}
+
 fn args(rest: &[&str]) -> Vec<String> {
     std::iter::once("plugin")
         .chain(rest.iter().copied())
@@ -175,9 +216,9 @@ mod tests {
     const LISTING: &str = r##"[
         {"name":"review","source":"/src/review","commit":"1a2b3c4d5e","enabled":true,
          "can_run":["hook: PreToolUse Bash","bin/lint"],"readme":"# Review","components":[
-           {"kind":"skill","name":"review:fmt","description":"Formats code"}]},
+           {"kind":"skill","name":"review:fmt","description":"Formats code"}],"settings":[]},
         {"name":"notes","source":"https://example.com/notes.git","commit":"9f8e7d6c5b",
-         "enabled":false,"can_run":[],"readme":null,"components":[]}
+         "enabled":false,"can_run":[],"readme":null,"components":[],"settings":[]}
     ]"##;
 
     #[test]
@@ -272,11 +313,49 @@ mod tests {
     fn a_broken_plugin_keeps_its_row_with_the_error_and_no_runs() {
         let items = plugin_items(
             r#"[{"name":"other","source":"/s","commit":"abc","enabled":false,
-                 "can_run":[],"error":"manifest is not JSON","components":[]}]"#,
+                 "can_run":[],"error":"manifest is not JSON","components":[],"settings":[]}]"#,
         )
         .unwrap();
         assert_eq!(items[0].error.as_deref(), Some("manifest is not JSON"));
         assert_eq!(items[0].description(), "broken: manifest is not JSON");
+    }
+
+    #[test]
+    fn config_passes_the_value_after_option_parsing_ends() {
+        assert_eq!(
+            config_args("review", "--level", "-x"),
+            ["plugin", "config", "--", "review", "--level", "-x"]
+        );
+    }
+
+    #[test]
+    fn maps_settings_and_never_invents_a_value_for_a_sensitive_key() {
+        let items = plugin_items(
+            r#"[{"name":"kit","source":"/s","commit":"c","enabled":true,"can_run":[],
+                 "components":[],"settings":[
+                   {"key":"level","description":"Verbosity","sensitive":false,"set":true,"value":"high"},
+                   {"key":"token","description":"","sensitive":true,"set":true,"value":null}]}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            items[0].settings,
+            [
+                Setting {
+                    key: "level".to_owned(),
+                    description: "Verbosity".to_owned(),
+                    sensitive: false,
+                    set: true,
+                    value: Some("high".to_owned()),
+                },
+                Setting {
+                    key: "token".to_owned(),
+                    description: String::new(),
+                    sensitive: true,
+                    set: true,
+                    value: None,
+                },
+            ]
+        );
     }
 
     #[test]
