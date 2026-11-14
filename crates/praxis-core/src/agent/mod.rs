@@ -98,6 +98,10 @@ pub enum AgentEvent {
         used_tokens: u32,
         context_size: u32,
         cached_tokens: Option<u32>,
+        /// Milliseconds from sending the request to its first chunk; `None` if none came.
+        first_token_ms: Option<u64>,
+        /// Milliseconds from sending the request to its usage report, the end of the reply (T13.9).
+        model_ms: u64,
     },
     Compaction(CompactionState),
     Notice {
@@ -1251,6 +1255,8 @@ impl Agent {
                         context_size: self.config.context_size,
                         // LM Studio reports no cached-token field (SPEC §5.2).
                         cached_tokens: None,
+                        first_token_ms: reply.first_token_ms,
+                        model_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     })
                     .await;
                 }

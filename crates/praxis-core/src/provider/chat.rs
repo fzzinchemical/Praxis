@@ -419,3 +419,18 @@ impl ChatClient {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    /// Tools reach the model in the order they are defined, so request bodies keep key order (T13.9).
+    #[test]
+    fn request_bodies_keep_their_key_order() {
+        let body = json!({"name": "Read", "description": "reads"});
+        assert_eq!(
+            serde_json::to_string(&body).unwrap(),
+            r#"{"name":"Read","description":"reads"}"#
+        );
+    }
+}

@@ -2614,6 +2614,8 @@ mod tests {
             used_tokens: 5,
             context_size: 9,
             cached_tokens: None,
+            first_token_ms: None,
+            model_ms: 0,
         });
         assert_eq!(
             usage,

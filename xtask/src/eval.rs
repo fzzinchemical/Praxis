@@ -15,7 +15,7 @@ use praxis_core::provider::{LoadPolicy, Provider, ReadyModel};
 use praxis_core::sandbox::Sandbox;
 use praxis_core::tools::ToolContext;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -28,7 +28,7 @@ use tokio::process::Command;
 use tokio_util::sync::CancellationToken;
 
 const DEFAULT_RUNS: u32 = 3;
-/// Fixed so a task's runs differ only where the server ignores seeds (SPEC §14).
+/// Base of each run's seed, `EVAL_SEED + run`: fixed, so a board reproduces (SPEC §14).
 const EVAL_SEED: u64 = 42;
 const DEFAULT_CONTEXT: u32 = 32768;
 const DEFAULT_BASE_URL: &str = "http://localhost:1234";
@@ -349,10 +349,12 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             masking: keep_turns.is_some(),
             max_turn_requests: u32::try_from(number("max_turns")?)?,
             profile,
-            seed: Some(EVAL_SEED),
+            seed: Some(number("seed")?),
             policy: praxis_core::permissions::Policy::default(),
         },
-    );
+    )
+    // As in the CLI and ACP, so the eval sends the Agent tool the product sends (T13.9).
+    .with_agents(Vec::new());
     let cancel = CancellationToken::new();
     let timer = cancel.clone();
     let wall_secs = number("wall_secs")?;
@@ -375,16 +377,35 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     let (mut last_call, mut loop_call) = (Value::Null, Value::Null);
     let mut last_error = None;
     let mut rewrites: BTreeMap<String, u32> = BTreeMap::new();
+    let mut requests: Vec<Value> = Vec::new();
+    let mut tool_times: Vec<Value> = Vec::new();
+    let mut tool_started: HashMap<String, (String, Instant)> = HashMap::new();
     while let Some(event) = rx.recv().await {
         // Scored as before subagent events were tagged: a subagent's calls count as the run's.
-        let event = match event {
-            // A subagent's prompt size isn't the run's, so it stays out of the token counts.
-            AgentEvent::Subagent { event, .. } if matches!(*event, AgentEvent::Usage { .. }) => {
-                continue;
-            }
-            AgentEvent::Subagent { event, .. } => *event,
-            other => other,
+        let (event, subagent) = match event {
+            AgentEvent::Subagent { event, .. } => (*event, true),
+            other => (other, false),
         };
+        if let AgentEvent::Usage {
+            prompt_tokens,
+            used_tokens,
+            first_token_ms,
+            model_ms,
+            ..
+        } = &event
+        {
+            requests.push(json!({
+                "subagent": subagent,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": used_tokens.saturating_sub(*prompt_tokens),
+                "first_token_ms": first_token_ms,
+                "model_ms": model_ms,
+            }));
+        }
+        // A subagent's prompt size isn't the run's, so it stays out of the token counts.
+        if subagent && matches!(event, AgentEvent::Usage { .. }) {
+            continue;
+        }
         match event {
             // The sandbox stands in for approval: the agent can only harm its own copy.
             AgentEvent::PermissionRequest { respond, .. } => {
@@ -403,6 +424,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 id, name, input, ..
             } => {
                 tool_calls += 1;
+                tool_started.insert(id.clone(), (name.clone(), Instant::now()));
                 last_call = json!({ "name": name, "input": input });
                 // Only calls parsed out of reply text get this id prefix (agent::recovery).
                 recoveries += u32::from(id.starts_with("text-call-"));
@@ -418,6 +440,13 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             } => last_error = Some(title),
             AgentEvent::Compaction(CompactionState::Finished { stage, .. }) => {
                 *rewrites.entry(format!("{stage:?}")).or_default() += 1;
+            }
+            // Measured at the channel, so it includes any wait for the permission reply.
+            AgentEvent::ToolFinished { id, .. } => {
+                if let Some((name, started)) = tool_started.remove(&id) {
+                    let ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    tool_times.push(json!({ "name": name, "ms": ms }));
+                }
             }
             AgentEvent::TurnEnded(reason) => stop = reason,
             _ => {}
@@ -444,17 +473,31 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "prompt_tokens_sent": prompt_tokens,
             // The provider's message names the cause, such as a context overflow.
             "provider_error": matches!(stop, StopReason::ProviderError).then_some(last_error).flatten(),
+            // Written beside the board by run_all, so the board itself stays small.
+            "transcript": {
+                "history": agent.history(),
+                "requests": requests,
+                "tools": tool_times,
+            },
         })
     );
     Ok(())
 }
 
 /// What the sandboxed agent is told. The vendor preset is read here: the sandbox has no home.
-fn agent_spec(task: &Task, ready: &ReadyModel, options: &Options, home: Option<&Path>) -> Value {
+fn agent_spec(
+    task: &Task,
+    ready: &ReadyModel,
+    options: &Options,
+    home: Option<&Path>,
+    run: u32,
+) -> Value {
     let vendor = home.and_then(|home| {
         praxis_core::agent::profile::vendor_layer(&options.base_url, home, &ready.instance_id)
     });
     json!({
+        // Each run draws its own seed, so runs of one task can differ (T13.9).
+        "seed": EVAL_SEED + u64::from(run),
         "instance": ready.instance_id,
         "context": ready.context_length,
         "prompt": task.prompt,
@@ -472,6 +515,7 @@ async fn try_run_agent(
     ready: &ReadyModel,
     work: &Path,
     options: &Options,
+    run: u32,
 ) -> Result<Value> {
     let temp = TempDir::new()?;
     let socket = temp.0.join("s");
@@ -480,7 +524,7 @@ async fn try_run_agent(
         server_address(&options.base_url)?,
     ));
     let home = env::var_os("HOME").map(PathBuf::from);
-    let spec = agent_spec(task, ready, options, home.as_deref());
+    let spec = agent_spec(task, ready, options, home.as_deref(), run);
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
     command.arg("--ro-bind").arg(&socket).arg(SOCKET);
@@ -547,7 +591,7 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
         task.name
     );
     let started = Instant::now();
-    let mut result = try_run_agent(task, ready, &work, options)
+    let mut result = try_run_agent(task, ready, &work, options, run)
         .await
         .unwrap_or_else(|error| json!({ "agent_error": format!("{error:#}") }));
     let wall = started.elapsed().as_secs_f64();
@@ -560,6 +604,22 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
     result["check_message"] = json!(message);
     result["injection"] = json!(injection_outcome(&task.name, &message));
     Ok(result)
+}
+
+/// `<board stem>-transcripts/<task>-<run>.json` beside the board.
+fn transcript_path(board: &Path, task: &str, run: u32) -> PathBuf {
+    let stem = board.file_stem().unwrap_or_default().to_string_lossy();
+    board
+        .with_file_name(format!("{stem}-transcripts"))
+        .join(format!("{task}-{run}.json"))
+}
+
+fn write_transcript(board: &Path, task: &str, run: u32, transcript: &Value) -> Result<()> {
+    let path = transcript_path(board, task, run);
+    let dir = path.parent().context("transcript path has no directory")?;
+    fs::create_dir_all(dir).with_context(|| dir.display().to_string())?;
+    fs::write(&path, serde_json::to_string_pretty(transcript)? + "\n")
+        .with_context(|| path.display().to_string())
 }
 
 /// Metrics the praxis can't produce yet stay null, each with its reason.
@@ -643,7 +703,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
     json!({
         "model": model,
         "date": date,
-        "seed": EVAL_SEED,
+        "seed": format!("{EVAL_SEED} + run"),
         "mode": "every tool approved; each run inside bwrap with only the task's copy writable and only LM Studio reachable",
         "metric_notes": {
             "turns": "model requests, counted from usage reports",
@@ -716,7 +776,13 @@ async fn run_all(
         }
         let ready = current.as_ref().context("no model after loading")?;
         for run in 1..=options.runs {
-            let result = run_once(task, ready, options, run).await?;
+            let mut result = run_once(task, ready, options, run).await?;
+            if let Some(transcript) = result
+                .as_object_mut()
+                .and_then(|object| object.remove("transcript"))
+            {
+                write_transcript(out, &task.name, run, &transcript)?;
+            }
             eprintln!(
                 "{} #{run}: success={} wall={}s turns={} {}",
                 task.name,
@@ -908,11 +974,49 @@ mod tests {
             instance_id: id.to_owned(),
             context_length: 1,
         };
-        let spec = agent_spec(&task, &ready("google/gemma"), &options, Some(&home.0));
+        let spec = agent_spec(&task, &ready("google/gemma"), &options, Some(&home.0), 1);
         assert_eq!(spec["vendor"]["top_k"], 64);
-        let none = agent_spec(&task, &ready("google/other"), &options, Some(&home.0));
+        let none = agent_spec(&task, &ready("google/other"), &options, Some(&home.0), 1);
         assert!(none["vendor"].is_null());
-        assert!(agent_spec(&task, &ready("google/gemma"), &options, None)["vendor"].is_null());
+        assert!(agent_spec(&task, &ready("google/gemma"), &options, None, 1)["vendor"].is_null());
+    }
+
+    #[test]
+    fn each_run_gets_its_own_seed_counted_from_42() {
+        let options =
+            parse_options(&["--model".to_owned(), "m".to_owned()], Path::new("/")).unwrap();
+        let task = Task {
+            name: "t".to_owned(),
+            dir: PathBuf::new(),
+            prompt: "p".to_owned(),
+            max_turns: 1,
+            wall_secs: 1,
+            context: 1,
+        };
+        let ready = ReadyModel {
+            instance_id: "m".to_owned(),
+            context_length: 1,
+        };
+        assert_eq!(agent_spec(&task, &ready, &options, None, 1)["seed"], 43);
+        assert_eq!(agent_spec(&task, &ready, &options, None, 3)["seed"], 45);
+    }
+
+    #[test]
+    fn a_transcript_sits_beside_the_board_named_by_task_and_run() {
+        assert_eq!(
+            transcript_path(Path::new("/r/evals/results/m.json"), "t", 2),
+            PathBuf::from("/r/evals/results/m-transcripts/t-2.json")
+        );
+    }
+
+    #[test]
+    fn a_transcript_is_written_as_json_it_can_be_read_back_from() {
+        let dir = TempDir::new().unwrap();
+        let board = dir.0.join("m.json");
+        write_transcript(&board, "t", 1, &json!({"requests": [{"model_ms": 7}]})).unwrap();
+        let text = fs::read_to_string(transcript_path(&board, "t", 1)).unwrap();
+        let back: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, json!({"requests": [{"model_ms": 7}]}));
     }
 
     #[test]
