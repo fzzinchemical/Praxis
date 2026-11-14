@@ -328,6 +328,8 @@ strip_thinking = true
 constrained_retry = true      # on once LM Studio reports the model
 ```
 
+`max_output` caps `max_tokens` (§7); unset, `max_tokens` is the room left in `C`.
+
 `praxis profile show [model] [--json]` prints each field's effective value and the layer that set it (`default`, `vendor`, `builtin "<pattern>"`, `lmstudio`, `user "<pattern>"`); `praxis profile set <field> <value>` writes the field to the user's `[profiles."<model>"]`, keeping the file's comments. Both start no model; `show` asks LM Studio only for capabilities.
 
 `--model` loads with `lmstudio.context` if set, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
@@ -433,7 +435,7 @@ Default allocation of the context window `C`:
 
 | Category | Limit |
 |---|---|
-| Reserved for output | 15% of `C` |
+| Reserved for output | `max_tokens` is the room left after the prompt, at least 15% of `C` and at most the profile's `max_output`. A reply cut off at the output limit is continued up to twice with a note, then the turn stops with `max_tokens` |
 | System prompt, tools, memory files, skill index | 25% of `C`; warn and trim memory files, broadest first, when over |
 | One tool result | 10% of `C` |
 | History | Whatever remains; compact when the whole prompt passes 80% of `C` |

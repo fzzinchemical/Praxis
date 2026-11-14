@@ -169,10 +169,11 @@ fn last_message(body: &Value) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reserves_fifteen_percent_of_the_context_for_output() {
+async fn max_tokens_is_the_room_left_in_the_context_not_fifteen_percent() {
     let mut h = Harness::new(vec![text_reply("ok", 3000)], config(20_000)).await;
     h.turn("hi").await;
-    assert_eq!(h.bodies().await[0]["max_tokens"], 3000);
+    let max_tokens = h.bodies().await[0]["max_tokens"].as_u64().unwrap();
+    assert!(max_tokens > 3000 && max_tokens < 20_000, "{max_tokens}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -372,6 +373,17 @@ fn split_messages(raw: &str) -> (&str, String) {
     }
 }
 
+/// `max_tokens` follows the room left in the context (T13.3), so it may change between requests.
+fn without_max_tokens(rest: &str) -> String {
+    match rest.split_once("max_tokens\":") {
+        Some((head, tail)) => {
+            let (_, after) = tail.split_once(',').unwrap();
+            format!("{head}{after}")
+        }
+        None => rest.to_owned(),
+    }
+}
+
 async fn assert_each_body_extends_the_last(h: &Harness) {
     let requests = h.server.received_requests().await.unwrap();
     let raw: Vec<&str> = requests
@@ -385,7 +397,11 @@ async fn assert_each_body_extends_the_last(h: &Harness) {
             new_messages.starts_with(old_messages) && new_messages.len() > old_messages.len(),
             "history was rewritten:\n{old_messages}\n---\n{new_messages}"
         );
-        assert_eq!(old_rest, new_rest, "tools or settings changed");
+        assert_eq!(
+            without_max_tokens(&old_rest),
+            without_max_tokens(&new_rest),
+            "tools or settings changed"
+        );
     }
 }
 

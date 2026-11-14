@@ -19,8 +19,9 @@ fn cut_off_reply(text: &str) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_reply_cut_off_at_the_output_limit_says_so_and_exits_1() {
-    let server = server(Some(32768), Replies(vec![cut_off_reply("partial answ")])).await;
+async fn a_reply_cut_off_at_the_output_limit_says_so_only_after_two_continuations() {
+    let cut = cut_off_reply("partial answ");
+    let server = server(Some(32768), Replies(vec![cut.clone(), cut.clone(), cut])).await;
 
     let output = run(&server, &workspace(), &["--model", "m", "hi"]).await;
 
@@ -30,6 +31,21 @@ async fn a_reply_cut_off_at_the_output_limit_says_so_and_exits_1() {
         "{}",
         err(&output)
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_cut_off_once_is_continued_and_exits_0() {
+    let server = server(
+        Some(32768),
+        Replies(vec![cut_off_reply("partial"), text_reply("all done")]),
+    )
+    .await;
+
+    let output = run(&server, &workspace(), &["--model", "m", "hi"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(!err(&output).contains("output limit"), "{}", err(&output));
+    assert!(out(&output).contains("all done"), "{}", out(&output));
 }
 
 #[tokio::test(flavor = "multi_thread")]

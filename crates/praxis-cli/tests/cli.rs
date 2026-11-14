@@ -715,3 +715,20 @@ async fn profile_set_writes_the_user_layer_that_profile_show_reports() {
         out(&shown)
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_tokens_is_capped_by_the_profiles_max_output() {
+    let dir = workspace();
+    fs::create_dir_all(dir.join("xdg/praxis")).unwrap();
+    fs::write(
+        dir.join("xdg/praxis/config.toml"),
+        "[profiles.m]\nmax_output = 8192\n",
+    )
+    .unwrap();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+
+    let output = run(&server, &dir, &["--model", "m", "hi"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert_eq!(requests_to(&server, CHAT).await[0]["max_tokens"], 8192);
+}

@@ -156,6 +156,8 @@ pub fn system_prompt(workspace: &Path) -> String {
 
 /// Failures of one tool in a row before the turn stops (SPEC §5.3).
 const MAX_CALL_FAILURES: u32 = 3;
+/// Continuations after a reply cut off at the output limit, before the turn stops (T13.3).
+const MAX_LENGTH_CONTINUES: u32 = 2;
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
 const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
 const LOG_NOT_RUN_RESULT: &str = "Not run: the session log could not be written.";
@@ -816,6 +818,7 @@ impl Agent {
         let mut retry: Option<ToolSchema> = None;
         let mut overflow_retried = false;
         let mut warned = false;
+        let mut length_continues = 0u32;
         loop {
             if self.log_error.is_some() {
                 return StopReason::LogFailed;
@@ -897,11 +900,26 @@ impl Agent {
                 tool_calls: recovered.calls.clone(),
             });
             if done {
-                return match reply.finish {
-                    Some(FinishReason::Length) => StopReason::MaxTokens,
-                    _ => StopReason::EndTurn,
-                };
+                if reply.finish == Some(FinishReason::Length) {
+                    if length_continues < MAX_LENGTH_CONTINUES {
+                        length_continues += 1;
+                        turn.emit(AgentEvent::Notice {
+                            severity: Severity::Warning,
+                            title: "Output limit hit, continuing".to_owned(),
+                            detail: None,
+                        })
+                        .await;
+                        // The marker keeps this out of turn numbering (`Message::starts_turn`).
+                        self.record(Message::User {
+                            content: format!("{MEMORY_MARK}Your last reply was cut off at the output limit. Don't repeat it: make the next tool call now, with less text."),
+                        });
+                        continue;
+                    }
+                    return StopReason::MaxTokens;
+                }
+                return StopReason::EndTurn;
             }
+            length_continues = 0;
             let mut stuck = None;
             for call in recovered.calls {
                 let trigger = detector.record(&call, silent);
@@ -1169,7 +1187,8 @@ impl Agent {
 
     fn chat_request(&self, constrained: Option<ToolSchema>) -> ChatRequest {
         let profile = &self.config.profile;
-        ChatRequest {
+        let unconstrained = constrained.is_none();
+        let mut request = ChatRequest {
             model: self.config.model.clone(),
             messages: self.history.clone(),
             // Text formats get their tools through the system prompt instead.
@@ -1178,18 +1197,32 @@ impl Agent {
                 ToolFormat::Native if constrained.is_none() => self.tool_schemas.clone(),
                 _ => Vec::new(),
             },
-            // No limit on a constrained retry: reasoning can use up a small one (ADR 0002).
-            max_tokens: constrained.is_none().then(|| {
-                let reserve = self.budget.output_reserve();
-                profile
-                    .max_output
-                    .map_or(reserve, |limit| limit.min(reserve))
-            }),
+            // Set below, from the size of this request.
+            max_tokens: None,
             sampling: profile.sampling.clone(),
             seed: self.config.seed,
             stop: profile.stop.clone(),
             response_format: constrained,
+        };
+        // No limit on a constrained retry: reasoning can use up a small one (ADR 0002).
+        if unconstrained {
+            request.max_tokens = Some(self.output_tokens(request.chars()));
         }
+        request
+    }
+
+    /// The rest of `C` after this prompt, but at least the output reserve and at most the
+    /// profile's `max_output`, so a short prompt can still write a whole file.
+    fn output_tokens(&self, prompt_chars: usize) -> u32 {
+        let rest = self
+            .config
+            .context_size
+            .saturating_sub(self.budget.estimate(prompt_chars));
+        let fits = rest.max(self.budget.output_reserve());
+        self.config
+            .profile
+            .max_output
+            .map_or(fits, |limit| fits.min(limit))
     }
 
     async fn request(&self, turn: &Turn<'_>, constrained: Option<ToolSchema>) -> Reply {

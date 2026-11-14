@@ -595,6 +595,46 @@ async fn stops_at_max_turn_requests() {
     assert_eq!(events.last().unwrap(), "ended:MaxTurnRequests");
 }
 
+fn cut_off_reply(text: &str) -> String {
+    sse(&[
+        json!({"choices": [{"delta": {"content": text}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "length"}]}),
+    ])
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_cut_off_at_the_output_limit_is_continued_twice_then_stops() {
+    let mut h = Harness::new(vec![cut_off_reply("part")], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(events.last().unwrap(), "ended:MaxTokens");
+    let note = h.request_messages(2).await.last().unwrap()["content"].clone();
+    assert!(note.as_str().unwrap().contains("cut off"), "{note}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_reply_cut_off_at_the_output_limit_continues_until_the_model_finishes() {
+    let mut h = Harness::new(vec![cut_off_reply("part"), text_reply("ok")], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn max_tokens_is_the_remaining_context_not_the_output_reserve() {
+    let mut h = Harness::new(vec![text_reply("ok")], 50).await;
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert!(body["max_tokens"].as_u64().unwrap() > 50_000, "{body}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_arguments_go_back_to_the_model_instead_of_ending_the_turn() {
     let bad = sse(&[
