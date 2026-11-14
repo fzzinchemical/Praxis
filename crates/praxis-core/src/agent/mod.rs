@@ -221,6 +221,8 @@ pub struct Agent {
     /// Shared with subagents, so a session tree counts every switch of model (ADR 0005).
     swaps: Arc<Mutex<ModelSwaps>>,
     subagents: SubagentStops,
+    /// `Agent` calls approved this round, run together once the round's other calls are done.
+    deferred_agents: Vec<(ToolCallId, Value)>,
 }
 
 /// The stop token of each subagent running under an `Agent` call. The ACP server keeps a clone,
@@ -328,6 +330,7 @@ impl Agent {
             limits: None,
             swaps: Arc::default(),
             subagents: SubagentStops::default(),
+            deferred_agents: Vec::new(),
         }
     }
 
@@ -381,14 +384,15 @@ impl Agent {
     }
 
     /// Runs the named agent to completion in a fresh history, restricted to its tools, and
-    /// returns its last reply. Sequential only: a subagent can't delegate further.
+    /// returns its last reply. Takes `&self` so a round's agents can run together; a subagent can't delegate further.
     // Boxed with an explicit `Send` type, since the child's turn reaches this function again.
+    /// Also returns the subagent's messages to log under `parent`.
     fn delegate<'a>(
-        &'a mut self,
+        &'a self,
         parent: ToolCallId,
         input: &'a Value,
         turn: &'a Turn<'_>,
-    ) -> std::pin::Pin<Box<dyn Future<Output = ToolOutput> + Send + 'a>> {
+    ) -> std::pin::Pin<Box<dyn Future<Output = (ToolOutput, Vec<Message>)> + Send + 'a>> {
         Box::pin(async move {
             let field = |key| input.get(key).and_then(Value::as_str).unwrap_or_default();
             let Some(def) = self
@@ -396,10 +400,13 @@ impl Agent {
                 .iter()
                 .find(|a| a.skill.name == field("subagent_type"))
             else {
-                return ToolOutput::error(format!(
-                    "Unknown agent `{}`. Use a name from the Agent tool's list.",
-                    field("subagent_type")
-                ));
+                return (
+                    ToolOutput::error(format!(
+                        "Unknown agent `{}`. Use a name from the Agent tool's list.",
+                        field("subagent_type")
+                    )),
+                    Vec::new(),
+                );
             };
             let mut config = self.config.clone();
             config.system_prompt = format!("{}\n\n{}", config.system_prompt, def.skill.body);
@@ -414,7 +421,7 @@ impl Agent {
                         config.profile =
                             crate::agent::profile::resolve(&model.model, None, None, &[]);
                     }
-                    Err(message) => return ToolOutput::error(message),
+                    Err(message) => return (ToolOutput::error(message), Vec::new()),
                 }
             }
             let mut child = Agent::new(Arc::clone(&self.provider), Arc::clone(&self.tools), config);
@@ -485,14 +492,12 @@ impl Agent {
             };
             let ((reply, history), ended) = tokio::join!(run, forward);
             self.subagents.finish(&parent);
-            // Logged for replay only: the parent's own history must not gain the child's messages.
-            for message in history
-                .iter()
+            // Returned for the caller to log: the parent's own history must not gain the child's messages.
+            let logged = history
+                .into_iter()
                 .filter(|m| matches!(m, Message::Assistant { .. } | Message::Tool { .. }))
-            {
-                self.log_subagent(&parent, message);
-            }
-            match (reply, ended) {
+                .collect();
+            let output = match (reply, ended) {
                 (Some(reply), StopReason::EndTurn) => ToolOutput {
                     content: reply,
                     is_error: false,
@@ -512,7 +517,8 @@ impl Agent {
                     "The agent stopped early ({ended:?}). Its last reply: {}",
                     reply.as_deref().unwrap_or("(none)")
                 )),
-            }
+            };
+            (output, logged)
         })
     }
 
@@ -936,6 +942,7 @@ impl Agent {
             }
             length_continues = 0;
             let mut stuck = None;
+            let mut results = Vec::new();
             for call in recovered.calls {
                 let trigger = detector.record(&call, silent);
                 let content = if turn.cancel.is_cancelled() {
@@ -975,8 +982,12 @@ impl Agent {
                         .find(|t| t.name == call.name)
                         .cloned();
                 }
+                results.push((call.id, content));
+            }
+            self.run_deferred_agents(turn, &mut results).await;
+            for (tool_call_id, content) in results {
                 self.record(Message::Tool {
-                    tool_call_id: call.id,
+                    tool_call_id,
                     content,
                 });
             }
@@ -1363,7 +1374,11 @@ impl Agent {
                 Ok(input) => match &self.mcp {
                     _ if call.name == "Skill" => self.load_skill(&input),
                     _ if call.name == "ToolSearch" => self.search_tools(&input),
-                    _ if call.name == "Agent" => self.delegate(call.id.clone(), &input, turn).await,
+                    // Runs with the round's other `Agent` calls, once they are done.
+                    _ if call.name == "Agent" => {
+                        self.deferred_agents.push((call.id.clone(), input));
+                        return (String::new(), true);
+                    }
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }
@@ -1400,6 +1415,43 @@ impl Agent {
             .budget
             .fit_result(content, |text| self.tools.spool(text));
         (result, succeeded)
+    }
+
+    /// Runs the round's deferred `Agent` calls together and fills in their results. Each one only
+    /// reads `self`, so they may overlap (SPEC §4).
+    async fn run_deferred_agents(&mut self, turn: &Turn<'_>, results: &mut [(ToolCallId, String)]) {
+        let deferred = std::mem::take(&mut self.deferred_agents);
+        let outputs = {
+            let this = &*self;
+            futures::future::join_all(
+                deferred
+                    .iter()
+                    .map(|(id, input)| this.delegate(id.clone(), input, turn)),
+            )
+            .await
+        };
+        for ((id, _), (output, logged)) in deferred.iter().zip(outputs) {
+            for message in &logged {
+                self.log_subagent(id, message);
+            }
+            let content = output.content.clone();
+            let outcome = if turn.cancel.is_cancelled() && output.is_error {
+                ToolOutcome::Cancelled
+            } else {
+                ToolOutcome::Completed(output)
+            };
+            turn.emit(AgentEvent::ToolFinished {
+                id: id.clone(),
+                outcome,
+            })
+            .await;
+            let result = self
+                .budget
+                .fit_result(content, |text| self.tools.spool(text));
+            if let Some(slot) = results.iter_mut().find(|(call, _)| call == id) {
+                slot.1 = result;
+            }
+        }
     }
 
     /// Runs matching `PreToolUse` hooks in order; the first block wins and each later hook
@@ -1668,7 +1720,7 @@ fn agent_schema(agents: &[AgentDef]) -> ToolSchema {
         name: "Agent".to_owned(),
         description: format!(
             "Hand a self-contained task to an agent, which works alone and returns a summary. \
-             Agents:\n{}",
+             To run subagents in parallel, call Agent several times in one response. Agents:\n{}",
             list.join("\n")
         ),
         parameters: serde_json::json!({

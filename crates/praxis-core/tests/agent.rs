@@ -289,6 +289,100 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
     assert_eq!(parent[3]["content"], "found it in a.rs");
 }
 
+/// Answers two subagents by their prompts, delaying each, and records when each request arrives.
+struct TwoAgents {
+    arrivals: Arc<std::sync::Mutex<Vec<std::time::Instant>>>,
+}
+
+impl Respond for TwoAgents {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body = String::from_utf8_lossy(&request.body);
+        if body.contains(r#""role":"tool""#) {
+            return ResponseTemplate::new(200)
+                .set_body_raw(text_reply("both done"), "text/event-stream");
+        }
+        for prompt in ["find alpha", "find beta"] {
+            if body.contains(prompt) {
+                self.arrivals
+                    .lock()
+                    .unwrap()
+                    .push(std::time::Instant::now());
+                let reply = text_reply(&format!("{prompt} done"));
+                return ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_millis(800))
+                    .set_body_raw(reply, "text/event-stream");
+            }
+        }
+        let calls = [
+            (
+                "p1",
+                "Agent",
+                json!({"subagent_type": "kit:scout", "prompt": "find alpha"}),
+            ),
+            (
+                "p2",
+                "Agent",
+                json!({"subagent_type": "kit:scout", "prompt": "find beta"}),
+            ),
+        ];
+        ResponseTemplate::new(200).set_body_raw(tool_reply(&calls), "text/event-stream")
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn two_agent_calls_in_one_response_run_in_parallel_and_keep_their_order() {
+    let mut h = Harness::new(vec![text_reply("unused")], 50).await;
+    let arrivals = Arc::new(std::sync::Mutex::new(Vec::new()));
+    h.server.reset().await;
+    Mock::given(matchers::method("POST"))
+        .respond_with(TwoAgents {
+            arrivals: Arc::clone(&arrivals),
+        })
+        .mount(&h.server)
+        .await;
+    let scout = praxis_core::plugin::AgentDef {
+        skill: praxis_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: None,
+        disallowed_tools: Vec::new(),
+        max_turns: Some(5),
+        model: None,
+    };
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![scout]));
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert!(events.contains(&"finished:p1".to_owned()), "{events:?}");
+    assert!(events.contains(&"finished:p2".to_owned()), "{events:?}");
+    // Both subagents' requests arrive before either 800 ms reply, so they overlap.
+    let times = arrivals.lock().unwrap().clone();
+    assert_eq!(times.len(), 2, "{events:?}");
+    assert!(
+        times[1].duration_since(times[0]) < std::time::Duration::from_millis(400),
+        "subagents ran one after the other"
+    );
+    // The parent sees the results in the order of its calls.
+    let requests = h.server.received_requests().await.unwrap();
+    let last: Value = serde_json::from_slice(&requests.last().unwrap().body).unwrap();
+    let results: Vec<&Value> = last["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .collect();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["tool_call_id"], "p1");
+    assert_eq!(results[0]["content"], "find alpha done");
+    assert_eq!(results[1]["tool_call_id"], "p2");
+    assert_eq!(results[1]["content"], "find beta done");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_subagents_recovered_calls_never_reuse_the_parent_call_id() {
     // Both replies are text-recovered calls, so their ids come from the history length.
