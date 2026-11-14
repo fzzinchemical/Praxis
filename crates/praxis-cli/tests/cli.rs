@@ -634,3 +634,84 @@ async fn sessions_folder_moves_a_session_and_json_reports_it() {
     let rows: Value = serde_json::from_str(&out(&listing)).unwrap();
     assert_eq!(rows[0]["folder"], "-Work", "{rows}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_needs_a_model_and_a_valid_field() {
+    let dir = workspace();
+    let no_model = command("http://127.0.0.1:9", &dir, &["profile", "show"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(no_model.status.code(), Some(1), "{}", err(&no_model));
+    assert!(
+        err(&no_model).contains("default_model"),
+        "{}",
+        err(&no_model)
+    );
+
+    let unknown = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["profile", "set", "contxt", "1", "--model", "m"],
+    )
+    .output()
+    .await
+    .unwrap();
+    assert_eq!(unknown.status.code(), Some(2), "{}", err(&unknown));
+    assert!(!dir.join("xdg/praxis/config.toml").exists());
+
+    // Nothing listens on port 9: show still prints, with a note that capabilities are unknown.
+    let offline = command("http://127.0.0.1:9", &dir, &["profile", "show", "m"])
+        .output()
+        .await
+        .unwrap();
+    assert_eq!(offline.status.code(), Some(0), "{}", err(&offline));
+    assert!(err(&offline).contains("unreachable"), "{}", err(&offline));
+    assert!(
+        out(&offline).contains("max_output = unset  (default)"),
+        "{}",
+        out(&offline)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_show_json_lists_each_field_with_its_value_and_source() {
+    let dir = workspace();
+    let server = server(Some(4096), Replies(vec![])).await;
+    let shown = run(&server, &dir, &["profile", "show", "--json", "m"]).await;
+
+    assert_eq!(shown.status.code(), Some(0), "{}", err(&shown));
+    let rows: Value = serde_json::from_str(&out(&shown)).unwrap();
+    let rows = rows.as_array().unwrap();
+    let field = |name: &str| rows.iter().find(|r| r["field"] == name).unwrap();
+    assert_eq!(field("max_output")["value"], Value::Null);
+    assert_eq!(field("max_output")["source"], "default");
+    assert_eq!(field("context")["value"], Value::Null);
+    assert_eq!(field("temperature")["source"], "default");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_set_writes_the_user_layer_that_profile_show_reports() {
+    let dir = workspace();
+    let set = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["profile", "set", "temperature", "0.3", "--model", "m"],
+    )
+    .output()
+    .await
+    .unwrap();
+    assert_eq!(set.status.code(), Some(0), "{}", err(&set));
+
+    let server = server(Some(4096), Replies(vec![])).await;
+    let shown = run(&server, &dir, &["profile", "show", "m"]).await;
+
+    assert_eq!(shown.status.code(), Some(0), "{}", err(&shown));
+    assert!(
+        out(&shown)
+            .lines()
+            .any(|line| line == "temperature = 0.3  (user \"m\")"),
+        "{}",
+        out(&shown)
+    );
+}

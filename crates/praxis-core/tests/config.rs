@@ -5,6 +5,7 @@
 
 use praxis_core::config::{
     AgentSettings, Backend, Loaded, McpServer, ModelRef, Sources, load, load_with_approval,
+    set_profile_field,
 };
 use praxis_core::permissions::Mode;
 use praxis_core::trust::TrustStore;
@@ -557,4 +558,78 @@ fn toml_takes_http_servers_and_rejects_mixed_or_unknown_shapes() {
         })
         .contains("`sse`")
     );
+}
+
+/// A config path whose file doesn't exist yet, in a directory that does.
+fn missing_file() -> PathBuf {
+    let path = file("");
+    fs::remove_file(&path).unwrap();
+    path
+}
+
+fn profile_temperature(path: &Path, model: &str) -> Option<f64> {
+    let loaded = load(Sources {
+        user: Some(path.to_path_buf()),
+        ..Sources::default()
+    })
+    .unwrap();
+    loaded.config.profiles.get(model)?.temperature
+}
+
+#[test]
+fn set_profile_field_creates_a_missing_file() {
+    let path = missing_file();
+    set_profile_field(&path, "qwen3.5-4b", "temperature", "0.3").unwrap();
+    assert_eq!(profile_temperature(&path, "qwen3.5-4b"), Some(0.3));
+}
+
+#[test]
+fn set_profile_field_replaces_a_value_and_keeps_comments() {
+    let path = file(
+        "# my setup\n[profiles.\"m\"]\n# sampling\ntemperature = 0.9\ntop_k = 40\n\n[agent]\nmax_turn_requests = 5\n",
+    );
+    set_profile_field(&path, "m", "temperature", "0.3").unwrap();
+    set_profile_field(&path, "m", "min_p", "0.05").unwrap();
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(
+        text.starts_with("# my setup\n[profiles.\"m\"]\nmin_p = 0.05\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("# sampling\ntemperature = 0.3\ntop_k = 40"),
+        "{text}"
+    );
+    assert!(text.contains("max_turn_requests = 5"), "{text}");
+    assert_eq!(profile_temperature(&path, "m"), Some(0.3));
+}
+
+#[test]
+fn set_profile_field_appends_a_new_table() {
+    let path = file("default_model = \"m\"\n");
+    set_profile_field(&path, "google/gemma-4-12b-qat", "max_output", "512").unwrap();
+    let loaded = load(Sources {
+        user: Some(path.clone()),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert_eq!(loaded.config.default_model.as_deref(), Some("m"));
+    let layer = &loaded.config.profiles["google/gemma-4-12b-qat"];
+    assert_eq!(layer.max_output, Some(512));
+}
+
+#[test]
+fn set_profile_field_rejects_unknown_fields_and_wrong_types_without_writing() {
+    let original = "x = 1\n";
+    let path = file(original);
+    assert!(set_profile_field(&path, "m", "contxt", "1").is_err());
+    assert!(set_profile_field(&path, "m", "temperature", "\"hot\"").is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn set_profile_field_refuses_a_table_it_cannot_edit_safely() {
+    let original = "[profiles]\n\"m\".temperature = 0.1\n";
+    let path = file(original);
+    assert!(set_profile_field(&path, "m", "top_k", "4").is_err());
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
 }

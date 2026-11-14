@@ -69,6 +69,9 @@ enum Command {
     /// Install, list, enable, disable or remove plugins (SPEC §12).
     #[command(subcommand)]
     Plugin(PluginCommand),
+    /// Show or set a model's profile fields (SPEC §5.5).
+    #[command(subcommand)]
+    Profile(ProfileCommand),
     /// List this workspace's saved sessions, newest first. Starts no model or MCP server.
     Sessions {
         /// Print a JSON array of `{id, title, started, last_active, folder}`.
@@ -114,6 +117,20 @@ enum PluginCommand {
         #[arg(long)]
         delete_data: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ProfileCommand {
+    /// Print each effective field of the model's profile and the layer that set it.
+    Show {
+        /// Model key. Defaults to `--model`, then `default_model`.
+        model: Option<String>,
+        /// Print a JSON array of `{field, value, source}` rows, `value` null when unset.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write one field to the user config's `[profiles."<model>"]` table.
+    Set { field: String, value: String },
 }
 
 /// The commands, skills and agents a details page lists, each with its description.
@@ -473,14 +490,98 @@ fn user_profiles(config: &Config) -> Vec<(String, ProfileLayer)> {
     config.profiles.clone().into_iter().collect()
 }
 
+fn vendor_preset(config: &Config, key: &str) -> Option<ProfileLayer> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    praxis_core::agent::profile::vendor_layer(&config.lmstudio.base_url, &home, key)
+}
+
 /// The model's profile with every layer: the vendor's preset, built-ins, `capabilities` and
 /// the user's `[profiles]`.
 fn model_profile(config: &Config, key: &str, capabilities: Option<&Capabilities>) -> ModelProfile {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let vendor = home.and_then(|home| {
-        praxis_core::agent::profile::vendor_layer(&config.lmstudio.base_url, &home, key)
-    });
+    let vendor = vendor_preset(config, key);
     praxis_core::agent::profile::resolve(key, capabilities, vendor.as_ref(), &user_profiles(config))
+}
+
+/// `praxis profile show|set`. Starts no model; `show` asks LM Studio only for capabilities.
+async fn profile_command(
+    command: ProfileCommand,
+    model: Option<String>,
+    config: &Config,
+    provider: &Provider,
+) -> Result<u8> {
+    match command {
+        ProfileCommand::Show {
+            model: positional,
+            json,
+        } => {
+            let Some(reference) = positional
+                .or(model)
+                .or_else(|| config.default_model.clone())
+            else {
+                anyhow::bail!("pass a model or set default_model");
+            };
+            let key = config.resolve_model(&reference)?.model;
+            let capabilities = match provider.list_models().await {
+                Ok(models) => models
+                    .into_iter()
+                    .find(|m| m.key == key)
+                    .map(|m| m.capabilities),
+                Err(error) => {
+                    eprintln!("LM Studio is unreachable, so its capabilities are unknown: {error}");
+                    None
+                }
+            };
+            let vendor = vendor_preset(config, &key);
+            let rows = praxis_core::agent::profile::explain(
+                &key,
+                capabilities.as_ref(),
+                vendor.as_ref(),
+                &user_profiles(config),
+            );
+            if json {
+                let array: Vec<Value> = rows
+                    .into_iter()
+                    .map(|(field, value, source)| {
+                        serde_json::json!({"field": field, "value": value, "source": source})
+                    })
+                    .collect();
+                println!("{}", Value::Array(array));
+                return Ok(0);
+            }
+            for (field, value, source) in rows {
+                println!("{field} = {}  ({source})", shown(&value));
+            }
+            Ok(0)
+        }
+        ProfileCommand::Set { field, value } => {
+            let Some(reference) = model.or_else(|| config.default_model.clone()) else {
+                anyhow::bail!("pass a model or set default_model");
+            };
+            let key = config.resolve_model(&reference)?.model;
+            let Some(path) = xdg_path("XDG_CONFIG_HOME", ".config", "config.toml") else {
+                eprintln!("Profile set needs HOME or XDG_CONFIG_HOME to find the user config.");
+                return Ok(EXIT_USAGE);
+            };
+            if let Err(error) = config::set_profile_field(&path, &key, &field, &value) {
+                eprintln!("{error}");
+                return Ok(EXIT_USAGE);
+            }
+            println!(
+                "Set {field} = {value} in [profiles.\"{key}\"] ({})",
+                path.display()
+            );
+            Ok(0)
+        }
+    }
+}
+
+/// A profile value as `show` prints it: plain text for strings, `unset` for no value.
+fn shown(value: &Value) -> String {
+    match value {
+        Value::Null => "unset".to_owned(),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// Lines typed at the terminal, shared by the REPL and approvals. Stdin only ever counts as a
@@ -983,6 +1084,9 @@ async fn run(
     match cli.command {
         Some(Command::Models) => return list_models(&provider).await,
         Some(Command::Plugin(command)) => return plugin_command(command),
+        Some(Command::Profile(command)) => {
+            return profile_command(command, cli.model, &config, &provider).await;
+        }
         Some(Command::Sessions {
             json,
             delete,

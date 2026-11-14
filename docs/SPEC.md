@@ -326,6 +326,8 @@ strip_thinking = true
 constrained_retry = true      # on once LM Studio reports the model
 ```
 
+`praxis profile show [model] [--json]` prints each field's effective value and the layer that set it (`default`, `vendor`, `builtin "<pattern>"`, `lmstudio`, `user "<pattern>"`); `praxis profile set <field> <value>` writes the field to the user's `[profiles."<model>"]`, keeping the file's comments. Both start no model; `show` asks LM Studio only for capabilities.
+
 `--model` loads with `lmstudio.context` if set, else the profile's `context`, else 32768. Without `--model`, the loaded instance's context is used. The §7 budget categories are shares of that size, so they follow the model. Evals use each task's own `context_length`.
 
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning.

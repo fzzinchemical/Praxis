@@ -539,15 +539,79 @@ fn read_mcp_json(path: &Path) -> Result<Table, ConfigError> {
 // `qwen3.5*`; set those in a file.
 /// One `key = value` from a variable or flag, validated on its own so the error names it.
 fn entry(origin: &str, key: &str, raw: &str) -> Result<Table, ConfigError> {
-    // A TOML literal if it parses as one, else plain text, so `default_model=qwen3.5-4b` works.
-    let value = toml::from_str::<Table>(&format!("v = {raw}"))
-        .ok()
-        .and_then(|mut t| t.remove("v"))
-        .unwrap_or_else(|| Value::String(raw.to_owned()));
-    let table = nested(key, value);
+    let table = nested(key, literal_or_string(raw));
     Config::deserialize(table.clone())
         .map_err(|e| error(origin, format!("`{key}`: {}", e.message())))?;
     Ok(table)
+}
+
+/// A TOML literal if `raw` parses as one, else plain text, so `default_model=qwen3.5-4b` works.
+fn literal_or_string(raw: &str) -> Value {
+    toml::from_str::<Table>(&format!("v = {raw}"))
+        .ok()
+        .and_then(|mut t| t.remove("v"))
+        .unwrap_or_else(|| Value::String(raw.to_owned()))
+}
+
+/// Writes `field = value` into `[profiles."<key>"]` of the config file at `path`, editing the
+/// text so comments survive. Writes nothing and errors if the value doesn't fit
+/// `ProfileLayer`, or if the table is in a form this edit can't safely change.
+pub fn set_profile_field(path: &Path, key: &str, field: &str, value: &str) -> Result<(), String> {
+    let value = literal_or_string(value);
+    let mut layer = Table::new();
+    layer.insert(field.to_owned(), value.clone());
+    ProfileLayer::deserialize(layer).map_err(|e| format!("`{field}`: {}", e.message()))?;
+
+    let shown = path.display();
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("{shown}: {e}")),
+    };
+    let header = format!("[profiles.{}]", Value::String(key.to_owned()));
+    let line = format!("{field} = {value}");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let head = lines.iter().position(|l| l.trim_end() == header);
+    match head {
+        Some(head) => {
+            let next_table = lines[head + 1..]
+                .iter()
+                .position(|l| l.starts_with('['))
+                .map_or(lines.len(), |i| head + 1 + i);
+            let existing = lines[head + 1..next_table]
+                .iter()
+                .position(|l| l.split('=').next().map(str::trim) == Some(field));
+            match existing {
+                Some(i) => lines[head + 1 + i] = line,
+                None => lines.insert(head + 1, line),
+            }
+        }
+        None => {
+            if !lines.is_empty() {
+                lines.push(String::new());
+            }
+            lines.push(header);
+            lines.push(line);
+        }
+    }
+    let mut new_text = lines.join("\n");
+    new_text.push('\n');
+
+    // Re-parsing catches what the line edit can't see, such as dotted keys defining the table.
+    let parsed: Table = toml::from_str(&new_text).map_err(|e| format!("{shown}: {e}"))?;
+    let stored = parsed
+        .get("profiles")
+        .and_then(|p| p.get(key))
+        .and_then(|t| t.get(field));
+    if stored != Some(&value) {
+        return Err(format!(
+            "can't set `{field}` in {shown} safely; edit the file by hand"
+        ));
+    }
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    std::fs::write(path, new_text).map_err(|e| format!("{shown}: {e}"))
 }
 
 /// `a.b.c = value` as nested tables.

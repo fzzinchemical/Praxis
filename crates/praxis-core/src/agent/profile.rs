@@ -6,6 +6,8 @@ use crate::provider::{Capabilities, Sampling, is_loopback};
 use globset::Glob;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One `[profiles."pattern"]` table. Unset fields leave the lower layers alone.
@@ -212,10 +214,78 @@ pub fn resolve(
     profile
 }
 
+/// Each field's effective value and the layer that set it, in [`resolve`]'s order, for
+/// `praxis profile show`. Mirrors `resolve`: keep the two in step.
+pub fn explain(
+    model: &str,
+    capabilities: Option<&Capabilities>,
+    vendor: Option<&ProfileLayer>,
+    user: &[(String, ProfileLayer)],
+) -> Vec<(String, Value, String)> {
+    let defaults = ProfileLayer {
+        tool_format: Some(ToolFormat::Native),
+        strip_thinking: Some(true),
+        constrained_retry: Some(false),
+        stop: Some(Vec::new()),
+        ..ProfileLayer::default()
+    };
+    let mut layers = vec![("default".to_owned(), defaults)];
+    if let Some(vendor) = vendor {
+        layers.push(("vendor".to_owned(), vendor.clone()));
+    }
+    for (pattern, layer) in &builtin_layers() {
+        if matches(pattern, model) {
+            layers.push((format!("builtin \"{pattern}\""), layer.clone()));
+        }
+    }
+    let mut so_far = ModelProfile::default();
+    for (_, layer) in &layers {
+        so_far.apply(layer);
+    }
+    let no_tools = capabilities.is_some_and(|c| !c.trained_for_tool_use);
+    layers.push((
+        "lmstudio".to_owned(),
+        ProfileLayer {
+            constrained_retry: Some(capabilities.is_some()),
+            tool_format: (no_tools && so_far.tool_format == ToolFormat::Native)
+                .then_some(ToolFormat::HermesText),
+            ..ProfileLayer::default()
+        },
+    ));
+    for (pattern, layer) in user {
+        if matches(pattern, model) {
+            layers.push((format!("user \"{pattern}\""), layer.clone()));
+        }
+    }
+
+    let mut set: BTreeMap<String, (Value, String)> = BTreeMap::new();
+    for (label, layer) in &layers {
+        let Ok(Value::Object(fields)) = serde_json::to_value(layer) else {
+            continue;
+        };
+        for (field, value) in fields.into_iter().filter(|(_, v)| !v.is_null()) {
+            set.insert(field, (value, label.clone()));
+        }
+    }
+    let names = serde_json::to_value(ProfileLayer::default()).unwrap_or_default();
+    names
+        .as_object()
+        .into_iter()
+        .flatten()
+        .map(|(field, _)| {
+            let (value, source) = set
+                .get(field)
+                .cloned()
+                .unwrap_or_else(|| (Value::Null, "default".to_owned()));
+            (field.clone(), value, source)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     fn caps(tools: bool) -> Capabilities {
         Capabilities {
@@ -387,6 +457,64 @@ customFields:
     fn an_invalid_pattern_is_ignored() {
         let layers = [user("[", json!({"max_output": 1}))];
         assert_eq!(resolve("m", None, None, &layers), ModelProfile::default());
+    }
+
+    fn source(rows: &[(String, Value, String)], field: &str) -> (Value, String) {
+        let (_, value, source) = rows.iter().find(|(f, ..)| f.as_str() == field).unwrap();
+        (value.clone(), source.clone())
+    }
+
+    #[test]
+    fn explain_names_the_user_layer_that_overrode_the_vendor() {
+        let vendor = ProfileLayer {
+            temperature: Some(1.0),
+            ..ProfileLayer::default()
+        };
+        let layers = [user("*gemma*", json!({"temperature": 0.5}))];
+        let rows = explain(
+            "google/gemma-4-12b-qat",
+            Some(&caps(true)),
+            Some(&vendor),
+            &layers,
+        );
+        assert_eq!(
+            source(&rows, "temperature"),
+            (json!(0.5), r#"user "*gemma*""#.to_owned())
+        );
+        assert_eq!(
+            source(&rows, "context"),
+            (json!(65_536), r#"builtin "*gemma-4-12b-qat*""#.to_owned())
+        );
+    }
+
+    #[test]
+    fn explain_names_the_builtin_that_set_the_context() {
+        let rows = explain("qwen3.5-4b", None, None, &[]);
+        assert_eq!(
+            source(&rows, "context"),
+            (json!(131_072), r#"builtin "*qwen3.5-4b*""#.to_owned())
+        );
+    }
+
+    #[test]
+    fn explain_marks_unset_fields_as_default() {
+        let rows = explain("m", None, None, &[]);
+        assert_eq!(
+            source(&rows, "max_output"),
+            (Value::Null, "default".to_owned())
+        );
+    }
+
+    #[test]
+    fn explain_names_lmstudio_when_it_switches_the_format() {
+        let rows = explain("m", Some(&caps(false)), None, &[]);
+        assert_eq!(
+            source(&rows, "tool_format"),
+            (
+                serde_json::to_value(ToolFormat::HermesText).unwrap(),
+                "lmstudio".to_owned()
+            )
+        );
     }
 
     #[test]

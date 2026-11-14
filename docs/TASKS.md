@@ -294,7 +294,7 @@ flowchart LR
   - **Needs:** T2.3.
   - **Done when:** the vendor's sampling preset from LM Studio's local `model.yaml` is the lowest profile layer, and is used only for a loopback server and a plain `publisher/name` key; the CLI and evals use it; `top_p`, `top_k`, `min_p` and `repeat_penalty` reach the request only when a layer sets them.
 
-- [ ] **T2.15 Profile show and set** (§5.5) · *Should*
+- [x] **T2.15 Profile show and set** (§5.5) · *Should*
   - **Needs:** T2.14.
   - **Done when:** `praxis profile show [model]` prints each effective field with the layer it came from, and `praxis profile set <field> <value>` writes it to the user's `[profiles."<key>"]`.
 
