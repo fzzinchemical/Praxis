@@ -1127,7 +1127,22 @@ async fn run(
         }
         None => None,
     };
-    let ready = match ready_model(&provider, requested, &config, &mut terminal).await {
+    let plugins = load_plugins(&workspace, &config);
+    let mut servers = config.mcp.clone();
+    servers.extend(plugins.mcp);
+    // Connecting needs only config, so it overlaps the model load (F11). Pinning stays after the reply.
+    let connect = async {
+        if servers.is_empty() {
+            None
+        } else {
+            Some(praxis_core::mcp::Mcp::connect(&servers, praxis_core::mcp::CONNECT_TIMEOUT).await)
+        }
+    };
+    let (ready, connected) = tokio::join!(
+        ready_model(&provider, requested, &config, &mut terminal),
+        connect
+    );
+    let ready = match ready {
         Ok(ready) => ready,
         // Stay up so the editor shows the problem on session/new instead of a dead process.
         Err(error) if acp => {
@@ -1182,14 +1197,7 @@ async fn run(
         policy,
         masking: true,
     };
-    let plugins = load_plugins(&workspace, &config);
-    let mut servers = config.mcp.clone();
-    servers.extend(plugins.mcp);
-    let mcp = if servers.is_empty() {
-        None
-    } else {
-        let (mut mcp, mut notices) =
-            praxis_core::mcp::Mcp::connect(&servers, praxis_core::mcp::CONNECT_TIMEOUT).await;
+    let mcp = connected.map(|(mut mcp, mut notices)| {
         let store = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
         notices.extend(mcp.pin(store.as_ref(), &mut |change| {
             approve_mcp_change(change, terminal.as_mut())
@@ -1197,8 +1205,8 @@ async fn run(
         for notice in notices {
             eprintln!("{}", sanitize(&notice));
         }
-        Some(Arc::new(mcp))
-    };
+        Arc::new(mcp)
+    });
     let provider = Arc::new(provider);
     let picker = Picker {
         provider: provider.clone(),
