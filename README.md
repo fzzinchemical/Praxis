@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.4.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.4.1-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -289,6 +289,18 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 1.4.1-beta
+
+Fixes from testing 1.4.0-beta in VS Code. Each is covered by unit tests, but none has been checked in a live VS Code window yet.
+
+- Plugin details pages render as one sanitized format instead of a mix of HTML and markdown, and show whether the plugin is enabled.
+- Plugin settings (`userConfig`) show on the details page and can be changed there or with `praxis plugin config <plugin> <key> <value>`; sensitive values are never displayed.
+- Typing `/` lists plugin commands, and a `/command` is suggested anywhere in the prompt, not only at the start.
+- A pacman indicator with a status word shows while a turn runs, and a progress notification while a plugin installs.
+- Open diff opens a side-by-side diff against the file's content before the edit, and sits next to the tool call that wrote the file.
+- Markdown tables render in chat.
+- `scripts/install`: one-line installer for the latest release.
 
 ### New in 1.4.0-beta
 
