@@ -1038,3 +1038,46 @@ flowchart LR
 - [ ] **T11.8 Release 1.3.0-beta** `HUMAN` approves
   - **Needs:** T11.1, T11.2, T11.3, T11.5, T11.7, T5.8. Cut *Could* tasks that aren't done instead of waiting for them.
   - **Done when:** `./scripts/release v1.3.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
+
+## M12: Coverage gate and acceptance tests
+
+> Line coverage measured with `cargo llvm-cov` on 2026-11-14: 94.7% for the native workspace. The gaps were in REPL commands, session management, stop reasons and MCP failure paths. Each new story gets one test file that checks its whole "Accepted when", and the gate keeps coverage from falling.
+
+```mermaid
+flowchart LR
+    T12_1["T12.1<br/>Coverage gate"]
+    T12_2["T12.2<br/>REPL commands"]
+    T12_3["T12.3<br/>Session management"]
+    T12_4["T12.4<br/>Stop reasons"]
+    T12_5["T12.5<br/>MCP failures"]
+    T12_6["T12.6<br/>Raise the gate"]
+    T12_1 --> T12_6
+    T12_2 --> T12_6
+    T12_3 --> T12_6
+    T12_4 --> T12_6
+    T12_5 --> T12_6
+```
+
+- [ ] **T12.1 Coverage gate** (§14)
+  - **Needs:** none.
+  - **Done when:** `scripts/verify` runs the native tests through `cargo llvm-cov` instead of plain `cargo test`, and fails when line coverage falls below the floor for the workspace or for any native crate. The floors sit in `scripts/coverage-floors` and may only rise.
+
+- [ ] **T12.2 REPL commands** (US-61, §11)
+  - **Needs:** none.
+  - **Done when:** `crates/praxis-cli/tests/us61_repl_commands.rs` checks every acceptance point of US-61 against the fake server.
+
+- [ ] **T12.3 Session management** (US-62, §8)
+  - **Needs:** none.
+  - **Done when:** `crates/praxis-cli/tests/us62_sessions.rs` checks every acceptance point of US-62.
+
+- [ ] **T12.4 Stop reasons** (US-63, §11)
+  - **Needs:** none.
+  - **Done when:** `crates/praxis-cli/tests/us63_stop_reasons.rs` checks every acceptance point of US-63 against the fake server.
+
+- [ ] **T12.5 MCP failures** (US-64, §13)
+  - **Needs:** none.
+  - **Done when:** `crates/praxis-core/tests/us64_mcp_failures.rs` checks every acceptance point of US-64 with the test MCP server.
+
+- [ ] **T12.6 Raise the gate**
+  - **Needs:** T12.1 to T12.5.
+  - **Done when:** the floors in `scripts/coverage-floors` are raised to the new measured values, rounded down.

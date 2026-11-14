@@ -42,6 +42,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **VS Code** | US-21 to US-23 | US-35 editor context, US-49 turn summary, US-50 change-set review, US-51 plan first | US-40 Zed, US-41 diagnostics, US-43 VSCodium | Marketplace publishing, proactive suggestions, automatic LLM review |
 | **Plugins** | US-24 to US-28 | US-36 agents, US-37 plugin settings | US-42 plugin `bin/` | Marketplace, JS workflows and mods, other components |
 | **Performance and evidence** | US-29 | | US-52 timed trial | |
+| **Acceptance tests (M12)** | | US-61 REPL commands, US-62 sessions, US-63 stop reasons, US-64 MCP failures | | |
 | **Anthropic and per-agent models** | | US-53 Anthropic backend, US-54 per-agent models, US-56 orchestrator workflow | US-55 Anthropic scoreboard | Automatic model routing, other cloud providers |
 
 ---
@@ -148,6 +149,10 @@ Painful to leave out, but each has a workaround.
 | **US-49** | As a VS Code user, I want a turn summary built from the tool log, so that I can see what really happened rather than what the model claims. | It lists files, commands and exit codes, and says plainly when no tests ran. | T5.7 | Expand tool items |
 | **US-50** | As a VS Code user, I want to review a multi-file change from overview to file to chunk, so that my attention goes where the risk is. | I can move freely between levels and revert per file. Risk labels never read as a safety verdict. | T5.8 | Per-edit diffs from US-22, plus `git` |
 | **US-51** | As a VS Code user, I want a plan first and to decide when it runs, so that I can correct direction early. | `/plan` can't write or run anything, and carrying out the plan is my separate action. | T5.9 | Use read-only mode and ask for a plan |
+| **US-61** | As a developer, I want `/plan`, `/undo` and `/rewind` to work in the terminal REPL, so that I can plan, check and reverse work without VS Code. | `/plan <task>` runs read-only, so writes are refused, and only `/execute` restores my configured mode; `/plan` with no task prints usage. `/undo` restores edited files, says when there is nothing to undo, and always says `Bash` effects aren't undone. `/rewind` with a bad or out-of-range number prints usage or a clear error and changes nothing. | T12.2 | Use the VS Code panel |
+| **US-62** | As a developer, I want to list and delete saved sessions from the terminal, so that old sessions don't pile up. | `praxis sessions` lists only this workspace's sessions as text, with titles sanitised. `--delete <id>` removes that session and no other, and `--folder` with the wrong arguments exits with the usage code. Without `HOME` or `XDG_DATA_HOME`, `praxis sessions` says so and exits with the usage code, and a normal run says the session isn't saved and still works. | T12.3 | Delete files in the data directory |
+| **US-63** | As a developer, I want to be told why a turn stopped, so that I and my scripts can react. | Hitting the output limit and hitting `agent.max_turn_requests` each print their own message and exit with the failure code; a cancelled turn exits with the cancel code. | T12.4 | Read the log |
+| **US-64** | As a developer, I want every MCP failure reported clearly, so that a misbehaving server can't confuse the model or slip past trust checks. | A call to an unknown tool, a call that times out (60 s) and a server returning image, audio or resource content each give a clear tool result instead of an error or raw data. An unreadable trust store hides the server's tools with a notice naming the file. | T12.5 | Watch the server's own logs |
 
 ---
 
