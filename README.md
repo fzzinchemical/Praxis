@@ -185,7 +185,13 @@ Hosted models still help with tasks local models can't do yet. Support for the A
 
 ### From a release
 
-Download from the [Releases page](https://github.com/fzzinchemical/Praxis/releases):
+One line (x86_64 Linux): installs `praxis` to `~/.local/bin` and, if `code` is on `PATH`, the extension.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/fzzinchemical/Praxis/main/scripts/install | bash
+```
+
+Pass a tag (`bash -s v1.4.0`) to pin a version, or set `PRAXIS_BIN` for another directory. By hand: download from the [Releases page](https://github.com/fzzinchemical/Praxis/releases):
 
 - `praxis-<version>-x86_64-linux.tar.gz`: the CLI
 - `praxis-<version>.vsix`: the VS Code extension

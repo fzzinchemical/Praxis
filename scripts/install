@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Installs the latest Praxis release (or the tag given) for x86_64 Linux:
+#   curl -fsSL https://raw.githubusercontent.com/fzzinchemical/Praxis/main/scripts/install | bash
+#   ./scripts/install v1.4.0
+# Puts `praxis` in ${PRAXIS_BIN:-~/.local/bin} and installs the VS Code extension if `code` exists.
+set -euo pipefail
+
+repo=fzzinchemical/Praxis
+tag="${1:-}"
+bin="${PRAXIS_BIN:-$HOME/.local/bin}"
+[[ "$(uname -sm)" == "Linux x86_64" ]] || { echo "install: only x86_64 Linux builds exist" >&2; exit 1; }
+
+if [[ -z "$tag" ]]; then
+  # /releases/latest skips pre-releases, so take the newest entry of the list instead.
+  # Buffered first: `grep -m1` closing the pipe early would fail curl under pipefail.
+  releases="$(curl -fsSL "https://api.github.com/repos/$repo/releases?per_page=1")"
+  tag="$(grep -m1 '"tag_name"' <<<"$releases" | cut -d'"' -f4)"
+fi
+[[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "install: bad tag '$tag'" >&2; exit 1; }
+version="${tag#v}"
+url="https://github.com/$repo/releases/download/$tag"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cd "$tmp"
+tarball="praxis-$version-x86_64-linux.tar.gz"
+vsix="praxis-$version.vsix"
+echo "install: downloading Praxis $tag"
+curl -fsSLO "$url/$tarball" -O "$url/$vsix" -O "$url/SHA256SUMS"
+sha256sum --check --ignore-missing --quiet SHA256SUMS
+
+tar xzf "$tarball" praxis
+install -Dm755 praxis "$bin/praxis"
+echo "install: praxis -> $bin/praxis"
+[[ ":$PATH:" == *":$bin:"* ]] || echo "install: add $bin to your PATH"
+
+if command -v code >/dev/null; then
+  code --install-extension "$vsix" --force
+else
+  echo "install: no 'code' on PATH; install $url/$vsix by hand"
+fi
