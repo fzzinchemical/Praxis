@@ -156,6 +156,8 @@ pub enum PermissionReply { AllowOnce, AllowAlways, RejectOnce, RejectAlways, Can
 
 The agent loop runs as one Tokio task per session, sends events on an `mpsc` channel, and observes a `CancellationToken`. Handlers must be `Send`, which ACP also requires.
 
+Before a turn may end, a turn that changed files (a successful `Edit` or `Write`) and ran no `Bash` after the last change gets one note, sent as a `MEMORY_MARK` user message, and the model gets another request. A second such note never comes in the same turn (T13.7).
+
 Map to ACP stop reasons (§11): `LoopDetected` becomes `end_turn` plus a warning `notice`, and `ProviderError` becomes a JSON-RPC error on the prompt.
 
 ### Loop

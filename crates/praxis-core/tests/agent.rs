@@ -625,6 +625,55 @@ async fn a_reply_cut_off_at_the_output_limit_continues_until_the_model_finishes(
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_change_with_no_command_after_it_gets_one_nudge_before_the_turn_ends() {
+    // The script is write, then two text replies: the nudge must be sent once, not twice.
+    let script = vec![
+        tool_reply(&[(
+            "w",
+            "Write",
+            json!({"file_path": "out.txt", "content": "x"}),
+        )]),
+        text_reply("done"),
+        text_reply("done again"),
+    ];
+    let mut h = Harness::in_workspace(new_workspace(), script, 50).await;
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            Some(PermissionReply::AllowOnce)
+        })
+        .await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+    let note = h.request_messages(2).await.last().unwrap()["content"].clone();
+    assert!(note.as_str().unwrap().contains("no command"), "{note}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_after_the_last_change_means_no_nudge() {
+    let script = vec![
+        tool_reply(&[(
+            "w",
+            "Write",
+            json!({"file_path": "out.txt", "content": "x"}),
+        )]),
+        tool_reply(&[("b", "Bash", json!({"command": "true"}))]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::in_workspace(new_workspace(), script, 50).await;
+
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            Some(PermissionReply::AllowOnce)
+        })
+        .await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 3);
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn max_tokens_is_the_remaining_context_not_the_output_reserve() {
     let mut h = Harness::new(vec![text_reply("ok")], 50).await;
 

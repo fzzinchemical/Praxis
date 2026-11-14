@@ -819,6 +819,9 @@ impl Agent {
         let mut overflow_retried = false;
         let mut warned = false;
         let mut length_continues = 0u32;
+        // A change not yet followed by a command, and whether the nudge for it was already sent.
+        let mut unchecked = false;
+        let mut nudged = false;
         loop {
             if self.log_error.is_some() {
                 return StopReason::LogFailed;
@@ -917,6 +920,14 @@ impl Agent {
                     }
                     return StopReason::MaxTokens;
                 }
+                if unchecked && !nudged {
+                    nudged = true;
+                    // The marker keeps this out of turn numbering (`Message::starts_turn`).
+                    self.record(Message::User {
+                        content: format!("{MEMORY_MARK}You changed files and ran no command after the last change. Run the project's checks, or say why you can't, before you finish."),
+                    });
+                    continue;
+                }
                 return StopReason::EndTurn;
             }
             length_continues = 0;
@@ -943,8 +954,13 @@ impl Agent {
                     )
                 } else {
                     let (content, succeeded) = self.run_call(&call, turn).await;
-                    if succeeded && matches!(call.name.as_str(), "Edit" | "Write") {
-                        detector.reset();
+                    match call.name.as_str() {
+                        "Edit" | "Write" if succeeded => {
+                            detector.reset();
+                            unchecked = true;
+                        }
+                        "Bash" => unchecked = false,
+                        _ => {}
                     }
                     content
                 };
