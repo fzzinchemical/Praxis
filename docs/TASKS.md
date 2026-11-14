@@ -14,14 +14,14 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M4** | [MCP client](#m4-mcp-client) | 6 | Real MCP servers work, even on small context windows. |
 | **M5** | [VS Code](#m5-vs-code) | 12 | Fix, review and accept without leaving the editor. |
 | **M6** | [Plugins](#m6-plugins) | 7 | An unmodified Claude Code plugin works. |
-| **M7** | [First release](#m7-first-release) | 5 | Packaged, documented and measured. |
+| **M7** | [First release](#m7-first-release) | 6 | Packaged, documented and measured. |
 | **M8** | [Anthropic backend and per-agent models](#m8-anthropic-backend-and-per-agent-models) | 8 | A Claude model runs the same loop, and each agent can use its own model. |
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
 | **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 13 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
 | **M11** | [Beta 1.3.0: community requests](#m11-beta-130-community-requests) | 8 | Ship the most-wanted features of other agents that fit a local, single-GPU harness. |
 | **M13** | [Beta 1.4.0: harness fixes](#m13-beta-140-harness-fixes-from-the-performance-notes) | 12 | Fix the harness faults behind the gap to OpenCode, proven by fake-server tests. |
 
-115 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+116 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -665,6 +665,8 @@ flowchart LR
     T7_2 --> T7_4
     T7_5["T7.5<br/>Timed real-use trial"]
     T5_6 -.-> T7_5
+    T7_6["T7.6<br/>Co-author line"]
+    T7_6 --> T7_4
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
@@ -673,6 +675,7 @@ flowchart LR
     class T7_4 human
     class M0_M6,T5_6 other
     class T7_5 human
+    class T7_6 human
 ```
 
 - [ ] **T7.1 Docs and threat model**
@@ -689,12 +692,17 @@ flowchart LR
 
 - [ ] **T7.4 Release** `HUMAN` approves
   - **Name:** `praxis` (owner, 2026-11-12; Marx's unity of thought and action). Renamed from `harness` on 2026-11-13.
-  - **Needs:** T7.1, T7.2.
+  - **Needs:** T7.1, T7.2, T7.6.
   - **Done when:** binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval.
 
 - [ ] **T7.5 Timed real-use trial** `HUMAN` · *Could*
   - **Needs:** T5.6.
   - **Done when:** real tasks done with and without the praxis are timed, and results are recorded along with their small sample size. Perception isn't used as evidence.
+
+- [ ] **T7.6 Co-author line in commits** `HUMAN` picks the identity and mechanism
+  - **Why:** commits Praxis makes for a user should say so with a `Co-Authored-By:` trailer (owner, 2026-11-14), held until the first full release.
+  - **Needs:** none.
+  - **Done when:** a commit the agent makes ends with the agreed trailer, a setting turns it off, and a test checks both.
 
 ---
 
@@ -1168,7 +1176,7 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** tests show that when the exact match fails, matches after normalising CRLF, Unicode quotes, dashes and NBSP, and then line by line without leading and trailing whitespace, are applied only if unique and to the original text; and the failure hint shows the whole candidate block with line numbers.
 
-- [ ] **T13.6 AGENTS.md as instructions** (§7, §10)
+- [x] **T13.6 AGENTS.md as instructions** (§7, §10)
   - **Why:** the prompt says file contents are data, and AGENTS.md is shown like one, so its rules are skipped (gemma agents-md-generated-file 0/3, OpenCode labels it "Instructions from").
   - **Needs:** none. Stop and ask the human if it weakens a §10 invariant: only trusted AGENTS.md and memory files may be labelled.
   - **Done when:** a prefix test shows trusted AGENTS.md files under an `Instructions from: <path>` heading with one system-prompt line saying project rules must be followed, and an untrusted repository's file still is not.
