@@ -21,12 +21,14 @@ while read -r name pattern floor; do
          | select((.filename | test("/tests/|/evals/")) | not)
          | .summary.lines]
         | "\(map(.covered) | add // 0) \(map(.count) | add // 0)"' <<<"$json" |
-        awk '{ printf "%.1f", ($2 ? 100 * $1 / $2 : 0) }')"
+        awk '{ printf "%.4f", ($2 ? 100 * $1 / $2 : 0) }')"
+    shown="$(awk -v a="$actual" 'BEGIN { printf "%.1f", a }')"
+    # Compare unrounded: a display rounded up must never pass a floor the real value misses.
     if awk -v a="$actual" -v f="$floor" 'BEGIN { exit !(a + 0 < f + 0) }'; then
-        echo "coverage: $name $actual% < floor $floor%" >&2
+        echo "coverage: $name $shown% < floor $floor%" >&2
         failed=1
     else
-        echo "coverage: $name $actual% >= floor $floor%"
+        echo "coverage: $name $shown% >= floor $floor%"
     fi
 done <scripts/coverage-floors
 
