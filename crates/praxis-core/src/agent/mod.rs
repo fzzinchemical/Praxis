@@ -279,6 +279,7 @@ impl Agent {
     pub fn new(provider: Arc<Provider>, tools: Arc<ToolContext>, mut config: AgentConfig) -> Self {
         let scoped_rules = std::mem::take(&mut config.scoped_rules);
         let budget = Budget::new(config.context_size);
+        tools.set_result_chars(budget.chars_for(budget.result_limit()));
         let tool_schemas = tools::schemas();
         let facts = SessionFacts::capture(tools.workspace());
         let (system, prefix_warning) =
@@ -571,6 +572,8 @@ impl Agent {
         self.config.context_size = context_size;
         self.config.profile = profile;
         self.budget = Budget::new(context_size);
+        self.tools
+            .set_result_chars(self.budget.chars_for(self.budget.result_limit()));
     }
 
     /// Switches the permission mode for later calls. Plan mode (SPEC §11) is read-only; only the

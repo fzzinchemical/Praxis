@@ -21,7 +21,7 @@ use std::fs::{self, DirBuilder, OpenOptions};
 use std::io::{self, Write as _};
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
@@ -136,7 +136,14 @@ pub struct ToolContext {
     tmp_dir: PathBuf,
     tmp_created: Mutex<bool>,
     checkpoints: Mutex<checkpoint::Checkpoints>,
+    /// Characters a `Read` or `Grep` result may take, set from the agent's budget (SPEC §7).
+    result_chars: AtomicUsize,
 }
+
+/// Until an agent sets it, a 32k context's share (SPEC §7).
+const DEFAULT_RESULT_CHARS: usize = 11_400;
+/// Room kept for a truncation note, so the note never pushes a result past its budget.
+const NOTE_RESERVE: usize = 100;
 
 impl ToolContext {
     /// Fails if `workspace` can't be resolved: confinement needs its real path.
@@ -164,7 +171,21 @@ impl ToolContext {
             tmp_dir: new_temp_path("tmp"),
             tmp_created: Mutex::default(),
             checkpoints: Mutex::default(),
+            result_chars: AtomicUsize::new(DEFAULT_RESULT_CHARS),
         })
+    }
+
+    /// Sets how many characters one `Read` or `Grep` result may take. The agent sets it from
+    /// its budget, so a tool result never needs spooling.
+    pub fn set_result_chars(&self, chars: usize) {
+        self.result_chars.store(chars, Ordering::Relaxed);
+    }
+
+    /// Characters left for a tool's own text once its note is reserved.
+    pub(crate) fn result_room(&self) -> usize {
+        self.result_chars
+            .load(Ordering::Relaxed)
+            .saturating_sub(NOTE_RESERVE)
     }
 
     /// Lets `Read` see what the editor shows. Set once, before the session's first turn.

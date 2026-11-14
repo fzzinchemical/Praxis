@@ -209,10 +209,74 @@ async fn read_returns_the_unsaved_editor_buffer_instead_of_the_disk_file() {
 #[tokio::test]
 async fn read_applies_a_default_line_limit() {
     let f = Fixture::new();
+    f.ctx.set_result_chars(1_000_000);
     f.file("long.txt", &"x\n".repeat(2500));
     let output = f.read("long.txt").await;
     ok(&output, "lines 1-2000 of 2500");
     assert!(!output.content.contains("2001\t"));
+}
+
+#[tokio::test]
+async fn read_fits_a_large_file_in_the_budget_and_pages_from_the_next_offset() {
+    let f = Fixture::new();
+    f.ctx.set_result_chars(4_000);
+    let text: String = (1..=500)
+        .map(|n| format!("line {n:04} {}\n", "x".repeat(20)))
+        .collect();
+    f.file("big.txt", &text);
+    let first = f.read("big.txt").await;
+    assert!(first.content.chars().count() <= 4_000, "{}", first.content);
+    assert!(
+        first.content.starts_with("     1\tline 0001"),
+        "{}",
+        first.content
+    );
+    let next: usize = first
+        .content
+        .split("use offset ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or_else(|| panic!("no next offset in:\n{}", first.content));
+    let second = f
+        .call("Read", json!({ "file_path": "big.txt", "offset": next }))
+        .await;
+    assert!(
+        second
+            .content
+            .starts_with(&format!("{next:>6}\tline {next:04}")),
+        "{}",
+        second.content
+    );
+}
+
+#[tokio::test]
+async fn read_cuts_a_line_longer_than_the_budget_instead_of_spooling_it() {
+    let f = Fixture::new();
+    f.ctx.set_result_chars(4_000);
+    f.file("wide.txt", &"y".repeat(50_000));
+    let out = f.read("wide.txt").await;
+    assert!(
+        out.content.chars().count() <= 4_000,
+        "{}",
+        out.content.len()
+    );
+    assert!(!out.content.contains("Output truncated"), "{}", out.content);
+}
+
+#[tokio::test]
+async fn grep_stops_collecting_at_the_result_budget() {
+    let f = Fixture::new();
+    f.ctx.set_result_chars(2_000);
+    f.file("many.txt", &"hit line\n".repeat(5_000));
+    let out = f.call("Grep", json!({ "pattern": "hit" })).await;
+    assert!(
+        out.content.chars().count() <= 2_000,
+        "{}",
+        out.content.len()
+    );
+    assert!(out.content.contains("narrow the search"), "{}", out.content);
+    assert_eq!(out.structured["truncated"], true);
 }
 
 #[tokio::test]

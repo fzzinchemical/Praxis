@@ -91,15 +91,38 @@ pub fn read(input: ReadInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
     let total = text.lines().count();
     let first = input.offset.unwrap_or(1).max(1);
     let limit = input.limit.unwrap_or(DEFAULT_LINE_LIMIT);
+    // Stops before the budget, at a line boundary, so `fit_result` never cuts or spools a Read.
+    let room = ctx.result_room();
     let mut content = String::new();
+    let mut used = 0;
+    let mut last = first - 1;
     for (index, line) in text.lines().enumerate().skip(first - 1).take(limit) {
-        content.push_str(&format!("{:>6}\t{line}\n", index + 1));
+        let numbered = format!("{:>6}\t{line}\n", index + 1);
+        let size = numbered.chars().count();
+        if used + size > room {
+            // shortcut: a line longer than the budget is cut and its rest is unreachable; add byte offsets to Read if real files need it.
+            if content.is_empty() {
+                content = numbered
+                    .chars()
+                    .take(room.saturating_sub(1))
+                    .collect::<String>()
+                    + "\n";
+                last = index + 1;
+            }
+            break;
+        }
+        content.push_str(&numbered);
+        used += size;
+        last = index + 1;
     }
-    let last = first.saturating_add(limit).saturating_sub(1).min(total);
-    if first > 1 || last < total {
+    let last = last.min(total);
+    if last < total {
         content.push_str(&format!(
-            "(lines {first}-{last} of {total}; use offset and limit for more)\n"
+            "(lines {first}-{last} of {total}; use offset {} for more)\n",
+            last + 1
         ));
+    } else if first > 1 {
+        content.push_str(&format!("(lines {first}-{last} of {total})\n"));
     }
     Ok(ToolOutput::ok(
         content,

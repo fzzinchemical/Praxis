@@ -178,7 +178,7 @@ async fn reserves_fifteen_percent_of_the_context_for_output() {
 #[tokio::test(flavor = "multi_thread")]
 async fn spools_an_oversized_result_and_keeps_head_and_tail() {
     let bodies = vec![
-        tool_reply("a", "Read", json!({"file_path": "big.txt"})),
+        tool_reply("a", "Bash", json!({"command": "cat big.txt"})),
         text_reply("done", 4000),
     ];
     let mut h = Harness::new(bodies, config(20_000)).await;
@@ -237,7 +237,7 @@ async fn the_agent_reads_its_own_spool_but_cannot_write_there() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tool_call_id_cannot_steer_the_spool_path() {
     let bodies = vec![
-        tool_reply("../../escape", "Read", json!({"file_path": "big.txt"})),
+        tool_reply("../../escape", "Bash", json!({"command": "cat big.txt"})),
         text_reply("done", 4000),
     ];
     let mut h = Harness::new(bodies, config(20_000)).await;
@@ -315,7 +315,7 @@ async fn warns_when_the_server_reports_a_far_smaller_prompt_than_estimated() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_front_end_still_gets_the_complete_result() {
     let bodies = vec![
-        tool_reply("a", "Read", json!({"file_path": "big.txt"})),
+        tool_reply("a", "Bash", json!({"command": "cat big.txt"})),
         text_reply("done", 4000),
     ];
     let mut h = Harness::new(bodies, config(20_000)).await;

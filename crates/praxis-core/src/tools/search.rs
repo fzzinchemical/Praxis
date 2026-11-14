@@ -12,9 +12,6 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 use tokio_util::sync::CancellationToken;
 
-// shortcut: a flat cap with a note, so a huge search stops early instead of building a result only to spool it; page results if models need more.
-const MAX_RESULTS: usize = 1000;
-
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GrepInput {
@@ -68,14 +65,23 @@ fn relative<'a>(path: &'a Path, ctx: &ToolContext) -> std::path::Display<'a> {
     path.strip_prefix(&ctx.workspace).unwrap_or(path).display()
 }
 
-fn finish(mut lines: Vec<String>) -> ToolOutput {
-    let truncated = lines.len() >= MAX_RESULTS;
-    lines.truncate(MAX_RESULTS);
+/// Adds `line` unless it would take the lines past `room` characters. Returns false when full.
+fn push_within(lines: &mut Vec<String>, used: &mut usize, line: String, room: usize) -> bool {
+    let size = line.chars().count() + 1;
+    if *used + size > room {
+        return false;
+    }
+    *used += size;
+    lines.push(line);
+    true
+}
+
+fn finish(lines: Vec<String>, truncated: bool) -> ToolOutput {
     let count = lines.len();
     let mut content = lines.join("\n");
     if truncated {
         content.push_str(&format!(
-            "\n(stopped at {MAX_RESULTS} results; narrow the search)"
+            "\n(stopped at the result budget after {count} results; narrow the search)"
         ));
     } else if count == 0 {
         content.push_str("No matches.");
@@ -114,6 +120,9 @@ pub fn grep(
 
     let mode = input.output_mode.unwrap_or_default();
     let mut lines = Vec::new();
+    let mut used = 0;
+    let room = ctx.result_room();
+    let mut full = false;
     for entry in walk.build() {
         if cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -130,8 +139,9 @@ pub fn grep(
             matches += 1;
             match mode {
                 OutputMode::Content => {
-                    lines.push(format!("{shown}:{number}:{}", line.trim_end()));
-                    Ok(lines.len() < MAX_RESULTS)
+                    let text = format!("{shown}:{number}:{}", line.trim_end());
+                    full |= !push_within(&mut lines, &mut used, text, room);
+                    Ok(!full)
                 }
                 OutputMode::FilesWithMatches => Ok(false),
                 OutputMode::Count => Ok(true),
@@ -141,16 +151,17 @@ pub fn grep(
         if searcher.search_path(&matcher, path, sink).is_err() {
             continue;
         }
-        match mode {
-            OutputMode::FilesWithMatches if matches > 0 => lines.push(shown.to_string()),
-            OutputMode::Count if matches > 0 => lines.push(format!("{shown}:{matches}")),
-            _ => {}
-        }
-        if lines.len() >= MAX_RESULTS {
+        let text = match mode {
+            OutputMode::FilesWithMatches if matches > 0 => shown.to_string(),
+            OutputMode::Count if matches > 0 => format!("{shown}:{matches}"),
+            _ => continue,
+        };
+        full |= !push_within(&mut lines, &mut used, text, room);
+        if full {
             break;
         }
     }
-    Ok(finish(lines))
+    Ok(finish(lines, full))
 }
 
 pub fn glob(
@@ -178,5 +189,15 @@ pub fn glob(
         }
     }
     lines.sort();
-    Ok(finish(lines))
+    let room = ctx.result_room();
+    let mut kept = Vec::new();
+    let mut used = 0;
+    let mut full = false;
+    for line in lines {
+        if !push_within(&mut kept, &mut used, line, room) {
+            full = true;
+            break;
+        }
+    }
+    Ok(finish(kept, full))
 }
