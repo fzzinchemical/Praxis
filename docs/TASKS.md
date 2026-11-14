@@ -1148,7 +1148,7 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** a fake-server test shows a history holding unparsable tool-call arguments is sent with `{}` in their place, also after resuming a saved session.
 
-- [ ] **T13.2 Provider retries** (§5.1)
+- [x] **T13.2 Provider retries** (§5.1)
   - **Why:** one HTTP 5xx or dropped connection ends the turn (gemma change-signature). OpenCode retries with backoff.
   - **Needs:** T13.1, so a retry never resends a poisoned history.
   - **Done when:** a fake-server test shows a 5xx or a dropped stream is retried up to 3 times with growing backoff and the request unchanged (cache stays warm), and a 4xx and the HTTP 200 `event: error` overflow are not retried.
@@ -1173,7 +1173,7 @@ flowchart LR
   - **Needs:** none. Stop and ask the human if it weakens a §10 invariant: only trusted AGENTS.md and memory files may be labelled.
   - **Done when:** a prefix test shows trusted AGENTS.md files under an `Instructions from: <path>` heading with one system-prompt line saying project rules must be followed, and an untrusted repository's file still is not.
 
-- [ ] **T13.7 Unchecked-change nudge** (§4) · *Should*
+- [x] **T13.7 Unchecked-change nudge** (§4) · *Should*
   - **Why:** turns end after changes with no test run or after forgetting an AGENTS.md rule (4b injection-code-comment, agents-md-conventions).
   - **Needs:** T13.6.
   - **Done when:** a fake-server test shows a turn that changed files and ran no command after the last change gets one note before it may end, and no second one in the same turn.
@@ -1188,15 +1188,16 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** `cargo xtask eval` uses seed `42 + run` and writes each run's transcript and per-request prompt and completion tokens, model time and tool time next to the board; `praxis-core` turns on serde_json `preserve_order` (and the key-order gotcha goes); evals register the `Agent` tool. Checked by unit and fake-server tests. No eval is run.
 
-- [ ] **T13.10 Runaway stop** (§5.5) · *Could*
+- [x] **T13.10 Runaway stop** (§5.5) · *Could*
   - **Why:** gemma-4-12B has a known degenerate loop (HF google/gemma-4-12B-it #41); each runaway burns about 110 s up to the output limit.
   - **Needs:** T13.3.
   - **Done when:** a fake-server test shows a stream repeating the same n-gram 8 or more times in its last ~400 tokens is cut off and handled like a `length` stop.
 
-- [ ] **T13.11 Small speedups** · *Could*
+- [x] **T13.11 Small speedups** · *Could*
   - **Why:** measured in note 05, none changes model behaviour.
   - **Needs:** none.
   - **Done when:** each is its own commit: the workspace path is no longer repeated in the system prompt's first line (prefix test); MCP servers connect while the model loads, not after; the dev profile uses `debug = "line-tables-only"`; the 5 s `DIAGNOSTICS_WAIT` in CLI tests is injectable so tests use a short one. Verify passes.
+  - **Result (2026-11-14):** the first three are done. The `DIAGNOSTICS_WAIT` change was dropped: no test reaches that wait, and the CLI tests run in under a second, so the 17.5 s in note 05 was stale.
 
 - [ ] **T13.12 Release 1.4.0-beta** `HUMAN` approves
   - **Needs:** T13.1 to T13.6. Cut *Should* and *Could* tasks that aren't done instead of waiting for them.
