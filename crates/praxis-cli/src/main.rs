@@ -23,7 +23,7 @@ use praxis_core::sandbox::Sandbox;
 use praxis_core::session::{self, SessionLog};
 use praxis_core::summary::summarize;
 use praxis_core::tools::ToolContext;
-use praxis_core::trust::TrustStore;
+use praxis_core::trust::{TrustStore, hash};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Read, Write};
@@ -431,16 +431,51 @@ fn approve_project_config(path: &Path, items: &str) -> bool {
 
 /// A changed MCP tool stays hidden unless a person at a terminal approves it (SPEC §13).
 fn approve_mcp_change(change: &str, terminal: Option<&mut Terminal>) -> bool {
+    terminal_approves(
+        &format!("\n{}\nApprove this tool? [y/N]: ", sanitize(change)),
+        terminal,
+    )
+}
+
+/// Asks at the terminal and takes only an explicit yes. Without a terminal nobody can answer.
+fn terminal_approves(question: &str, terminal: Option<&mut Terminal>) -> bool {
     let Some(terminal) = terminal else {
         return false;
     };
-    ask(&format!(
-        "\n{}\nApprove this tool? [y/N]: ",
-        sanitize(change)
-    ));
+    ask(question);
     // The terminal reader owns stdin, so wait on its channel from this sync callback.
     tokio::task::block_in_place(|| terminal.blocking_recv())
         .is_some_and(|line| parse_reply(&line, false) == PermissionReply::AllowOnce)
+}
+
+/// A repository's memory file is labelled as instructions only once its exact expanded text is
+/// approved (SPEC §8). A changed file asks again; a store error counts as not approved.
+fn approve_memory(
+    store: Option<&TrustStore>,
+    path: &Path,
+    text: &str,
+    terminal: Option<&mut Terminal>,
+) -> bool {
+    let digest = hash(text);
+    match store.map(|store| store.is_approved(path, &digest)) {
+        Some(Ok(true)) => return true,
+        Some(Err(error)) => eprintln!("{}", sanitize(&error)),
+        Some(Ok(false)) | None => {}
+    }
+    let asked = terminal_approves(
+        &format!(
+            "\n{} holds instructions for this repository.\nFollow them as instructions? Any later change asks again. [y/N]: ",
+            sanitize(&path.display().to_string())
+        ),
+        terminal,
+    );
+    if asked
+        && let Some(store) = store
+        && let Err(error) = store.approve(path, &digest)
+    {
+        eprintln!("{}", sanitize(&error));
+    }
+    asked
 }
 
 fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Policy), String> {
@@ -1175,6 +1210,7 @@ async fn run(
     let configured = config.permissions.mode;
     let claude_dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"));
     let praxis_dir = xdg_dir("XDG_CONFIG_HOME", ".config");
+    let trust = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
     let agent_config = AgentConfig {
         model: ready.instance_id,
         context_size: ready.context_length,
@@ -1184,6 +1220,7 @@ async fn run(
             &workspace,
             claude_dir.as_deref(),
             praxis_dir.as_deref(),
+            &mut |path, text| approve_memory(trust.as_ref(), path, text, terminal.as_mut()),
         ),
         scoped_rules: praxis_core::context::prefix::load_scoped_rules(
             &workspace,
@@ -1198,8 +1235,7 @@ async fn run(
         masking: true,
     };
     let mcp = connected.map(|(mut mcp, mut notices)| {
-        let store = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
-        notices.extend(mcp.pin(store.as_ref(), &mut |change| {
+        notices.extend(mcp.pin(trust.as_ref(), &mut |change| {
             approve_mcp_change(change, terminal.as_mut())
         }));
         for notice in notices {

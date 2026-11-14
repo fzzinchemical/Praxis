@@ -62,17 +62,19 @@ impl SessionFacts {
 /// Memory files in prompt order, broadest first (SPEC §12): the user's `CLAUDE.md` and praxis
 /// `AGENTS.md`, the project files from `root` down to `cwd`, then un-pathed rules. Nothing above
 /// `root` is read. The user dirs are parameters so tests never touch the real home. They are only
-/// prompt text: the budget trims them and they never touch the policy.
+/// prompt text: the budget trims them and they never touch the policy. `trusted` decides, from a
+/// project file's path and expanded text, whether it is labelled as instructions (SPEC §8, §12).
 pub fn load_memory(
     root: &Path,
     cwd: &Path,
     claude_dir: Option<&Path>,
     praxis_dir: Option<&Path>,
+    trusted: &mut dyn FnMut(&Path, &str) -> bool,
 ) -> Vec<String> {
     let mut memory: Vec<String> = Vec::new();
     memory.extend(claude_dir.and_then(|dir| user_instructions(dir, "CLAUDE.md")));
     memory.extend(praxis_dir.and_then(|dir| user_instructions(dir, "AGENTS.md")));
-    memory.extend(project_memory(root, cwd));
+    memory.extend(project_memory(root, cwd, trusted));
     for (base, dir) in rule_dirs(root, claude_dir, praxis_dir) {
         memory.extend(
             rule_files(&base, &dir)
@@ -88,7 +90,11 @@ pub fn load_memory(
 fn user_instructions(dir: &Path, name: &str) -> Option<String> {
     let path = dir.join(name);
     let text = read_text(dir, &path)?;
-    Some(format!("Instructions from: {}\n\n{text}", path.display()))
+    Some(labelled(&path, &text))
+}
+
+fn labelled(path: &Path, text: &str) -> String {
+    format!("Instructions from: {}\n\n{text}", path.display())
 }
 
 /// The path-scoped rules, kept out of the prefix. Each is appended the first time a file it
@@ -149,36 +155,50 @@ fn rule_dirs(
 
 /// `CLAUDE.md` (or `.claude/CLAUDE.md`) then `CLAUDE.local.md` in each directory from `root` to
 /// `cwd`. `AGENTS.md` takes the `CLAUDE.md` slot only when no `CLAUDE.md` exists on the way.
-fn project_memory(root: &Path, cwd: &Path) -> Vec<String> {
+fn project_memory(
+    root: &Path,
+    cwd: &Path,
+    trusted: &mut dyn FnMut(&Path, &str) -> bool,
+) -> Vec<String> {
     let (Ok(root), Ok(cwd)) = (root.canonicalize(), cwd.canonicalize()) else {
         return Vec::new();
     };
     let Ok(below) = cwd.strip_prefix(&root) else {
         return Vec::new();
     };
-    dirs_memory(&root, below).into_iter().flatten().collect()
+    dirs_memory(&root, below, trusted)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// The memory of one directory, `rel` below `root`, for a directory first touched after the
 /// prefix was frozen (SPEC §12, nested memory). Same file rules as `load_memory`; `AGENTS.md`
 /// is judged over the directories from `root` down to `rel`, not the whole workspace.
+// shortcut: nested memory found mid-session is never labelled, upgrade when the agent can reach the trust store
 pub fn dir_memory(root: &Path, rel: &Path) -> Vec<String> {
     let Ok(root) = root.canonicalize() else {
         return Vec::new();
     };
-    dirs_memory(&root, rel).pop().unwrap_or_default()
+    dirs_memory(&root, rel, &mut |_, _| false)
+        .pop()
+        .unwrap_or_default()
 }
 
 /// The memory files of each directory from `root` down to `below`, root first.
-fn dirs_memory(root: &Path, below: &Path) -> Vec<Vec<String>> {
+fn dirs_memory(
+    root: &Path,
+    below: &Path,
+    trusted: &mut dyn FnMut(&Path, &str) -> bool,
+) -> Vec<Vec<String>> {
     // `ancestors` yields `a/b`, `a`, `""`; reversed, that is root first.
     let mut dirs: Vec<PathBuf> = below.ancestors().map(Path::to_path_buf).collect();
     dirs.reverse();
     let claude: Vec<Option<String>> = dirs
         .iter()
         .map(|dir| {
-            read_in(root, &dir.join("CLAUDE.md"))
-                .or_else(|| read_in(root, &dir.join(".claude/CLAUDE.md")))
+            read_in(root, &dir.join("CLAUDE.md"), trusted)
+                .or_else(|| read_in(root, &dir.join(".claude/CLAUDE.md"), trusted))
         })
         .collect();
     let agents_only = claude.iter().all(Option::is_none);
@@ -186,11 +206,11 @@ fn dirs_memory(root: &Path, below: &Path) -> Vec<Vec<String>> {
         .zip(claude)
         .map(|(dir, main)| {
             let main = if agents_only {
-                read_in(root, &dir.join("AGENTS.md"))
+                read_in(root, &dir.join("AGENTS.md"), trusted)
             } else {
                 main
             };
-            [main, read_in(root, &dir.join("CLAUDE.local.md"))]
+            [main, read_in(root, &dir.join("CLAUDE.local.md"), trusted)]
                 .into_iter()
                 .flatten()
                 .collect()
@@ -198,10 +218,22 @@ fn dirs_memory(root: &Path, below: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
-/// A project file, confined to the workspace. A symlink out of it is skipped with a warning.
-fn read_in(root: &Path, relative: &Path) -> Option<String> {
+/// A project file, confined to the workspace. A symlink out of it is skipped with a warning. It is
+/// labelled as instructions only when `trusted` approves its path and expanded text.
+fn read_in(
+    root: &Path,
+    relative: &Path,
+    trusted: &mut dyn FnMut(&Path, &str) -> bool,
+) -> Option<String> {
     match confine::resolve(root, &relative.to_string_lossy()) {
-        Ok(path) => read_text(root, &path),
+        Ok(path) => {
+            let text = read_text(root, &path)?;
+            Some(if trusted(&path, &text) {
+                labelled(&path, &text)
+            } else {
+                text
+            })
+        }
         Err(error) => {
             tracing::warn!(%error, path = %relative.display(), "memory file skipped");
             None
@@ -508,7 +540,13 @@ mod tests {
         write(&root.join("CLAUDE.local.md"), "root-local");
         write(&root.join("AGENTS.md"), "root-agents");
         write(&root.join("sub/.claude/CLAUDE.md"), "sub");
-        let memory = load_memory(&root, &root.join("sub"), Some(&claude), Some(&praxis));
+        let memory = load_memory(
+            &root,
+            &root.join("sub"),
+            Some(&claude),
+            Some(&praxis),
+            &mut |_, _| false,
+        );
         let claude_label = format!(
             "Instructions from: {}\n\nuser-claude",
             claude.join("CLAUDE.md").display()
@@ -531,21 +569,67 @@ mod tests {
     }
 
     #[test]
+    fn labels_a_trusted_project_agents_md_and_loads_an_untrusted_one_unlabelled() {
+        let root = scratch("trust");
+        write(&root.join("AGENTS.md"), "Use tabs.");
+        let path = root.join("AGENTS.md");
+        let label = format!("Instructions from: {}\n\nUse tabs.", path.display());
+        let memory = load_memory(&root, &root, None, None, &mut |_, _| true);
+        assert_eq!(memory, [label]);
+        let memory = load_memory(&root, &root, None, None, &mut |_, _| false);
+        assert_eq!(memory, ["Use tabs."]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn asks_about_each_project_memory_file_with_its_expanded_text() {
+        let root = scratch("asks");
+        write(&root.join("CLAUDE.md"), "root @extra.md");
+        write(&root.join("extra.md"), "imported");
+        write(&root.join("sub/CLAUDE.local.md"), "sub-local");
+        write(&root.join(".claude/rules/rule.md"), "rule");
+        let mut asked = Vec::new();
+        load_memory(&root, &root.join("sub"), None, None, &mut |path, text| {
+            asked.push((path.to_path_buf(), text.to_owned()));
+            true
+        });
+        assert_eq!(
+            asked,
+            [
+                (root.join("CLAUDE.md"), "root imported".to_owned()),
+                (root.join("sub/CLAUDE.local.md"), "sub-local".to_owned()),
+            ]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rules_stay_unlabelled_even_when_their_project_is_trusted() {
+        let root = scratch("rules-trust");
+        write(&root.join(".claude/rules/rule.md"), "rule");
+        assert_eq!(
+            load_memory(&root, &root, None, None, &mut |_, _| true),
+            ["rule"]
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn loads_agents_md_only_from_inside_the_workspace() {
         let dir = scratch("agents");
         let workspace = dir.join("w");
         fs::create_dir_all(&workspace).unwrap();
         let workspace = workspace.canonicalize().unwrap();
-        assert!(load_memory(&workspace, &workspace, None, None).is_empty());
+        assert!(load_memory(&workspace, &workspace, None, None, &mut |_, _| false).is_empty());
         fs::write(workspace.join("AGENTS.md"), "Use tabs.").unwrap();
         assert_eq!(
-            load_memory(&workspace, &workspace, None, None),
+            load_memory(&workspace, &workspace, None, None, &mut |_, _| false),
             ["Use tabs."]
         );
         fs::remove_file(workspace.join("AGENTS.md")).unwrap();
         fs::write(dir.join("secret"), "token").unwrap();
         std::os::unix::fs::symlink(dir.join("secret"), workspace.join("AGENTS.md")).unwrap();
-        assert!(load_memory(&workspace, &workspace, None, None).is_empty());
+        assert!(load_memory(&workspace, &workspace, None, None, &mut |_, _| false).is_empty());
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -569,7 +653,7 @@ mod tests {
         write(&base.join("CLAUDE.md"), "above");
         let root = base.join("w");
         fs::create_dir_all(&root).unwrap();
-        assert!(load_memory(&root, &root, None, None).is_empty());
+        assert!(load_memory(&root, &root, None, None, &mut |_, _| false).is_empty());
         fs::remove_dir_all(base).unwrap();
     }
 
@@ -584,7 +668,7 @@ mod tests {
             "---\npaths: \"src/**\"\n---\nscoped",
         );
         write(&root.join(".praxis/rules/c.md"), "praxis-rule");
-        let memory = load_memory(&root, &root, Some(&claude), None);
+        let memory = load_memory(&root, &root, Some(&claude), None, &mut |_, _| false);
         assert_eq!(memory, ["user-rule", "project-rule", "praxis-rule"]);
         fs::remove_dir_all(base).unwrap();
     }
@@ -601,7 +685,7 @@ mod tests {
             );
         }
         write(&root.join("h5.md"), "L5");
-        let memory = load_memory(&root, &root, None, None);
+        let memory = load_memory(&root, &root, None, None, &mut |_, _| false);
         assert_eq!(memory, ["L0 L1 L2 L3 L4 @h5.md"]);
         fs::remove_dir_all(base).unwrap();
     }
@@ -612,7 +696,10 @@ mod tests {
         write(&root.join("CLAUDE.md"), "@docs/a.md");
         write(&root.join("docs/a.md"), "A @b.md");
         write(&root.join("docs/b.md"), "B");
-        assert_eq!(load_memory(&root, &root, None, None), ["A B"]);
+        assert_eq!(
+            load_memory(&root, &root, None, None, &mut |_, _| false),
+            ["A B"]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -622,7 +709,10 @@ mod tests {
         write(&root.join("CLAUDE.md"), "@a.md");
         write(&root.join("a.md"), "A @b.md");
         write(&root.join("b.md"), "B @a.md");
-        assert_eq!(load_memory(&root, &root, None, None), ["A B @a.md"]);
+        assert_eq!(
+            load_memory(&root, &root, None, None, &mut |_, _| false),
+            ["A B @a.md"]
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -635,7 +725,7 @@ mod tests {
         );
         write(&root.join("a.md"), "IMPORTED");
         assert_eq!(
-            load_memory(&root, &root, None, None),
+            load_memory(&root, &root, None, None, &mut |_, _| false),
             ["Use `@a.md` here\n```\n@a.md\n```\nIMPORTED"]
         );
         fs::remove_dir_all(root).unwrap();
@@ -649,7 +739,7 @@ mod tests {
             "keep\n<!-- hidden\nstill hidden -->\nshown\n```\n<!-- kept -->\n```",
         );
         assert_eq!(
-            load_memory(&root, &root, None, None),
+            load_memory(&root, &root, None, None, &mut |_, _| false),
             ["keep\nshown\n```\n<!-- kept -->\n```"]
         );
         fs::remove_dir_all(root).unwrap();
@@ -668,7 +758,7 @@ mod tests {
         write(&root.join("CLAUDE.md"), "project @../secret.md");
         std::os::unix::fs::symlink(base.join("secret.md"), root.join("link.md")).unwrap();
         write(&root.join("CLAUDE.local.md"), "local @link.md");
-        let memory = load_memory(&root, &root, Some(&claude), None);
+        let memory = load_memory(&root, &root, Some(&claude), None, &mut |_, _| false);
         assert_eq!(
             memory,
             [
@@ -686,7 +776,7 @@ mod tests {
     #[test]
     fn the_hostile_fixture_cannot_import_outside_its_workspace() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hostile-repo");
-        let memory = load_memory(&fixture, &fixture, None, None);
+        let memory = load_memory(&fixture, &fixture, None, None, &mut |_, _| false);
         let text = fs::read_to_string(fixture.join("CLAUDE.md")).unwrap();
         assert_eq!(memory, [text.trim_end()]);
         assert!(text.contains("@../../fixtures/bash/cargo-test-failure.txt"));

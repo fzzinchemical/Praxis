@@ -274,7 +274,13 @@ async fn agents_md_cannot_widen_permissions() {
     )
     .unwrap();
     let mut cfg = config(100_000);
-    cfg.memory = praxis_core::context::prefix::load_memory(&workspace, &workspace, None, None);
+    cfg.memory = praxis_core::context::prefix::load_memory(
+        &workspace,
+        &workspace,
+        None,
+        None,
+        &mut |_, _| false,
+    );
     cfg.policy =
         praxis_core::permissions::Policy::new(praxis_core::permissions::Mode::ReadOnly, &[], &[])
             .unwrap();
@@ -310,8 +316,13 @@ async fn user_agents_md_is_labelled_as_instructions_and_repo_agents_md_is_not() 
     fs::write(workspace.join("AGENTS.md"), "REPO-RULES").unwrap();
     assert!(praxis_core::agent::system_prompt().contains("\"Instructions from:\" heading"));
     let mut cfg = config(100_000);
-    cfg.memory =
-        praxis_core::context::prefix::load_memory(&workspace, &workspace, None, Some(&home));
+    cfg.memory = praxis_core::context::prefix::load_memory(
+        &workspace,
+        &workspace,
+        None,
+        Some(&home),
+        &mut |_, _| false,
+    );
     let mut h = Harness::in_workspace(workspace, vec![text_reply("ok", 3000)], cfg).await;
     h.turn("hi").await;
     let system = h.bodies().await[0]["messages"][0]["content"]

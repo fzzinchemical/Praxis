@@ -336,6 +336,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                     Path::new(WORK),
                     None,
                     None,
+                    // Nobody approves an eval repo's memory, as in a piped run: it stays unlabelled.
+                    &mut |_, _| false,
                 )
             } else {
                 Vec::new()

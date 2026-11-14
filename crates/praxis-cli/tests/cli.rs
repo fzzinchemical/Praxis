@@ -43,6 +43,50 @@ async fn the_workspace_agents_md_reaches_the_system_prompt() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_repository_agents_md_is_labelled_only_while_its_approved_text_matches() {
+    const RULES: &str = "Use tabs.";
+    let dir = workspace();
+    let path = dir.join("AGENTS.md");
+    fs::write(&path, RULES).unwrap();
+    let label = format!("Instructions from: {}", path.display());
+    let system_of = |chats: &[Value]| {
+        chats[0]["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+
+    // Piped input cannot approve, so the file loads as plain context.
+    let unapproved = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let output = run(&unapproved, &dir, &["--model", "m", "say hi"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let system = system_of(&requests_to(&unapproved, CHAT).await);
+    assert!(system.contains(RULES), "{system}");
+    assert!(!system.contains(&label), "{system}");
+
+    // A stored approval of exactly this text labels it.
+    let store = dir.join("xdg-data/praxis/trust.json");
+    fs::create_dir_all(store.parent().unwrap()).unwrap();
+    let approvals = json!({ path.display().to_string(): praxis_core::trust::hash(RULES) });
+    fs::write(&store, approvals.to_string()).unwrap();
+    let approved = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let output = run(&approved, &dir, &["--model", "m", "say hi"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let system = system_of(&requests_to(&approved, CHAT).await);
+    assert!(system.contains(&format!("{label}\n\n{RULES}")), "{system}");
+
+    // Any change to the text drops back to plain context until approved again.
+    fs::write(&path, "Use spaces.").unwrap();
+    let changed = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+    let output = run(&changed, &dir, &["--model", "m", "say hi"]).await;
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let system = system_of(&requests_to(&changed, CHAT).await);
+    assert!(system.contains("Use spaces."), "{system}");
+    assert!(!system.contains(&label), "{system}");
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn one_shot_prints_the_reply_and_addresses_the_loaded_instance() {
     let server = server(Some(32768), Replies(vec![text_reply("hello there")])).await;
 

@@ -608,9 +608,12 @@ flowchart TD
 | `allow` rules, wider mode | Ignored with a notice |
 | MCP servers, hooks, plugins | Not started |
 | `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
-| `AGENTS.md`, `CLAUDE.md`, rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
+| Project `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` (§12) | Loaded as context, unlabelled; labelled `Instructions from:` once approved (T13.6) |
+| Rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
 
 Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
+
+Project memory files use the same store (decided by the owner, 2026-11-14). Each file's expanded text (after comments are stripped and imports expanded) is hashed and keyed by the file's path. A file whose hash is stored, or that a person approves at a terminal, is labelled `Instructions from:` (§12). Any other file stays unlabelled context. ACP and piped runs have no terminal, so they only honour stored approvals. An unreadable store leaves memory files unlabelled with a warning; it never approves anything.
 
 The widening items so far are `permissions.allow`, `agent.auto_load = true` and a `permissions.mode` wider than the user's. A project's `permissions.mode = "full-access"` is refused outright, never offered for approval (T10.7). They are approved or refused together: the prompt shows them as TOML, and the hash covers exactly that text. Claude Code's `~/.claude/settings.json` is the user's own file, so its `permissions.allow`, `permissions.deny` and `hooks` apply without a trust prompt: approved by the project owner on 2026-11-12. Project `.claude/settings.json` and `settings.local.json` widen through this gate like `.praxis/config.toml`, with `hooks` added to the approved TOML (§12, T9.8). MCP servers and plugins join this list in their own tasks. The hostile fixture in `crates/praxis-core/tests/fixtures/hostile-repo` sets every item, and each task that adds one extends it.
 
@@ -971,7 +974,7 @@ Decided in [ADR 0007](adr/0007-markdown-sources-like-claude-code.md). Project ma
 2. Each directory from the workspace root down to cwd: `CLAUDE.md` or `.claude/CLAUDE.md`, then `CLAUDE.local.md`. `AGENTS.md` is read only if no `CLAUDE.md` exists in the workspace (Claude Code's default). Never above the workspace root.
 3. Rules without a `paths` field: `~/.claude/rules/**/*.md`, `~/.config/praxis/rules/**/*.md`, then `.claude/rules/**/*.md` and `.praxis/rules/**/*.md`.
 
-User files (1) are the user's own, so each is prefixed with `Instructions from: <path>` and a blank line. Project and rule files (2, 3) are repository content: they keep no label and are only context. The system prompt tells the model to follow the rules under each `Instructions from:` heading. Labelling a project `AGENTS.md` would make untrusted repository text look like instructions (§10.7), so it needs a human decision first.
+User files (1) are the user's own, so each is prefixed with `Instructions from: <path>` and a blank line. Project memory files (2) are repository content: they are labelled the same way only once trusted, by the approval in §8 (T13.6). An unapproved file is loaded as plain context, which is safe because it is only text the model reads. Rule files (3) and nested memory found mid-session are never labelled; the nested case is a shortcut until the agent can reach the trust store. The system prompt tells the model to follow the rules under each `Instructions from:` heading.
 
 All of them sit in the frozen prefix under the existing budget, trimmed broadest-first with a warning. Block-level HTML comments outside code are stripped.
 
