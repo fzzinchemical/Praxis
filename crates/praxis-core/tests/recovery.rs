@@ -280,10 +280,11 @@ async fn three_failures_in_a_row_stop_the_turn_with_a_notice() {
     )
     .await;
 
-    assert_eq!(run.server.received_requests().await.unwrap().len(), 3);
+    // The third identical call is skipped with a note, so the turn stops one request later.
+    assert_eq!(run.server.received_requests().await.unwrap().len(), 4);
     assert_eq!(run.events.last().unwrap(), "ended:LoopDetected");
     assert!(run.saw("notice:"), "{:?}", run.events);
-    assert_eq!(run.agent.parse_failures(), 3);
+    assert_eq!(run.agent.parse_failures(), 2);
 }
 
 #[tokio::test(flavor = "multi_thread")]

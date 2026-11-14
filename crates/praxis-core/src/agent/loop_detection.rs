@@ -38,6 +38,11 @@ pub(super) struct LoopDetector {
 }
 
 impl LoopDetector {
+    /// A successful `Edit` or `Write` changes what earlier calls would return, so counting starts over.
+    pub(super) fn reset(&mut self) {
+        *self = Self::default();
+    }
+
     /// `silent` says the assistant message holding this call had no text.
     pub(super) fn record(&mut self, call: &ToolCall, silent: bool) -> Option<LoopTrigger> {
         // Parsed so key order and spacing can't hide a repeat; broken JSON compares as text.
@@ -246,5 +251,24 @@ mod tests {
         calls.push(bash("cargo test"));
         calls.extend((9..18).map(grep));
         assert_eq!(first_trigger(&calls, true), None);
+    }
+
+    #[test]
+    fn a_change_to_the_workspace_resets_the_count() {
+        // Edit-test cycles repeat the same test command while the code changes underneath.
+        let mut detector = LoopDetector::default();
+        assert_eq!(detector.record(&bash("cargo test"), false), None);
+        assert_eq!(detector.record(&bash("cargo test"), false), None);
+        detector.reset();
+        assert_eq!(detector.record(&bash("cargo test"), false), None);
+        assert_eq!(detector.record(&bash("cargo test"), false), None);
+    }
+
+    #[test]
+    fn a_reread_after_a_change_is_not_a_repeat() {
+        let mut detector = LoopDetector::default();
+        assert_eq!(detector.record(&read("a.rs", 0), true), None);
+        detector.reset();
+        assert_eq!(detector.record(&read("a.rs", 0), true), None);
     }
 }

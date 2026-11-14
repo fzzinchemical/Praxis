@@ -796,14 +796,51 @@ async fn a_repeated_call_stops_the_turn_with_a_warning_and_a_new_prompt_starts_c
 
     let events = h.turn("go", CancellationToken::new(), never_asked).await;
 
-    assert_eq!(h.server.received_requests().await.unwrap().len(), 3);
+    // The third identical call is skipped with a note, so the model gets one more request.
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 4);
+    assert_eq!(
+        events.iter().filter(|e| e.starts_with("started:")).count(),
+        2
+    );
     assert_eq!(events[events.len() - 2], "notice");
     assert_eq!(events.last().unwrap(), "ended:LoopDetected");
 
-    // The script keeps repeating the call, so three more requests prove the count restarted.
+    // The script keeps repeating the call, so four more requests prove the count restarted.
     let events = h.turn("again", CancellationToken::new(), never_asked).await;
-    assert_eq!(h.server.received_requests().await.unwrap().len(), 6);
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 8);
     assert_eq!(events.last().unwrap(), "ended:LoopDetected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_write_between_repeats_is_progress() {
+    // Each write resets the count, so the two Globs never reach the loop limit.
+    let glob = || tool_reply(&[("g", "Glob", json!({"pattern": "*"}))]);
+    let write = || {
+        tool_reply(&[(
+            "w",
+            "Write",
+            json!({"file_path": "out.txt", "content": "x"}),
+        )])
+    };
+    let script = vec![
+        glob(),
+        glob(),
+        write(),
+        glob(),
+        glob(),
+        write(),
+        glob(),
+        glob(),
+        write(),
+        text_reply("done"),
+    ];
+    let mut h = Harness::in_workspace(new_workspace(), script, 50).await;
+    let events = h
+        .turn("go", CancellationToken::new(), |_| {
+            Some(PermissionReply::AllowOnce)
+        })
+        .await;
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -814,7 +851,7 @@ async fn a_loop_inside_one_reply_skips_the_rest_and_keeps_history_valid() {
 
     let events = h.turn("go", CancellationToken::new(), never_asked).await;
     let started = events.iter().filter(|e| e.starts_with("started:")).count();
-    assert_eq!(started, 3);
+    assert_eq!(started, 2);
     assert_eq!(events.last().unwrap(), "ended:LoopDetected");
 
     h.turn("next", CancellationToken::new(), never_asked).await;

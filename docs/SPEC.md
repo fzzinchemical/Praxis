@@ -303,11 +303,13 @@ Rules:
 
 ### 5.4 Loop detection
 
-Stop with `LoopDetected` when any of these happen:
+When one of these happens, the first detection in a turn does not run the call. Its result says "Not run:" with the reason and asks the model to change approach or finish. The next detection stops the turn with `LoopDetected`.
 
 - The same tool and arguments occur 3 times in a row.
 - The same tool and arguments occur 5 times within the last 20 calls.
 - There are 10 consecutive read-only calls with an empty assistant message and nothing new read. A `Read` with arguments not seen before in the turn (a new file or a new range) counts as new.
+
+A successful `Edit` or `Write` resets all counts, so edit-test cycles and rereads after a change are progress. Changes made by `Bash` do not reset them yet.
 
 ### 5.5 Model profiles
 

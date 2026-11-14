@@ -808,6 +808,7 @@ impl Agent {
         let mut can_constrain = self.config.profile.constrained_retry;
         let mut retry: Option<ToolSchema> = None;
         let mut overflow_retried = false;
+        let mut warned = false;
         loop {
             if self.log_error.is_some() {
                 return StopReason::LogFailed;
@@ -896,16 +897,32 @@ impl Agent {
             }
             let mut stuck = None;
             for call in recovered.calls {
+                let trigger = detector.record(&call, silent);
                 let content = if turn.cancel.is_cancelled() {
                     NOT_RUN_RESULT.to_owned()
                 } else if self.log_error.is_some() {
                     LOG_NOT_RUN_RESULT.to_owned()
                 } else if stuck.is_some() {
                     LOOP_NOT_RUN_RESULT.to_owned()
+                } else if let Some(trigger) = trigger
+                    && warned
+                {
+                    stuck = Some(trigger);
+                    LOOP_NOT_RUN_RESULT.to_owned()
+                } else if let Some(trigger) = trigger {
+                    // The first detection lets the model change course before the turn stops.
+                    warned = true;
+                    format!(
+                        "Not run: {} Try a different approach, or finish with a summary of what is done and what is not.",
+                        trigger.describe()
+                    )
                 } else {
-                    self.run_call(&call, turn).await
+                    let (content, succeeded) = self.run_call(&call, turn).await;
+                    if succeeded && matches!(call.name.as_str(), "Edit" | "Write") {
+                        detector.reset();
+                    }
+                    content
                 };
-                stuck = stuck.or_else(|| detector.record(&call, silent));
                 if can_constrain && self.call_failures.contains_key(&call.name) {
                     retry = self
                         .tool_schemas
@@ -1245,7 +1262,8 @@ impl Agent {
     }
 
     /// Returns the result to show the model.
-    async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> String {
+    /// Returns the result text and whether the tool succeeded.
+    async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> (String, bool) {
         let inner = self.unwrap_call_tool(call);
         let call = inner.as_ref().unwrap_or(call);
         let checked = self.check_call(call);
@@ -1291,6 +1309,7 @@ impl Agent {
             self.queue_nested_memory(&path);
         }
         let content = output.content.clone();
+        let succeeded = !output.is_error;
         // A tool that succeeded despite the cancel keeps its result: the work happened.
         let outcome = if turn.cancel.is_cancelled() && output.is_error {
             ToolOutcome::Cancelled
@@ -1302,8 +1321,10 @@ impl Agent {
             outcome,
         })
         .await;
-        self.budget
-            .fit_result(content, |text| self.tools.spool(text))
+        let result = self
+            .budget
+            .fit_result(content, |text| self.tools.spool(text));
+        (result, succeeded)
     }
 
     /// Runs matching `PreToolUse` hooks in order; the first block wins and each later hook
