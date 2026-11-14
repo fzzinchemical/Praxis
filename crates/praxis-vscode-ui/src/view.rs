@@ -290,6 +290,14 @@ mod tests {
     }
 
     #[test]
+    fn gfm_tables_render_as_html_tables() {
+        let out = markdown("| a | b |\n|---|:-:|\n| 1 | 2 |");
+        assert!(out.contains("<table>"), "{out}");
+        assert!(out.contains("<th>a</th>"), "{out}");
+        assert!(out.contains("<td>1</td>"), "{out}");
+    }
+
+    #[test]
     fn enter_sends_but_shift_enter_and_composition_do_not() {
         assert!(enter_sends("Enter", false, false));
         assert!(!enter_sends("Enter", true, false));

@@ -1,12 +1,12 @@
 //! Untrusted markdown to safe HTML. Also compiled into `praxis-vscode` through `#[path]`.
 
-use pulldown_cmark::{Event, Parser, Tag, TagEnd, html};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd, html};
 
 /// Renders untrusted model markdown to HTML with raw HTML escaped and only safe link schemes kept.
 pub fn markdown(text: &str) -> String {
     // CommonMark links can't nest, so one flag per kind tracks a dropped start tag.
     let (mut in_link, mut in_image) = (false, false);
-    let events = Parser::new(text).filter_map(|event| match event {
+    let events = Parser::new_ext(text, Options::ENABLE_TABLES).filter_map(|event| match event {
         Event::Html(raw) | Event::InlineHtml(raw) => Some(Event::Text(raw)),
         Event::Start(Tag::Link { ref dest_url, .. }) if !safe_url(dest_url) => {
             in_link = true;

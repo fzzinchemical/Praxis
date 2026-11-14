@@ -83,6 +83,22 @@ main {
   padding: 8px 10px;
 }
 
+.message table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+
+.message th,
+.message td {
+  border: 1px solid var(--vscode-panel-border);
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.message th {
+  background: var(--vscode-textCodeBlock-background);
+}
+
 .message code {
   font-family: var(--vscode-editor-font-family);
   font-size: var(--vscode-editor-font-size);
