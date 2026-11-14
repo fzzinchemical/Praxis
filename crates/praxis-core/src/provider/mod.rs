@@ -45,6 +45,9 @@ pub enum ProviderError {
     ToolsUnsupported { message: String },
     #[error("LM Studio reported an error: {message}")]
     Server { message: String },
+    /// A 5xx answer, kept apart from `Server` so it can be retried (T13.2).
+    #[error("LM Studio returned HTTP {status}: {message}")]
+    HttpStatus { status: u16, message: String },
     #[error("LM Studio sent a response this client can't read: {detail}")]
     Malformed { detail: String },
     #[error("The response stopped before the model finished. Check LM Studio and try again.")]
@@ -154,6 +157,12 @@ impl Endpoint {
         let status = response.status();
         let body = response.text().await.map_err(ProviderError::Transport)?;
         Err(match parse_error_body(&body) {
+            ProviderError::Server { message } if status.is_server_error() => {
+                ProviderError::HttpStatus {
+                    status: status.as_u16(),
+                    message,
+                }
+            }
             ProviderError::Server { message } => ProviderError::Server {
                 message: format!("HTTP {status}: {message}"),
             },

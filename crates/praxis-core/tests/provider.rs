@@ -325,7 +325,7 @@ async fn unsupported_tools_is_a_distinct_error() {
 
 #[tokio::test]
 async fn a_non_json_error_response_keeps_its_body() {
-    let error = chat_error(ResponseTemplate::new(500).set_body_string("boom")).await;
+    let error = chat_error(ResponseTemplate::new(400).set_body_string("boom")).await;
     let ProviderError::Server { message } = error else {
         panic!("{error:?}");
     };
@@ -658,4 +658,130 @@ async fn a_missing_model_is_an_error_and_never_loads_even_with_consent() {
         panic!("{error:?}");
     };
     assert!(message.contains("no/such-model"));
+}
+
+/// Bodies of every request the fake server received, in order.
+async fn sent_bodies(server: &MockServer) -> Vec<Vec<u8>> {
+    let requests = server.received_requests().await.unwrap();
+    requests.into_iter().map(|r| r.body).collect()
+}
+
+/// Retries wait on tokio's paused clock, so the backoff costs no real time (T13.2).
+#[tokio::test(start_paused = true)]
+async fn a_server_error_is_retried_three_times_with_the_same_request() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(ResponseTemplate::new(500))
+        .up_to_n_times(3)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(fixture("qwen3.5-4b/no_tool_needed_0.sse")))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let items = collect(&provider, request()).await;
+
+    assert!(items.iter().all(Result::is_ok), "{items:?}");
+    let bodies = sent_bodies(&server).await;
+    assert_eq!(bodies.len(), 4);
+    assert!(bodies.windows(2).all(|pair| pair[0] == pair[1]));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_server_error_that_persists_gives_up_after_three_retries() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(ResponseTemplate::new(503).set_body_string("busy"))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let error = provider
+        .chat(request(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(
+        error,
+        ProviderError::HttpStatus { status: 503, .. }
+    ));
+    assert_eq!(sent_bodies(&server).await.len(), 4);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_dropped_stream_before_any_chunk_is_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(Vec::new()))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(fixture("qwen3.5-4b/no_tool_needed_0.sse")))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let items = collect(&provider, request()).await;
+
+    assert!(items.iter().all(Result::is_ok), "{items:?}");
+    assert_eq!(sent_bodies(&server).await.len(), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_stream_cut_after_a_chunk_is_not_retried() {
+    let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":null}]}\n\n";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(body.to_vec()))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let items = collect(&provider, request()).await;
+
+    assert!(matches!(items.last(), Some(Err(ProviderError::Truncated))));
+    assert_eq!(sent_bodies(&server).await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_client_error_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(error_body(Value::Null, "bad request"))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let error = provider
+        .chat(request(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(error, ProviderError::Server { .. }));
+    assert_eq!(sent_bodies(&server).await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_sse_context_overflow_is_not_retried() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(fixture("qwen2.5-coder-7b-instruct/oversize_1.5.sse")))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let items = collect(&provider, request()).await;
+
+    assert!(matches!(
+        items.as_slice(),
+        [Err(ProviderError::ContextOverflow { .. })]
+    ));
+    assert_eq!(sent_bodies(&server).await.len(), 1);
 }

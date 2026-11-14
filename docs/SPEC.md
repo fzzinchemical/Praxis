@@ -218,6 +218,7 @@ Two backends ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)). L
 - **Remote URLs:** warn when a non-loopback URL uses plain `http://`.
 - **Keys:** `api_key_env` in config names an environment variable. Keys are never stored in config or logged.
 - **Errors:** connection refused, no model loaded (HTTP 400, `code: null`, message `No models loaded`), unknown model (HTTP 400, `code: model_not_found`), context overflow (see §5.2) and unsupported tools each get a distinct `ProviderError` with a message that tells the user what to do.
+- **Retries (T13.2):** a 5xx, a dropped connection or a stream that ends before its first chunk is retried up to 3 times, waiting 1, 2 and 4 seconds, with the same request body so the prompt cache stays warm. Retries stop once output has arrived, so text the user already saw is never repeated. A 4xx and an SSE `event: error` (such as context overflow, §5.2) are never retried.
 
 ### 5.2 LM Studio facts
 

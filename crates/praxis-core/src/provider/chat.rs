@@ -7,6 +7,7 @@ use reqwest::Response;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 #[derive(Debug, Clone)]
@@ -394,29 +395,84 @@ impl ChatClient {
         Self { endpoint }
     }
 
+    /// Retries only while no output has arrived, so a retry never repeats text the user saw.
     pub(super) async fn chat(
         &self,
         req: ChatRequest,
         cancel: CancellationToken,
     ) -> Result<impl Stream<Item = Result<ChatChunk, ProviderError>>, ProviderError> {
+        let body = request_body(&req);
+        let mut backoff = RETRY_BACKOFF.iter();
+        let state = loop {
+            match self.open(&body, &cancel).await {
+                Err(error) if error.is_retryable() => {
+                    let Some(delay) = backoff.next() else {
+                        return Err(error);
+                    };
+                    tokio::select! {
+                        biased;
+                        () = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                        () = tokio::time::sleep(*delay) => {}
+                    }
+                }
+                opened => break opened?,
+            }
+        };
+        Ok(stream::unfold(state, |mut state| async move {
+            state.next().await.map(|item| (item, state))
+        }))
+    }
+
+    /// Sends the request and reads the first item, so a failure before any output is retryable.
+    async fn open(
+        &self,
+        body: &Value,
+        cancel: &CancellationToken,
+    ) -> Result<ChatStream, ProviderError> {
         let url = self.endpoint.url("v1/chat/completions");
-        let request = self.endpoint.http.post(url).json(&request_body(&req));
+        let request = self.endpoint.http.post(url).json(body);
         let response = tokio::select! {
             biased;
             () = cancel.cancelled() => return Err(ProviderError::Cancelled),
             response = self.endpoint.send(request) => response?,
         };
-        let state = ChatStream {
+        let mut state = ChatStream {
             response,
-            cancel,
+            cancel: cancel.clone(),
             decoder: SseDecoder::default(),
             assembler: ChunkAssembler::default(),
             pending: VecDeque::new(),
             ended: false,
         };
-        Ok(stream::unfold(state, |mut state| async move {
-            state.next().await.map(|item| (item, state))
-        }))
+        match state.next().await {
+            Some(Err(error)) if error.is_retryable() => Err(error),
+            first => {
+                // Put the item back for the caller; `next` set `ended` when it popped an error.
+                if let Some(item) = first {
+                    state.pending.push_front(item);
+                }
+                state.ended = false;
+                Ok(state)
+            }
+        }
+    }
+}
+
+/// Waits before each retry of a request that failed before any output (T13.2).
+const RETRY_BACKOFF: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+];
+
+impl ProviderError {
+    /// A dropped connection or a 5xx may succeed on a second try. A 4xx or an SSE error
+    /// (such as context overflow) will not.
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Transport(_) | Self::Truncated | Self::HttpStatus { .. }
+        )
     }
 }
 
