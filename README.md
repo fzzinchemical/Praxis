@@ -7,9 +7,145 @@ Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.
 > [!NOTE]
 > **Beta (`v1.2.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
-**Contents:** [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
+**Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
+
+![coverage](https://img.shields.io/badge/line_coverage-93.7%25-brightgreen) ![tests](https://img.shields.io/badge/tests-560-blue) ![unsafe](https://img.shields.io/badge/unsafe-forbidden-success) ![rust](https://img.shields.io/badge/rust-1.99%2B-orange) ![platform](https://img.shields.io/badge/platform-linux_x86__64-lightgrey)
 
 ---
+
+## What makes it different
+
+Praxis is not another wrapper around a hosted API. Five things set it apart; open each one for how it is built.
+
+<details>
+<summary><b>1. The harness repairs what small models break, in code</b></summary>
+
+Small local models emit tool calls as plain text, send broken JSON, or retry the same failing command forever. Praxis treats each of these as an engineering problem, not a prompting problem:
+
+- **Tool-call recovery** (`agent/recovery.rs`): per-model parsers pull calls out of text, repair the JSON, validate it against the tool schema and retry once with the exact error.
+- **Loop detection** (`agent/loop_detection.rs`): repeated identical calls or failures stop the model and redirect it. This is why Praxis averaged 31 s per eval task on `qwen3.5-4b` where OpenCode needed 144 s.
+- **Per-model profiles** (`agent/profile.rs`): tool format, limits and quirks are data, layered and resolved per model.
+</details>
+
+<details>
+<summary><b>2. Context handling that respects the server's prompt cache</b></summary>
+
+Saving tokens can make an agent *slower*: rewriting old history forces the server to reprocess everything after the change. Praxis keeps the prompt append-only (`context/prefix.rs`), reads the model's *real* loaded context length instead of assuming one, keeps an explicit budget (`context/budget.rs`) and compacts in stages, masking the oldest tool results first (`context/compaction.rs`). Overflow is caught even though LM Studio reports it as HTTP 200 plus an SSE `error` event ([ADR 0002](docs/adr/0002-lmstudio-provider-findings.md)).
+</details>
+
+<details>
+<summary><b>3. Safety is enforced by the program, never requested from the model</b></summary>
+
+Model output, file contents and tool or MCP results are all treated as untrusted.
+
+```mermaid
+flowchart LR
+    M[Model tool call] --> P{Permission policy<br/>mode + allow/deny rules}
+    P -->|denied| X[Refused, reason sent back]
+    P -->|allowed| C{Workspace confinement<br/>symlink-safe path check}
+    C -->|outside| X
+    C -->|inside| S[Landlock sandbox<br/>no network, read-only system]
+    S --> T[Tool runs]
+    H[Hard denials: secrets, .env] -.-> P
+    TR[Trust gate for project config] -.-> P
+```
+
+- `Bash` runs in a Landlock sandbox. The binary re-executes itself as the sandbox helper (`sandbox-exec`) before tokio starts, and refuses to run unsandboxed when Landlock is missing.
+- A project's `.praxis/config.toml` has no effect until you trust the workspace, and it can never raise the permission mode.
+- MCP tool definitions are pinned; a changed definition needs your approval before the model sees it.
+- `#![forbid(unsafe_code)]` in core and CLI; `unwrap` and `expect` are lint errors outside tests.
+</details>
+
+<details>
+<summary><b>4. Rust end to end, including the VS Code extension</b></summary>
+
+The extension and its webview are Rust compiled to WebAssembly with `wasm-bindgen`: no npm, no bundler, no handwritten TypeScript ([ADR 0001](docs/adr/0001-rust-only-with-minimal-vscode-glue.md)). The extension talks to the CLI over the [Agent Client Protocol](https://agentclientprotocol.com), so the same `praxis acp` serves VS Code, Zed and any other ACP client.
+
+```mermaid
+flowchart LR
+    subgraph Editor
+        UI[praxis-vscode-ui<br/>webview, wasm] <--> EXT[praxis-vscode<br/>extension host, wasm]
+    end
+    EXT <-->|ACP over stdio| CLI[praxis-cli]
+    Zed[Zed or other ACP client] <-->|ACP| CLI
+    CLI --> CORE[praxis-core<br/>agent loop, tools, context,<br/>permissions, MCP, plugins]
+    CORE <-->|OpenAI-compatible SSE| LMS[LM Studio]
+    CORE <-->|stdio or HTTP| MCP[MCP servers]
+```
+</details>
+
+<details>
+<summary><b>5. Drop-in compatibility with Claude Code projects</b></summary>
+
+Existing `.claude/` setups work unchanged: plugins (`plugin.json`, skills, commands, agents, hooks, MCP), standalone skills and agents, `CLAUDE.md` and `AGENTS.md` memory with imports and nested files, path-scoped rules and Claude Code settings. Built-in tool and parameter names (`Bash`, `Edit`, `file_path`, ...) match Claude Code so plugin hooks keep working ([ADR 0007](docs/adr/0007-markdown-sources-like-claude-code.md), [docs/compat.md](docs/compat.md)).
+</details>
+
+## Proof: tests, coverage and evals
+
+Every number below comes from a command in this repo. Measured on 2026-11-14 at commit `30909cc`; rerun `./scripts/coverage` to check them yourself.
+
+```mermaid
+xychart-beta
+    title "Line coverage by module (%)"
+    x-axis ["permissions", "provider", "agent", "context", "tools", "core (rest)", "cli", "xtask"]
+    y-axis "lines covered" 0 --> 100
+    bar [98.7, 98.4, 97.4, 96.8, 94.8, 93.5, 93.8, 73.4]
+```
+
+<details>
+<summary><b>Coverage floors: the gate every commit must pass</b></summary>
+
+`scripts/verify` runs all tests under `cargo llvm-cov` and fails when any floor in [`scripts/coverage-floors`](scripts/coverage-floors) is missed. Floors may only rise. Test files and eval fixtures never count.
+
+| Scope | Measured | Floor | |
+|---|---:|---:|---|
+| Workspace (all product code) | 93.7 % | 93.6 % | ✅ |
+| `praxis-core` | 95.9 % | 95.8 % | ✅ |
+| `praxis-cli` | 93.8 % | 93.8 % | ✅ |
+| `xtask` (eval runner, packaging) | 73.4 % | 73.3 % | ✅ |
+
+Whole workspace: 11 231 of 11 991 lines, 91.6 % of functions, 91.8 % of regions.
+</details>
+
+<details>
+<summary><b>Coverage per module</b></summary>
+
+| Module | Lines covered | Coverage |
+|---|---:|---:|
+| `praxis-core/permissions` | 542 / 549 | 98.7 % |
+| `praxis-core/provider` | 537 / 546 | 98.4 % |
+| `praxis-core/agent` | 1 949 / 2 001 | 97.4 % |
+| `praxis-core/context` | 939 / 970 | 96.8 % |
+| `praxis-core/tools` | 1 354 / 1 428 | 94.8 % |
+| `praxis-core` (config, MCP, plugins, sessions, trust, ...) | 2 167 / 2 318 | 93.5 % |
+| `praxis-cli` | 3 107 / 3 312 | 93.8 % |
+| `xtask` | 636 / 867 | 73.4 % |
+
+**Why some files read low:** `sandbox.rs` (66.9 %) and parts of `tools/bash.rs` run inside the Landlock-sandboxed child, which cannot write its coverage profile, so that code is tested but not counted. `xtask` mostly drives real model runs, which unit tests deliberately avoid.
+</details>
+
+<details>
+<summary><b>How the test suite works</b></summary>
+
+- **560 tests**, about 9 700 lines of test code next to 21 900 lines of product code.
+- **No real model is ever needed.** Tests run the agent against a fake OpenAI-compatible server and recorded LM Studio fixtures, so they are fast and deterministic.
+- **Acceptance tests per user story:** REPL commands (US-61), session management (US-62) and stop reasons (US-63) in `crates/praxis-cli/tests/`, MCP failures (US-64) in `crates/praxis-core/tests/`.
+- **Real sandbox tests:** `tests/sandbox.rs` proves the sandbox blocks network and writes outside the workspace.
+- **One gate:** `./scripts/verify` (format, clippy with `-D warnings`, tests, coverage floors, wasm builds) runs on every commit through `.githooks/pre-commit`.
+</details>
+
+<details>
+<summary><b>Model evals: does it actually solve tasks?</b></summary>
+
+`evals/` holds 13 small repositories with real tasks: seeded bugs, renames, signature changes, adding a test or a CLI flag, `AGENTS.md` conventions, large files and logs, and two **prompt-injection traps** (a hostile code comment, hostile test data). Each has a hidden `check.sh`; an obeyed injection fails the task first. `cargo xtask eval --model <id>` runs them in a sandbox; `./scripts/prove-evals` proves every check: it fails on the untouched fixture, on tampered tests and on known bad patches, and passes on the reference solution.
+
+| Model | Praxis passed | OpenCode passed | Praxis mean wall | OpenCode mean wall |
+|---|---|---|---|---|
+| `qwen3.5-4b` | 6/13 | 8/13 | **30.6 s** | 143.5 s |
+| `google/gemma-4-12b-qat` | 10/13 | 10/13 | 149.4 s | 90.9 s |
+
+No run of either tool obeyed an injection. One run per task, so a gap of one or two tasks is noise. Method, per-task results and caveats: [docs/baseline.md](docs/baseline.md).
+</details>
 
 ## Why local models first
 
@@ -30,7 +166,7 @@ Most coding agents are built for large hosted models and treat local models as a
 | Large, noisy tool output | Output filters and masking of old tool results |
 | Quality varies widely by model | Per-model profiles plus an eval suite (`evals/`) that measures each model |
 
-On the project's eval suite, with `qwen3.5-4b`, Praxis averaged about 31 s per task against 144 s for OpenCode on the same model, mostly because loop detection stops runaway retries. Pass rates were 6/13 for Praxis and 8/13 for OpenCode. With `google/gemma-4-12b-qat` both passed 10/13. The method and per-task results are in [docs/baseline.md](docs/baseline.md).
+Eval results against OpenCode are under [Proof](#proof-tests-coverage-and-evals).
 
 Hosted models still help with tasks local models can't do yet. Support for the Anthropic API as an **opt-in** backend is designed ([ADR 0004](docs/adr/0004-anthropic-backend-and-per-agent-models.md)): it must be enabled in your user config, a project can never turn it on, and each agent can use its own model. Its configuration and safety checks exist, but the Anthropic chat client is **not in Beta 1** yet.
 
