@@ -639,3 +639,9 @@ failed restore keeps the failed files for a retry; mid-turn memory is marked and
 numbers and replay; rewind is off after a summary and for resumed turns; diagnostics run inside
 `spawn_blocking`, so `block_on` is safe; revert and rewind refuse while a turn runs and go through
 `resolve` and `check_writable`.
+
+# Round 7: beta 1.3.0 re-check (2026-11-14)
+
+Reviewed the round 6 fix (`can_send`) against every way a turn ends: a stop reason or a prompt
+error both arrive as `done` and return the panel to idle, and a dead `praxis acp` clears `ready`.
+So the gate can't leave the panel unable to send. No new findings; the beta 1.3.0 loop ends here.
