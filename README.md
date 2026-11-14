@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.2.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.3.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -277,28 +277,29 @@ The full reference is [docs/SPEC.md §8](docs/SPEC.md#8-config-trust-and-session
 Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS.md)). Not yet done:
 
 - Anthropic chat backend (M8): configuration only.
-- Webview chat polish, change-set review and Zed packaging (M5).
+- Webview chat polish and Zed packaging (M5).
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
-### New in 1.2.0-beta
+### New in 1.3.0-beta
 
-From the [Beta 1 feedback](docs/TASKS.md#m10-beta-1-feedback):
+From [community requests](docs/TASKS.md#m11-beta-130-community-requests) in other coding agents' issue trackers:
 
-- Reopened chats show the agent's replies and tool calls, not just your messages.
-- Models load without asking (`agent.auto_load = false` to be asked first).
-- A turn stopped by its request limit says which setting raises it.
-- Chats can be deleted and moved into folders from the Sessions view.
-- Type `/` in the chat to pick a plugin or skill command.
-- Clicking a plugin in the sidebar opens its README, commands, skills and agents.
-- `praxis.permissions.mode` in VS Code (user settings only) and a `full-access` mode that runs `Bash` and MCP tools without asking, still under the hard denials.
-- Each subagent shows as a collapsible block with its tool calls, context use and changed files, and can be stopped on its own.
+- Ctrl+F searches the chat panel.
+- A turn that ends while VS Code is in the background shows a notification; its button brings the chat back.
+- In VS Code, a `Write` or `Edit` result ends with the editor's errors for that file, so the model sees its compile errors without another tool call.
+- `/rewind` in the terminal and "Rewind to here" on a message in VS Code restore the files and cut the chat back to before that turn. `Bash` effects are not undone.
+- Change-set review in VS Code: an overview of the turn's changed files, navigation by file and chunk, descriptive risk labels (never a safety verdict) and a revert per file. Rewind and revert ask before overwriting files.
+- `cargo xtask eval --agents-md on` and `scripts/eval-opencode` for a fair comparison with OpenCode; the results follow in a later update.
 
 ### Known issues
 
 - A reopened chat shows every tool result as completed, even failed ones.
 - Two VS Code windows moving chats into folders at the same moment can lose one move.
+- Every `Write` or `Edit` in VS Code waits up to 2 s for diagnostics.
+- A rewind that fails part-way can leave some files already restored. After the first context summary in a session, rewind is no longer offered.
+- A file revert is not written to the session log, so a reopened chat still shows the change.
 
 ## Development
 
@@ -314,7 +315,7 @@ All product code is Rust ([ADR 0001](docs/adr/0001-rust-only-with-minimal-vscode
 
 ### Releases
 
-Releases are built locally; there is no CI. `./scripts/release` checks that the tree is clean, `HEAD` is on `main` and the tag matches the crate version, runs `./scripts/verify`, and builds the Linux binary, the `.vsix` and `SHA256SUMS` into `target/dist`. With `--publish` it also tags, pushes the tag and creates the GitHub release with `gh`. A tag with a suffix (`v1.2.0-beta`) becomes a pre-release.
+Releases are built locally; there is no CI. `./scripts/release` checks that the tree is clean, `HEAD` is on `main` and the tag matches the crate version, runs `./scripts/verify`, and builds the Linux binary, the `.vsix` and `SHA256SUMS` into `target/dist`. With `--publish` it also tags, pushes the tag and creates the GitHub release with `gh`. A tag with a suffix (`v1.3.0-beta`) becomes a pre-release.
 
 ```sh
 ./scripts/release v1.2.0             # build only

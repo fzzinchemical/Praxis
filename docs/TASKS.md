@@ -1034,10 +1034,12 @@ flowchart LR
   - **Needs:** T2.10, T2.11.
   - **Why:** the local-model community disagrees on whether a harness can make small models reliable; Praxis can answer with numbers.
   - **Done when:** the fair rerun is done (3 runs per task, AGENTS.md on for both Praxis and OpenCode, one model at a time); the boards are committed; T2.10 and T2.11 are ticked or reverted according to their result; the README reports success rate and wall time against OpenCode, including the tasks Praxis loses.
+  - **Status:** running since 2026-11-14 with `--agents-md on` and `scripts/eval-opencode`; the README gets the numbers when the boards are committed.
 
-- [ ] **T11.8 Release 1.3.0-beta** `HUMAN` approves
+- [x] **T11.8 Release 1.3.0-beta** `HUMAN` approves
   - **Needs:** T11.1, T11.2, T11.3, T11.5, T11.7, T5.8. Cut *Could* tasks that aren't done instead of waiting for them.
   - **Done when:** `./scripts/release v1.3.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
+  - **Status:** released 2026-11-14 on the owner's go-ahead, before T11.7's results; they are added in a follow-up commit.
 
 ## M12: Coverage gate and acceptance tests
 
