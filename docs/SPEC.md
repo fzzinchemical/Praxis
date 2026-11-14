@@ -339,6 +339,8 @@ constrained_retry = true      # on once LM Studio reports the model
 
 A model reporting no tool support gets a warning, then text-embedded calling with the format described in the system prompt. Text formats (`hermes-text`, `fenced-json`) send no `tools` array; the system prompt lists the tools instead. A built-in text format is kept, and a user `tool_format` overrides everything and silences the warning.
 
+**Runaway stop (T13.10).** While a reply streams, reasoning and content deltas feed a detector over the last ~400 words (whitespace-split). If the last words repeat one unit of 1 to 50 words 8 times in a row, the stream is closed and the reply is handled as a `finish_reason=length` stop, so the continuation of T13.3 applies and its limit still counts. Only the stream's own text is checked, and a complete tool call already received is still run.
+
 ### 5.6 Anthropic facts
 
 Opt-in backend from [ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md). Raw HTTP over `reqwest`; there is no official Rust SDK and no new crate. Facts are from Anthropic's docs as of 2026-11-03 and stay `UNVERIFIED` until T8.1 records fixtures.

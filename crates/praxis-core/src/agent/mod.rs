@@ -2,8 +2,10 @@
 
 mod compact;
 mod loop_detection;
+mod runaway;
 
 use self::loop_detection::LoopDetector;
+use self::runaway::RunawayDetector;
 pub mod profile;
 pub mod recovery;
 
@@ -1263,6 +1265,7 @@ impl Agent {
             ..Reply::default()
         };
         let mut splitter = ThinkSplitter::default();
+        let mut runaway = RunawayDetector::default();
         // Before sending: the server may hold its headers until the prompt is processed.
         let started = Instant::now();
         let stream = match self.provider.chat(request, turn.cancel.clone()).await {
@@ -1279,6 +1282,14 @@ impl Agent {
                 // LM Studio reports no cached tokens, so this is the cache signal (ADR 0002).
                 tracing::info!(ms, "time to first token");
                 reply.first_token_ms = Some(ms);
+            }
+            if let Ok(ChatChunk::Text(delta) | ChatChunk::Thinking(delta)) = &chunk
+                && runaway.push(delta)
+            {
+                // Stop reading, so the server doesn't generate up to the limit. The reply is
+                // then handled as a `length` stop (T13.3, T13.10).
+                reply.finish = Some(FinishReason::Length);
+                break;
             }
             match chunk {
                 Ok(ChatChunk::Text(delta)) => {

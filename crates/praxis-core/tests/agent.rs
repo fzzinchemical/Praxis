@@ -674,6 +674,22 @@ async fn a_command_after_the_last_change_means_no_nudge() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_reply_repeating_one_phrase_is_cut_off_and_continued_like_a_length_stop() {
+    let runaway = sse(&[
+        json!({"choices": [{"delta": {"content": "I will check it again. ".repeat(12)}, "finish_reason": null}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "stop"}]}),
+    ]);
+    let mut h = Harness::new(vec![runaway, text_reply("ok")], 50).await;
+
+    let events = h.turn("go", CancellationToken::new(), never_asked).await;
+
+    assert_eq!(h.server.received_requests().await.unwrap().len(), 2);
+    assert_eq!(events.last().unwrap(), "ended:EndTurn");
+    let note = h.request_messages(1).await.last().unwrap()["content"].clone();
+    assert!(note.as_str().unwrap().contains("cut off"), "{note}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn max_tokens_is_the_remaining_context_not_the_output_reserve() {
     let mut h = Harness::new(vec![text_reply("ok")], 50).await;
 
