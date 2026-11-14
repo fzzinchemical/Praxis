@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Runs OpenCode on the eval tasks against LM Studio, for the comparison in docs/baseline.md.
+# Usage: scripts/eval-opencode <model> [runs] [out.jsonl]; set ONLY=<task> to run one task.
+# Needs `opencode`, `bwrap` and LM Studio on 127.0.0.1:1234. One model at a time: it loads and
+# unloads models, so never run it next to `cargo xtask eval`.
+set -euo pipefail
+
+model=${1:?usage: scripts/eval-opencode <model> [runs] [out.jsonl]}
+runs=${2:-3}
+root=$(cd "$(dirname "$0")/.." && pwd)
+out=${3:-$root/evals/results/opencode.${model//\//_}.jsonl}
+lms=${LMS:-$HOME/.lmstudio/bin/lms}
+scratch=$(mktemp -d)
+trap 'rm -rf "$scratch"' EXIT
+
+# Throwaway HOME with only an LM Studio provider. Kept across tasks so OpenCode's provider package
+# is fetched once; it reads no global AGENTS.md, only the task repo's own.
+home=$scratch/home
+mkdir -p "$home/.config/opencode"
+cat >"$home/.config/opencode/opencode.json" <<EOF
+{
+  "\$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "provider": {
+    "lmstudio": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "LM Studio",
+      "options": { "baseURL": "http://127.0.0.1:1234/v1" },
+      "models": { "$model": { "name": "$model" } }
+    }
+  }
+}
+EOF
+
+toml() { sed -n "s/^$2 = //p" "$1" | head -n1; }
+
+: >"$out"
+loaded=""
+for task_dir in "$root"/evals/*/; do
+    task_dir=${task_dir%/}
+    [[ -f $task_dir/task.toml ]] || continue
+    task=$(basename "$task_dir")
+    [[ -z ${ONLY:-} || $task == "$ONLY" ]] || continue
+    context=$(toml "$task_dir/task.toml" context_length)
+    context=${context:-32768}
+    wall=$(toml "$task_dir/task.toml" wall_time_secs)
+    wall=${wall:-900}
+    prompt=$(python3 -I -c 'import sys,tomllib;print(tomllib.load(open(sys.argv[1],"rb"))["prompt"])' "$task_dir/task.toml")
+    if [[ $loaded != "$context" ]]; then
+        "$lms" unload --all >/dev/null 2>&1 || true
+        "$lms" load "$model" -c "$context" --identifier "$model" -y >/dev/null 2>&1
+        loaded=$context
+    fi
+    for run in $(seq 1 "$runs"); do
+        work=$scratch/work/$task-$run
+        mkdir -p "$work"
+        cp -a "$task_dir/repo/." "$work/"
+        start=$(date +%s.%N)
+        status=0
+        # Network stays shared so OpenCode can reach LM Studio; only the work copy and HOME are writable.
+        timeout --kill-after=30 "$wall" env -i PATH=/usr/bin:/bin HOME="$home" TERM=dumb \
+            bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+            --bind "$home" "$home" --bind "$work" "$work" --chdir "$work" \
+            --die-with-parent --new-session \
+            opencode run --auto --archived --format json -m "lmstudio/$model" "$prompt" \
+            >"$scratch/log" 2>&1 </dev/null || status=$?
+        wall_secs=$(python3 -I -c 'import sys,time;print(round(time.time()-float(sys.argv[1]),1))' "$start")
+        tool_lines=$(grep -c '"tool' "$scratch/log" || true)
+        check_status=0
+        check=$(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp --unshare-net --die-with-parent \
+            --ro-bind "$work" "$work" \
+            "$task_dir/check.sh" "$work" 2>&1) || check_status=$?
+        python3 -I -c 'import json,sys
+t,r,w,e,c,n,s,m=sys.argv[1:9]
+print(json.dumps({"task":t,"run":int(r),"success":s=="0","wall_secs":float(w),"exit":int(e),"context":int(c),"tool_lines":int(n),"check_message":m.strip().splitlines()[-1] if m.strip() else ""}))' \
+            "$task" "$run" "$wall_secs" "$status" "$context" "$tool_lines" "$check_status" "$check" >>"$out"
+        tail -n1 "$out"
+    done
+done
+"$lms" unload --all >/dev/null 2>&1 || true

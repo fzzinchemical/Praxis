@@ -50,6 +50,9 @@ struct Options {
     mask_keep_turns: Option<u32>,
     /// Bash output filters (T2.11), on by default like the CLI.
     filter_output: bool,
+    /// Loads the task repo's AGENTS.md and rules like the CLI. Off by default so older boards stay
+    /// comparable; the fair OpenCode comparison (T11.7) turns it on.
+    agents_md: bool,
     /// A private copy of this binary for the sandboxes, so a rebuild mid-run can't remove it.
     agent_exe: PathBuf,
 }
@@ -72,6 +75,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         out: None,
         mask_keep_turns: Some(DEFAULT_MASK_KEEP_TURNS),
         filter_output: true,
+        agents_md: false,
         agent_exe: PathBuf::new(),
     };
     let mut args = args.iter();
@@ -99,12 +103,19 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
                     _ => bail!("--filter-output needs on or off"),
                 }
             }
+            "--agents-md" => {
+                options.agents_md = match value.as_str() {
+                    "on" => true,
+                    "off" => false,
+                    _ => bail!("--agents-md needs on or off"),
+                }
+            }
             other => bail!("unknown flag {other}"),
         }
     }
     ensure!(
         !options.model.is_empty() && options.runs > 0,
-        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off]"
+        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off] [--filter-output on|off] [--agents-md on|off]"
     );
     Ok(options)
 }
@@ -311,8 +322,22 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             model: instance,
             context_size: u32::try_from(number("context")?)?,
             system_prompt: system_prompt(Path::new(WORK)),
-            memory: Vec::new(),
-            scoped_rules: Vec::new(),
+            // No user-level dirs: only the task repo's own AGENTS.md and rules, as OpenCode sees them.
+            memory: if spec["agents_md"] == true {
+                praxis_core::context::prefix::load_memory(
+                    Path::new(WORK),
+                    Path::new(WORK),
+                    None,
+                    None,
+                )
+            } else {
+                Vec::new()
+            },
+            scoped_rules: if spec["agents_md"] == true {
+                praxis_core::context::prefix::load_scoped_rules(Path::new(WORK), None, None)
+            } else {
+                Vec::new()
+            },
             mask_keep_turns: keep_turns.unwrap_or(DEFAULT_MASK_KEEP_TURNS),
             masking: keep_turns.is_some(),
             max_turn_requests: u32::try_from(number("max_turns")?)?,
@@ -437,6 +462,7 @@ async fn try_run_agent(
         "wall_secs": task.wall_secs,
         "mask_keep_turns": options.mask_keep_turns,
         "filter_output": options.filter_output,
+        "agents_md": options.agents_md,
     });
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
@@ -687,6 +713,7 @@ async fn run_all(
             board["mask_keep_turns"] =
                 json!(options.mask_keep_turns.map_or(json!("off"), |n| json!(n)));
             board["filter_output"] = json!(options.filter_output);
+            board["agents_md"] = json!(options.agents_md);
             fs::write(out, serde_json::to_string_pretty(&board)? + "\n")?;
         }
     }
@@ -875,5 +902,21 @@ mod tests {
         assert!(parse(&["--filter-output", "on"]).unwrap());
         assert!(!parse(&["--filter-output", "off"]).unwrap());
         assert!(parse(&["--filter-output", "yes"]).is_err());
+    }
+
+    #[test]
+    fn agents_md_defaults_off_and_takes_on_or_off() {
+        let parse = |extra: &[&str]| {
+            let args: Vec<String> = ["--model", "m"]
+                .iter()
+                .chain(extra)
+                .map(|s| (*s).to_owned())
+                .collect();
+            parse_options(&args, Path::new("/")).map(|o| o.agents_md)
+        };
+        assert!(!parse(&[]).unwrap());
+        assert!(parse(&["--agents-md", "on"]).unwrap());
+        assert!(!parse(&["--agents-md", "off"]).unwrap());
+        assert!(parse(&["--agents-md", "yes"]).is_err());
     }
 }
