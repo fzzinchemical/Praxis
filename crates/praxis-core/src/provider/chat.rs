@@ -180,6 +180,15 @@ fn request_body(req: &ChatRequest) -> Value {
     body
 }
 
+/// LM Studio's chat template needs a JSON object here; any other text in history gets HTTP 500
+/// for every later request. Done at serialization, so resumed sessions are covered too.
+fn wire_arguments(arguments: &str) -> &str {
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(value) if value.is_object() => arguments,
+        _ => "{}",
+    }
+}
+
 fn message_json(message: &Message) -> Value {
     match message {
         Message::System { content } => json!({"role": "system", "content": content}),
@@ -198,7 +207,7 @@ fn message_json(message: &Message) -> Value {
                     .iter()
                     .map(|c| {
                         json!({"id": c.id, "type": "function", "function": {
-                            "name": c.name, "arguments": c.arguments,
+                            "name": c.name, "arguments": wire_arguments(&c.arguments),
                         }})
                     })
                     .collect();

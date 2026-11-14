@@ -422,6 +422,52 @@ async fn a_tool_call_without_a_name_is_a_malformed_error() {
 }
 
 #[tokio::test]
+async fn sends_non_object_tool_arguments_as_an_empty_object() {
+    // A call cut off or mangled in history made LM Studio answer every later request with HTTP 500.
+    let server = MockServer::start().await;
+    let expected = json!({
+        "messages": [
+            {"role": "user", "content": "u"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "1", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+                {"id": "2", "type": "function", "function": {"name": "Read", "arguments": "{}"}},
+                {"id": "3", "type": "function", "function": {"name": "Read", "arguments": "{\"a\": 1}"}},
+            ]},
+        ],
+    });
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .and(body_partial_json(expected))
+        .respond_with(sse(fixture("qwen3.5-4b/no_tool_needed_0.sse")))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let call = |id: &str, arguments: &str| ToolCall {
+        id: id.into(),
+        name: "Read".into(),
+        arguments: arguments.into(),
+    };
+    let req = ChatRequest {
+        messages: vec![
+            Message::User {
+                content: "u".into(),
+            },
+            Message::Assistant {
+                content: None,
+                tool_calls: vec![
+                    call("1", "{}"),
+                    call("2", "{\"file_path\": \"a.rs\""),
+                    call("3", "{\"a\": 1}"),
+                ],
+            },
+        ],
+        ..request()
+    };
+    assert!(collect(&provider, req).await.iter().all(Result::is_ok));
+}
+
+#[tokio::test]
 async fn lists_models_from_the_native_api() {
     let server = MockServer::start().await;
     // The recording kept only the selected model, unwrapped; the route returns `{"models": [...]}`.
