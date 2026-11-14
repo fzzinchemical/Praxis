@@ -302,6 +302,36 @@ async fn keeps_a_small_agents_md_whole_without_a_warning() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn user_agents_md_is_labelled_as_instructions_and_repo_agents_md_is_not() {
+    let workspace = new_workspace();
+    let home = new_workspace();
+    fs::write(home.join("AGENTS.md"), "USER-RULES").unwrap();
+    fs::write(workspace.join("AGENTS.md"), "REPO-RULES").unwrap();
+    assert!(
+        praxis_core::agent::system_prompt(&workspace).contains("\"Instructions from:\" heading")
+    );
+    let mut cfg = config(100_000);
+    cfg.memory =
+        praxis_core::context::prefix::load_memory(&workspace, &workspace, None, Some(&home));
+    let mut h = Harness::in_workspace(workspace, vec![text_reply("ok", 3000)], cfg).await;
+    h.turn("hi").await;
+    let system = h.bodies().await[0]["messages"][0]["content"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let label = format!("Instructions from: {}", home.join("AGENTS.md").display());
+    assert!(
+        system.contains(&format!("{label}\n\nUSER-RULES")),
+        "{system}"
+    );
+    assert!(system.contains("REPO-RULES"));
+    assert!(!system.contains(&format!(
+        "Instructions from: {}",
+        h.workspace.join("AGENTS.md").display()
+    )));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn warns_when_the_server_reports_a_far_smaller_prompt_than_estimated() {
     let mut h = Harness::new(vec![text_reply("ok", 5)], config(100_000)).await;
     let events = h.turn("hi").await;

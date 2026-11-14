@@ -70,8 +70,8 @@ pub fn load_memory(
     praxis_dir: Option<&Path>,
 ) -> Vec<String> {
     let mut memory: Vec<String> = Vec::new();
-    memory.extend(claude_dir.and_then(|dir| read_text(dir, &dir.join("CLAUDE.md"))));
-    memory.extend(praxis_dir.and_then(|dir| read_text(dir, &dir.join("AGENTS.md"))));
+    memory.extend(claude_dir.and_then(|dir| user_instructions(dir, "CLAUDE.md")));
+    memory.extend(praxis_dir.and_then(|dir| user_instructions(dir, "AGENTS.md")));
     memory.extend(project_memory(root, cwd));
     for (base, dir) in rule_dirs(root, claude_dir, praxis_dir) {
         memory.extend(
@@ -81,6 +81,14 @@ pub fn load_memory(
         );
     }
     memory
+}
+
+/// A user's own file, labelled as instructions. Project files are untrusted repository content
+/// (SPEC §12, ADR 0007), so they never get this label.
+fn user_instructions(dir: &Path, name: &str) -> Option<String> {
+    let path = dir.join(name);
+    let text = read_text(dir, &path)?;
+    Some(format!("Instructions from: {}\n\n{text}", path.display()))
 }
 
 /// The path-scoped rules, kept out of the prefix. Each is appended the first time a file it
@@ -501,9 +509,23 @@ mod tests {
         write(&root.join("AGENTS.md"), "root-agents");
         write(&root.join("sub/.claude/CLAUDE.md"), "sub");
         let memory = load_memory(&root, &root.join("sub"), Some(&claude), Some(&praxis));
+        let claude_label = format!(
+            "Instructions from: {}\n\nuser-claude",
+            claude.join("CLAUDE.md").display()
+        );
+        let agents_label = format!(
+            "Instructions from: {}\n\nuser-agents",
+            praxis.join("AGENTS.md").display()
+        );
         assert_eq!(
             memory,
-            ["user-claude", "user-agents", "root", "root-local", "sub"]
+            [
+                claude_label,
+                agents_label,
+                "root".into(),
+                "root-local".into(),
+                "sub".into()
+            ]
         );
         fs::remove_dir_all(base).unwrap();
     }
@@ -650,9 +672,12 @@ mod tests {
         assert_eq!(
             memory,
             [
-                "user @../../secret.md USER-SECRET",
-                "project @../secret.md",
-                "local @link.md",
+                format!(
+                    "Instructions from: {}\n\nuser @../../secret.md USER-SECRET",
+                    claude.join("CLAUDE.md").display()
+                ),
+                "project @../secret.md".to_owned(),
+                "local @link.md".to_owned(),
             ]
         );
         fs::remove_dir_all(base).unwrap();

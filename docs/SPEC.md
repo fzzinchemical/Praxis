@@ -964,6 +964,8 @@ Decided in [ADR 0007](adr/0007-markdown-sources-like-claude-code.md). Project ma
 2. Each directory from the workspace root down to cwd: `CLAUDE.md` or `.claude/CLAUDE.md`, then `CLAUDE.local.md`. `AGENTS.md` is read only if no `CLAUDE.md` exists in the workspace (Claude Code's default). Never above the workspace root.
 3. Rules without a `paths` field: `~/.claude/rules/**/*.md`, `~/.config/praxis/rules/**/*.md`, then `.claude/rules/**/*.md` and `.praxis/rules/**/*.md`.
 
+User files (1) are the user's own, so each is prefixed with `Instructions from: <path>` and a blank line. Project and rule files (2, 3) are repository content: they keep no label and are only context. The system prompt tells the model to follow the rules under each `Instructions from:` heading. Labelling a project `AGENTS.md` would make untrusted repository text look like instructions (§10.7), so it needs a human decision first.
+
 All of them sit in the frozen prefix under the existing budget, trimmed broadest-first with a warning. Block-level HTML comments outside code are stripped.
 
 **Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/praxis/`; otherwise it's skipped with a warning.
