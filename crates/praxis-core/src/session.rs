@@ -340,6 +340,15 @@ fn path(dir: &Path, id: &str) -> io::Result<PathBuf> {
 /// Holds an exclusive lock on the log for as long as its `File` lives, so two processes can't
 /// append to one session or race for the same checkpoint number.
 fn lock(file: &File, id: &str) -> io::Result<()> {
+    // A child forked by this process holds a copy of the descriptor until it execs, so a lock
+    // that was just released can look taken for a moment. Retry briefly before blaming a window.
+    for _ in 0..LOCK_RETRIES {
+        match file.try_lock() {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) => std::thread::sleep(LOCK_RETRY_WAIT),
+            Err(TryLockError::Error(e)) => return Err(e),
+        }
+    }
     file.try_lock().map_err(|e| match e {
         TryLockError::WouldBlock => io::Error::new(
             io::ErrorKind::WouldBlock,
@@ -348,6 +357,9 @@ fn lock(file: &File, id: &str) -> io::Result<()> {
         TryLockError::Error(e) => e,
     })
 }
+
+const LOCK_RETRIES: u32 = 20;
+const LOCK_RETRY_WAIT: std::time::Duration = std::time::Duration::from_millis(10);
 
 fn open(dir: &Path, id: &str, new: bool) -> io::Result<File> {
     let path = path(dir, id)?;
