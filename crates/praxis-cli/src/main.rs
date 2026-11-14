@@ -354,7 +354,10 @@ fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
         for warning in warnings.iter().chain(&plugin.warnings) {
             eprintln!("Plugin `{name}`: {}", sanitize(warning));
         }
-        out.skills.extend(plugin.skills());
+        // A plugin skill is also a `/<plugin>:<name>` command, as a standalone skill is.
+        let skills = plugin.skills();
+        out.commands.extend(skills.iter().cloned());
+        out.skills.extend(skills);
         out.commands.extend(plugin.commands());
         out.agents.extend(plugin.agents(config));
         out.hooks

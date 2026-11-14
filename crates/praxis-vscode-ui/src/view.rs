@@ -25,16 +25,29 @@ pub struct Command {
     pub source: String,
 }
 
-/// Commands whose name contains what follows a leading `/`, grouped by source in first-seen
-/// order. Empty once the prompt has a space: the command is typed and the rest is its argument.
+/// The word being typed at the end of the prompt: the text after its last whitespace, empty when
+/// the prompt ends in a space.
+pub fn current_word(prompt: &str) -> &str {
+    prompt
+        .rsplit(char::is_whitespace)
+        .next()
+        .unwrap_or_default()
+}
+
+/// The prompt with its current word replaced by `/name `, so only that word changes.
+pub fn with_command(prompt: &str, name: &str) -> String {
+    let start = prompt.len() - current_word(prompt).len();
+    format!("{}/{name} ", &prompt[..start])
+}
+
+/// Commands whose name contains what follows a `/` starting the word being typed, grouped by
+/// source in first-seen order. Empty when that word does not start with `/`, so a slash in the
+/// middle of a sentence still suggests, but a finished command's arguments do not.
 // shortcut: substring match, not ranked; upgrade if long plugin lists make the best match hard to find.
 pub fn suggestions<'a>(commands: &'a [Command], prompt: &str) -> Vec<(&'a str, Vec<&'a Command>)> {
-    let Some(query) = prompt.strip_prefix('/') else {
+    let Some(query) = current_word(prompt).strip_prefix('/') else {
         return Vec::new();
     };
-    if query.contains(char::is_whitespace) {
-        return Vec::new();
-    }
     let query = query.to_lowercase();
     let mut groups: Vec<(&'a str, Vec<&'a Command>)> = Vec::new();
     for command in commands
@@ -358,13 +371,42 @@ mod tests {
         assert!(names("/zzz").is_empty());
     }
 
+    fn names(commands: &[Command], prompt: &str) -> Vec<String> {
+        suggestions(commands, prompt)
+            .iter()
+            .flat_map(|(_, items)| items.iter().map(|c| c.name.clone()))
+            .collect()
+    }
+
     #[test]
-    fn no_suggestions_unless_the_prompt_starts_with_a_slash_and_the_name_is_still_being_typed() {
+    fn a_slash_starting_the_word_being_typed_suggests_even_mid_prompt() {
+        let commands = [command("ponytail:lite", "ponytail"), command("deploy", "d")];
+        assert_eq!(names(&commands, "please run /pon"), ["ponytail:lite"]);
+        assert_eq!(names(&commands, "/dep and then /pony"), ["ponytail:lite"]);
+        assert_eq!(names(&commands, "run /"), ["ponytail:lite", "deploy"]);
+    }
+
+    #[test]
+    fn no_suggestions_once_the_command_word_is_finished_or_has_no_slash() {
         let commands = [command("deploy", "d")];
         assert!(suggestions(&commands, "deploy").is_empty());
-        assert!(suggestions(&commands, "please /deploy").is_empty());
+        assert!(suggestions(&commands, "please deploy").is_empty());
+        assert_eq!(names(&commands, "please /deploy"), ["deploy"]);
         assert!(suggestions(&commands, "/deploy ").is_empty());
         assert!(suggestions(&commands, "/deploy now").is_empty());
+    }
+
+    #[test]
+    fn accepting_a_suggestion_replaces_only_the_word_being_typed() {
+        assert_eq!(with_command("/pon", "ponytail:lite"), "/ponytail:lite ");
+        assert_eq!(
+            with_command("please run /pon", "ponytail:lite"),
+            "please run /ponytail:lite "
+        );
+        assert_eq!(
+            with_command("keep this, /dep", "deploy"),
+            "keep this, /deploy "
+        );
     }
 
     #[test]

@@ -203,9 +203,10 @@ impl Ui {
         }
     }
 
-    /// Puts `/<name> ` in the prompt and closes the list.
+    /// Replaces the word being typed with `/<name> ` and closes the list.
     fn insert(&mut self, name: &str) -> Result<(), JsValue> {
-        self.input.set_value(&format!("/{name} "));
+        self.input
+            .set_value(&view::with_command(&self.input.value(), name));
         self.menu_open = false;
         self.render_menu()?;
         self.input.focus()
