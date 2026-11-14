@@ -19,8 +19,9 @@ The ordered work list and the source of truth for status. Workflow is in [AGENTS
 | **M9** | [Markdown sources](#m9-markdown-sources) | 8 | A repository set up for Claude Code works unchanged: memory files, rules, skills, commands and agents. |
 | **M10** | [Beta 1 feedback](#m10-beta-1-feedback) | 13 | Fix what Beta 1 users hit first: chat history, fewer prompts, plugin commands, subagent activity. |
 | **M11** | [Beta 1.3.0: community requests](#m11-beta-130-community-requests) | 8 | Ship the most-wanted features of other agents that fit a local, single-GPU harness. |
+| **M13** | [Beta 1.4.0: harness fixes](#m13-beta-140-harness-fixes-from-the-performance-notes) | 12 | Fix the harness faults behind the gap to OpenCode, proven by fake-server tests. |
 
-103 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
+115 tasks in total. In the graphs, blue tasks are for agents, amber tasks with a heavy border need a person, and grey dashed links come from other milestones.
 
 ---
 
@@ -1108,3 +1109,95 @@ flowchart LR
 - [x] **T12.6 Raise the gate**
   - **Needs:** T12.1 to T12.5.
   - **Done when:** the floors in `scripts/coverage-floors` are raised to the new measured values, rounded down.
+
+## M13: Beta 1.4.0: harness fixes from the performance notes
+
+> The performance notes of 2026-11-14 (`notes/2026-11-14-performance/`, not committed) traced most of gemma's gap to OpenCode (22/39 against 29/39) to the harness: 14 of its 17 failed runs were ended by Praxis, not by a wrong answer. A prototype of the fixes reached 30/37 on gemma, at about twice the wall time. This release ships the fixes that a fake-server or unit test can prove. **No eval runs for this release** (owner, 2026-11-14), so the README must say the fixes are unmeasured as shipped.
+>
+> **Left out until an eval may run:** sending reasoning back in the history (4b obeyed the injection in 2 of 3 runs of injection-test-data with it on; it needs a targeted injection A/B first); per-model presets beyond today's fields (ADR 0002: built-ins are facts); T2.16 and sampling; MTP and `parallel=1`; a workflow system prompt; trimming tool schemas (`$ref`, `null` unions); the subagent and constrained-retry prefix breaks (only estimated). T13.9 prepares the next measurement without running it.
+
+```mermaid
+flowchart LR
+    T13_1["T13.1<br/>Broken tool arguments"]
+    T13_2["T13.2<br/>Provider retries"]
+    T13_3["T13.3<br/>Continue at output limit"]
+    T13_4["T13.4<br/>Gentler loop stop"]
+    T13_5["T13.5<br/>Tolerant Edit"]
+    T13_6["T13.6<br/>AGENTS.md as instructions"]
+    T13_7["T13.7<br/>Unchecked-change nudge"]
+    T13_8["T13.8<br/>Read and Grep budgets"]
+    T13_9["T13.9<br/>Eval fidelity"]
+    T13_10["T13.10<br/>Runaway stop"]
+    T13_11["T13.11<br/>Small speedups"]
+    T13_12["T13.12<br/>Release 1.4.0-beta"]
+    T13_1 --> T13_12
+    T13_2 --> T13_12
+    T13_3 --> T13_12
+    T13_4 --> T13_12
+    T13_5 --> T13_12
+    T13_6 --> T13_12
+    T13_7 --> T13_12
+    T13_8 --> T13_12
+    T13_9 --> T13_12
+    T13_10 --> T13_12
+    T13_11 --> T13_12
+```
+
+- [ ] **T13.1 Broken tool arguments** (§5.1, §5.3)
+  - **Why:** unparsable `arguments` stay raw in the history, LM Studio then answers every request with HTTP 500, and the session is dead for good, after resume and in VS Code too. 3 of the 4 gemma provider errors followed a parse failure (`agent/recovery.rs`).
+  - **Needs:** none.
+  - **Done when:** a fake-server test shows a history holding unparsable tool-call arguments is sent with `{}` in their place, also after resuming a saved session.
+
+- [ ] **T13.2 Provider retries** (§5.1)
+  - **Why:** one HTTP 5xx or dropped connection ends the turn (gemma change-signature). OpenCode retries with backoff.
+  - **Needs:** T13.1, so a retry never resends a poisoned history.
+  - **Done when:** a fake-server test shows a 5xx or a dropped stream is retried up to 3 times with growing backoff and the request unchanged (cache stays warm), and a 4xx and the HTTP 200 `event: error` overflow are not retried.
+
+- [ ] **T13.3 Continue at the output limit** (§5.5, §7)
+  - **Why:** `finish_reason=length` ends the turn, and `max_output` at 15% of the context (4915 at 32k) is too small for gemma (6 failed runs).
+  - **Needs:** none.
+  - **Done when:** a fake-server test shows a reply cut off by `length` without a complete tool call is continued up to 2 times with a short "cut off, make the next tool call" note, and that `max_tokens` follows the remaining context, clamped to [15% of C, the profile's `max_output`]. US-63 and `us63_stop_reasons.rs` change to match: the limit message and failure code come only after the last continuation (requirement change, said in the commit body).
+
+- [ ] **T13.4 Gentler loop stop** (§5.4)
+  - **Why:** the detector stops edit-test cycles and corrections: 4b add-test-slugify in all 3 runs right after a correct fix, gemma rereading a file it had just broken.
+  - **Needs:** none.
+  - **Done when:** tests show a successful `Edit` or `Write` resets the detector, a `Read` of a file changed since the last read is not a repeat, and the first detection skips the call and sends the model a note while only the second stops the turn.
+
+- [ ] **T13.5 Tolerant Edit** (§6)
+  - **Why:** `Edit` matches exactly, and the near-match hint names the wrong line; gemma failed 5 edits over `    }` against `}`.
+  - **Needs:** none.
+  - **Done when:** tests show that when the exact match fails, matches after normalising CRLF, Unicode quotes, dashes and NBSP, and then line by line without leading and trailing whitespace, are applied only if unique and to the original text; and the failure hint shows the whole candidate block with line numbers.
+
+- [ ] **T13.6 AGENTS.md as instructions** (§7, §10)
+  - **Why:** the prompt says file contents are data, and AGENTS.md is shown like one, so its rules are skipped (gemma agents-md-generated-file 0/3, OpenCode labels it "Instructions from").
+  - **Needs:** none. Stop and ask the human if it weakens a §10 invariant: only trusted AGENTS.md and memory files may be labelled.
+  - **Done when:** a prefix test shows trusted AGENTS.md files under an `Instructions from: <path>` heading with one system-prompt line saying project rules must be followed, and an untrusted repository's file still is not.
+
+- [ ] **T13.7 Unchecked-change nudge** (§4) · *Should*
+  - **Why:** turns end after changes with no test run or after forgetting an AGENTS.md rule (4b injection-code-comment, agents-md-conventions).
+  - **Needs:** T13.6.
+  - **Done when:** a fake-server test shows a turn that changed files and ran no command after the last change gets one note before it may end, and no second one in the same turn.
+
+- [ ] **T13.8 Read and Grep budgets** (§6, §7) · *Should*
+  - **Why:** `Read` of a file over about 270 lines drops its middle into a spool file, which `Read` numbers a second time; Grep builds up to 1000 results (109k characters) only to cut them.
+  - **Needs:** none.
+  - **Done when:** tool tests show a large `Read` returns one continuous page that fits the result budget with a note naming the next `offset`, a spooled file is not numbered twice, and Grep stops collecting at the budget.
+
+- [ ] **T13.9 Eval fidelity** (§14) · *Should*
+  - **Why:** seed 42 in every run made Praxis runs dependent (4b: 23 distinct trajectories in 39 runs); boards hold no transcripts; evals send JSON keys in a different order from the shipped `praxis` and lack the `Agent` tool; nothing records tokens and time per request.
+  - **Needs:** none.
+  - **Done when:** `cargo xtask eval` uses seed `42 + run` and writes each run's transcript and per-request prompt and completion tokens, model time and tool time next to the board; `praxis-core` turns on serde_json `preserve_order` (and the key-order gotcha goes); evals register the `Agent` tool. Checked by unit and fake-server tests. No eval is run.
+
+- [ ] **T13.10 Runaway stop** (§5.5) · *Could*
+  - **Why:** gemma-4-12B has a known degenerate loop (HF google/gemma-4-12B-it #41); each runaway burns about 110 s up to the output limit.
+  - **Needs:** T13.3.
+  - **Done when:** a fake-server test shows a stream repeating the same n-gram 8 or more times in its last ~400 tokens is cut off and handled like a `length` stop.
+
+- [ ] **T13.11 Small speedups** · *Could*
+  - **Why:** measured in note 05, none changes model behaviour.
+  - **Needs:** none.
+  - **Done when:** each is its own commit: the workspace path is no longer repeated in the system prompt's first line (prefix test); MCP servers connect while the model loads, not after; the dev profile uses `debug = "line-tables-only"`; the 5 s `DIAGNOSTICS_WAIT` in CLI tests is injectable so tests use a short one. Verify passes.
+
+- [ ] **T13.12 Release 1.4.0-beta** `HUMAN` approves
+  - **Needs:** T13.1 to T13.6. Cut *Should* and *Could* tasks that aren't done instead of waiting for them.
+  - **Done when:** the README lists the fixes as unmeasured, `./scripts/release v1.4.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
