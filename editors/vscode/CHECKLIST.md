@@ -5,7 +5,7 @@ Manual checks for what native tests can't reach (SPEC §14). Install with `cargo
 - [ ] **Open panel, send prompt, see a response (T5.2).** Set `praxis.binaryPath` in user settings, run "Praxis: Open Chat", wait for `ready`, send "Say hi". Reply text streams in as formatted markdown and ends with "Turn ended: end_turn".
 - [ ] **Restart on exit (T5.2).** Kill the `praxis acp` process. The panel shows the exit, an error offers Restart, and Restart brings back `ready`.
 - [ ] **Output channel (T5.2).** The "Praxis" output channel shows the agent's stderr.
-- [ ] **Status line (T5.3).** During a turn the line under the transcript shows the phase (Processing prompt, Generating, Running tool), a ticking elapsed time and `context used / size (n%)`; after the turn it shows Idle with the final time.
+- [ ] **Busy indicator (T5.3).** During a turn the transcript shows a pac-man with a cycling word; it disappears when the turn ends or errors, and stays static under reduced motion.
 - [ ] **Tool output (T5.3).** Ask for a file read. The tool shows as a collapsed item with its status; expanding it shows the output.
 - [ ] **Permission prompt (T5.3).** Ask for a shell command. A prompt with Allow/Reject buttons appears and takes focus; Allow runs it, Reject refuses it, and the prompt disappears after the answer.
 - [ ] **Stop (T5.3).** Start a long reply and press Stop. It ends with "Turn ended: cancelled", an open permission prompt disappears, and the next prompt works.

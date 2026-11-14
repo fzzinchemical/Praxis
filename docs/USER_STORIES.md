@@ -99,7 +99,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 
 | ID | Story | Accepted when | Tasks |
 |---|---|---|---|
-| **US-21** | As a VS Code user, I want a chat panel with streaming, tool activity, permission prompts and a stop button, so that I can run the agent from my editor. | The checklist passes, including keyboard-only use. Script and `javascript:` links in model text render inert. A status line shows phase, elapsed time and context used, and tool output starts collapsed. | T5.1, T5.2, T5.3 |
+| **US-21** | As a VS Code user, I want a chat panel with streaming, tool activity, permission prompts and a stop button, so that I can run the agent from my editor. | The checklist passes, including keyboard-only use. Script and `javascript:` links in model text render inert. A busy indicator shows while a turn runs, and tool output starts collapsed. | T5.1, T5.2, T5.3 |
 | **US-22** | As a VS Code user, I want proposed edits shown in the native diff view, so that I can review before accepting. | Accept applies the change, reject leaves the file unchanged, and the model is told which. | T5.4 |
 | **US-23** | As a VS Code user, I want to install the extension from a local file with no network, so that it stays fully local. | The `.vsix` installs on a clean profile and a full fix-review-accept cycle works offline. | T5.6 |
 

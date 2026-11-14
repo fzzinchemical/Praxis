@@ -1,7 +1,7 @@
 //! VS Code webview UI, compiled to wasm32 (SPEC §11).
 //!
 //! Renders typed messages from the extension (`praxis-vscode/src/protocol.rs`) into the transcript
-//! and status line, and sends prompts, stop and permission answers back as typed messages.
+//! and sends prompts, stop and permission answers back as typed messages.
 
 mod view;
 
@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use view::{Phase, Status, subagent_summary};
+use view::{Phase, subagent_summary};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
@@ -73,8 +73,7 @@ fn show_summary(tool: &Tool) -> Result<(), JsValue> {
 struct Ui {
     document: Document,
     output: Element,
-    status_line: Element,
-    status: Status,
+    phase: Phase,
     /// Turn start and end in ms since the epoch, for elapsed time.
     started: f64,
     ended: Option<f64>,
@@ -349,7 +348,6 @@ pub fn start() -> Result<(), JsValue> {
     let menu = by_id(&document, "commands")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
-        status_line: by_id(&document, "status")?,
         review: by_id(&document, "changes")?,
         changed: Vec::new(),
         review_file: None,
@@ -358,10 +356,7 @@ pub fn start() -> Result<(), JsValue> {
         focus: None,
         document,
         output: output.clone(),
-        status: Status {
-            phase: Phase::Idle,
-            context: None,
-        },
+        phase: Phase::Idle,
         started: js_sys::Date::now(),
         ended: Some(js_sys::Date::now()),
         message: None,
@@ -454,7 +449,7 @@ pub fn start() -> Result<(), JsValue> {
         // Before the session is ready, or while a turn runs, a prompt would only be refused, so the text stays in the box.
         let sendable = {
             let ui = state.borrow();
-            view::can_send(ui.ready, &ui.status.phase)
+            view::can_send(ui.ready, &ui.phase)
         };
         if !text.trim().is_empty() && sendable {
             let ui = state.borrow();
@@ -677,7 +672,7 @@ pub fn start() -> Result<(), JsValue> {
     on_review.forget();
 
     let state = ui;
-    let tick = Closure::<dyn FnMut()>::new(move || state.borrow().show_status());
+    let tick = Closure::<dyn FnMut()>::new(move || state.borrow().update_working());
     window.set_interval_with_callback_and_timeout_and_arguments_0(
         tick.as_ref().unchecked_ref(),
         1000,
@@ -744,9 +739,9 @@ impl Ui {
         self.user_bubble(prompt)?;
         self.started = js_sys::Date::now();
         self.ended = None;
-        self.status.phase = Phase::ProcessingPrompt;
+        self.phase = Phase::ProcessingPrompt;
         self.output.set_attribute("aria-busy", "true")?;
-        // Static markup with no user text; CSS draws the animation and `show_status` fills the word.
+        // Static markup with no user text; CSS draws the animation and `update_working` fills the word.
         let indicator = self.document.create_element("div")?;
         indicator.set_id("working");
         indicator.set_class_name("working");
@@ -756,14 +751,14 @@ impl Ui {
         self.output.append_child(&indicator)?;
         set_enabled(&self.stop, true)?;
         self.sync_pickers()?;
-        self.show_status();
+        self.update_working();
         Ok(())
     }
 
     /// Leaves the busy state, so a dead or failed session never looks like it is still working.
     fn idle(&mut self) -> Result<(), JsValue> {
         self.message = None;
-        self.status.phase = Phase::Idle;
+        self.phase = Phase::Idle;
         self.ended = Some(js_sys::Date::now());
         self.output.remove_attribute("aria-busy")?;
         if let Some(indicator) = self.document.get_element_by_id("working") {
@@ -821,7 +816,7 @@ impl Ui {
 
     /// The pickers can change only between turns, once the session is ready and has options.
     fn sync_pickers(&self) -> Result<(), JsValue> {
-        let idle = self.status.phase == Phase::Idle;
+        let idle = self.phase == Phase::Idle;
         let open = self.ready && idle;
         set_enabled(&self.model, open && self.model.length() > 0)?;
         set_enabled(&self.mode, open && self.mode.length() > 0)?;
@@ -872,11 +867,9 @@ impl Ui {
         self.sync_pickers()
     }
 
-    fn show_status(&self) {
+    fn update_working(&self) {
         let end = self.ended.unwrap_or_else(js_sys::Date::now);
         let elapsed = ((end - self.started) / 1000.0).max(0.0) as u64;
-        self.status_line
-            .set_text_content(Some(&self.status.line(elapsed)));
         self.set_working_word(elapsed);
     }
 
@@ -936,7 +929,7 @@ impl Ui {
                 }
             }
             "text" => {
-                self.status.phase = Phase::Generating;
+                self.phase = Phase::Generating;
                 if self.message.is_none() {
                     let element = self.append("div", "message", "")?;
                     self.message = Some((element, String::new()));
@@ -981,13 +974,6 @@ impl Ui {
             "tool" => self.tool(message)?,
             "subagent_usage" => self.subagent_usage(message)?,
             "permission" => self.permission(message)?,
-            "usage" => {
-                if let (Some(used), Some(size)) =
-                    (message["used"].as_u64(), message["size"].as_u64())
-                {
-                    self.status.context = Some((used, size));
-                }
-            }
             "done" => {
                 self.idle()?;
                 self.append("p", "notice", &format!("Turn ended: {}", text("reason")))?;
@@ -1001,7 +987,7 @@ impl Ui {
             }
             _ => return Ok(()),
         }
-        self.show_status();
+        self.update_working();
         Ok(())
     }
 
@@ -1009,7 +995,7 @@ impl Ui {
         self.message = None;
         let id = message["id"].as_str().unwrap_or_default().to_owned();
         let status = message["status"].as_str().unwrap_or("pending");
-        self.status.phase = match status {
+        self.phase = match status {
             "pending" | "in_progress" => Phase::RunningTool,
             _ => Phase::ProcessingPrompt,
         };

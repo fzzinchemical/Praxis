@@ -511,7 +511,7 @@ flowchart TB
 - [ ] **T5.3 Webview chat** (§11)
   - **Needs:** T5.2.
   - **Do:** streaming, stop button, status line, collapsed tool output, permissions, safe markdown, CSP, accessibility (§11).
-  - **Done when:** native tests confirm `<script>` and `javascript:` links in model text render inert; the checklist's keyboard-only pass succeeds; and the status line shows phase, elapsed time and context used.
+  - **Done when:** native tests confirm `<script>` and `javascript:` links in model text render inert; the checklist's keyboard-only pass succeeds; and the busy indicator shows while a turn runs.
 
 - [x] **T5.4 Diff review** (§11)
   - **Needs:** T5.3.

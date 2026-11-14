@@ -169,7 +169,7 @@ main {
   padding: 0 4px;
 }
 
-/* Composer: textarea and actions in one bordered box, status line beneath it. */
+/* Composer: textarea and actions in one bordered box. */
 #prompt-form {
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
@@ -381,10 +381,11 @@ body.dragging {
   margin-left: auto;
 }
 
-#status {
-  color: var(--vscode-descriptionForeground);
-  font-size: 0.85em;
-  margin: 4px 4px 0;
+/* Registered so the mouth angle can animate; unregistered custom properties jump instead of easing. */
+@property --mouth {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 2deg;
 }
 
 /* Busy indicator: a pac-man eats a row of dots while the turn runs. order keeps it under the newest message. */
@@ -404,8 +405,14 @@ body.dragging {
 }
 
 .working-man {
-  animation: working-eat 1.2s linear infinite;
-  background: conic-gradient(from 130deg, var(--vscode-charts-yellow, #e5c07b) 0 280deg, transparent 280deg);
+  --pac-ink: var(--vscode-charts-yellow, #e5c07b);
+  /* Mouth: a wedge centred on 90deg (facing right), half-angle --mouth, opened and closed by working-chomp. */
+  animation: working-eat 1.2s linear infinite, working-chomp 0.25s ease-in-out infinite alternate;
+  background: conic-gradient(
+    var(--pac-ink) calc(90deg - var(--mouth)),
+    transparent calc(90deg - var(--mouth)) calc(90deg + var(--mouth)),
+    var(--pac-ink) calc(90deg + var(--mouth)) 360deg
+  );
   border-radius: 50%;
   height: 12px;
   left: 0;
@@ -425,6 +432,10 @@ body.dragging {
   align-items: center;
 }
 
+.working-word {
+  animation: working-dot 1.2s linear infinite;
+}
+
 .working-dots i {
   animation: working-dot 1.2s linear infinite;
   background: currentColor;
@@ -442,6 +453,11 @@ body.dragging {
   to { transform: translateX(68px); }
 }
 
+@keyframes working-chomp {
+  from { --mouth: 2deg; }
+  to { --mouth: 40deg; }
+}
+
 @keyframes working-dot {
   from { opacity: 1; }
   to { opacity: 0; }
@@ -453,7 +469,8 @@ body.dragging {
     display: none;
   }
 
-  .working-dots i {
+  .working-dots i,
+  .working-word {
     animation: none;
   }
 }

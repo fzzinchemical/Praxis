@@ -183,40 +183,13 @@ fn tokens_k(count: u32) -> String {
     }
 }
 
-/// What the agent is doing, for the status line.
+/// What the agent is doing. Only `Idle` matters to the UI: it gates sending and the pickers.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Phase {
     Idle,
     ProcessingPrompt,
     Generating,
     RunningTool,
-}
-
-#[derive(Debug, PartialEq)]
-pub struct Status {
-    pub phase: Phase,
-    /// Context tokens used and the window size, from the last `usage` message.
-    pub context: Option<(u64, u64)>,
-}
-
-impl Status {
-    pub fn line(&self, elapsed_secs: u64) -> String {
-        let phase = match self.phase {
-            Phase::Idle => "Idle",
-            Phase::ProcessingPrompt => "Processing prompt",
-            Phase::Generating => "Generating",
-            Phase::RunningTool => "Running tool",
-        };
-        let time = format!("{}:{:02}", elapsed_secs / 60, elapsed_secs % 60);
-        let context = match self.context {
-            Some((used, size)) if size > 0 => {
-                format!("context {used} / {size} ({}%)", used * 100 / size)
-            }
-            Some((used, size)) => format!("context {used} / {size}"),
-            None => "context unknown".to_owned(),
-        };
-        format!("{phase} · {time} · {context}")
-    }
 }
 
 /// The playful words the busy indicator cycles through, one every two seconds.
@@ -456,28 +429,6 @@ mod tests {
     fn reduced_motion_keeps_one_static_word() {
         assert_eq!(working_word(0, true), "Working");
         assert_eq!(working_word(7, true), "Working");
-    }
-
-    #[test]
-    fn status_line_shows_phase_elapsed_time_and_context_used() {
-        let status = Status {
-            phase: Phase::Generating,
-            context: Some((5_000, 32_768)),
-        };
-        assert_eq!(
-            status.line(75),
-            "Generating · 1:15 · context 5000 / 32768 (15%)"
-        );
-        let status = Status {
-            phase: Phase::ProcessingPrompt,
-            context: None,
-        };
-        assert_eq!(status.line(3), "Processing prompt · 0:03 · context unknown");
-        let status = Status {
-            phase: Phase::RunningTool,
-            context: Some((0, 0)),
-        };
-        assert_eq!(status.line(0), "Running tool · 0:00 · context 0 / 0");
     }
 
     #[test]
