@@ -617,7 +617,7 @@ Same rules: one item per branch, write the test first, tick the box here.
 
 ## Must fix
 
-- [ ] **27. Sending a prompt while a turn runs makes "Rewind to here" rewind the wrong turn**
+- [x] **27. Sending a prompt while a turn runs makes "Rewind to here" rewind the wrong turn**
   (`crates/praxis-vscode-ui/src/lib.rs` `on_submit`, `user_bubble`)
   - **What this is:** Each user bubble's "Rewind to here" sends the turn number the panel
     counted. The agent rewinds the turn with that number in its own count.
