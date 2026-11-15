@@ -953,7 +953,7 @@ Reference: [manifest](https://code.claude.com/docs/en/plugins/manifest-reference
 | LSP, monitors, output styles, themes, channels, marketplace | | No; warn |
 | Workflows and mods | JavaScript files | **No; they need a JS runtime, which ADR 0001 excludes** |
 
-Path rules from the manifest reference: component paths must begin with `./` (`skills` may also be `.`), must exist, and must resolve inside the plugin root. `commands` and `agents` replace the default scan, `skills` adds to it, and `hooks` and `mcpServers` merge with their default files.
+Path rules from the manifest reference: component paths must begin with `./` (`skills` may also be `.`), must not contain `..`, and must resolve inside the plugin root. A path that doesn't exist is skipped with a warning, so one stale manifest path doesn't block install. `commands` and `agents` replace the default scan, `skills` adds to it, and `hooks` and `mcpServers` merge with their default files.
 
 A built-in `general` agent is always offered through the same `Agent` tool, so delegation works with no plugin installed: it gets every session tool except `Agent` and `Skill` (as every subagent does), has no `model` (so it runs on the session model), and its system prompt asks for a short report of what it found or changed. A plugin agent named `general` is an error at load, naming the plugin.
 

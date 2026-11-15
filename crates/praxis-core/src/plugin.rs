@@ -59,7 +59,7 @@ const UNSUPPORTED_KEYS: &[&str] = &[
 const UNSUPPORTED_DEFAULTS: &[&str] = &[".lsp.json", "output-styles", "monitors", "themes"];
 
 /// Loads the plugin at `root`. A broken manifest or a path that breaks the rules is an
-/// error; anything unsupported or unknown is a named warning.
+/// error; a missing path, or anything unsupported or unknown, is a named warning.
 pub fn load(root: &Path) -> Result<Plugin, String> {
     let root = root
         .canonicalize()
@@ -117,40 +117,49 @@ pub fn load(root: &Path) -> Result<Plugin, String> {
     // `skills` adds to the default scan.
     let mut skills: Vec<PathBuf> = existing("skills").into_iter().collect();
     for entry in entries(&manifest, "skills")? {
-        skills.push(component_path(&root, string(entry, "skills")?, true)?);
+        skills.extend(component_path(
+            &root,
+            string(entry, "skills")?,
+            true,
+            &mut warnings,
+        )?);
     }
 
     // `commands` and `agents` replace the default scan.
-    let markdown = |key: &str| -> Result<Vec<PathBuf>, String> {
-        let dirs = match manifest.get(key) {
-            Some(_) => entries(&manifest, key)?
-                .into_iter()
-                .map(|e| component_path(&root, string(e, key)?, false))
-                .collect::<Result<Vec<_>, _>>()?,
-            None => existing(key).into_iter().collect(),
-        };
+    let markdown = |key: &str, warnings: &mut Vec<String>| -> Result<Vec<PathBuf>, String> {
+        let mut dirs: Vec<PathBuf> = Vec::new();
+        match manifest.get(key) {
+            Some(_) => {
+                for entry in entries(&manifest, key)? {
+                    dirs.extend(component_path(&root, string(entry, key)?, false, warnings)?);
+                }
+            }
+            None => dirs.extend(existing(key)),
+        }
         let mut files = Vec::new();
         for dir in dirs {
             collect_markdown(&root, &dir, &mut files)?;
         }
         Ok(files)
     };
-    let commands = markdown("commands")?;
-    let agents = markdown("agents")?;
+    let commands = markdown("commands", &mut warnings)?;
+    let agents = markdown("agents", &mut warnings)?;
 
     // `hooks` and `mcpServers` merge with their default files.
-    let sources = |key: &str, default: &str| -> Result<Vec<Source>, String> {
+    let sources = |key: &str, default: &str, warnings: &mut Vec<String>| {
         let mut found: Vec<Source> = existing(default).map(Source::File).into_iter().collect();
         for entry in entries(&manifest, key)? {
-            found.push(match entry {
-                Value::Object(_) => Source::Inline(entry.clone()),
-                _ => Source::File(component_path(&root, string(entry, key)?, false)?),
-            });
+            match entry {
+                Value::Object(_) => found.push(Source::Inline(entry.clone())),
+                _ => found.extend(
+                    component_path(&root, string(entry, key)?, false, warnings)?.map(Source::File),
+                ),
+            }
         }
-        Ok(found)
+        Ok::<_, String>(found)
     };
-    let hooks = sources("hooks", "hooks/hooks.json")?;
-    let mcp_servers = sources("mcpServers", ".mcp.json")?;
+    let hooks = sources("hooks", "hooks/hooks.json", &mut warnings)?;
+    let mcp_servers = sources("mcpServers", ".mcp.json", &mut warnings)?;
 
     let plugin = Plugin {
         name,
@@ -748,9 +757,15 @@ fn string<'a>(value: &'a Value, key: &str) -> Result<&'a str, String> {
         .ok_or_else(|| format!("manifest `{key}`: expected a path, got {value}"))
 }
 
-/// Applies the manifest path rules: `./` prefix (`.` only for skills), no `..`, exists,
-/// and resolves (through symlinks) inside the plugin root.
-fn component_path(root: &Path, rel: &str, allow_root: bool) -> Result<PathBuf, String> {
+/// Applies the manifest path rules: `./` prefix (`.` only for skills), no `..`, and resolves
+/// (through symlinks) inside the plugin root. A path that doesn't exist is skipped with a
+/// warning, so a stale path in a manifest doesn't block the install.
+fn component_path(
+    root: &Path,
+    rel: &str,
+    allow_root: bool,
+    warnings: &mut Vec<String>,
+) -> Result<Option<PathBuf>, String> {
     let fail = |why: &str| Err(format!("plugin path `{rel}` {why}"));
     if !(rel.starts_with("./") || (allow_root && rel == ".")) {
         return fail("must start with `./`");
@@ -763,12 +778,13 @@ fn component_path(root: &Path, rel: &str, allow_root: bool) -> Result<PathBuf, S
     }
     let path = root.join(rel);
     let Ok(real) = path.canonicalize() else {
-        return fail("does not exist");
+        warnings.push(format!("plugin path `{rel}` does not exist, skipped"));
+        return Ok(None);
     };
     if !real.starts_with(root) {
         return fail("resolves outside the plugin root");
     }
-    Ok(path)
+    Ok(Some(path))
 }
 
 pub(crate) fn collect_markdown(

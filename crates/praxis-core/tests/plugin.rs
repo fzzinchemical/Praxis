@@ -96,25 +96,32 @@ fn hooks_and_mcp_servers_merge_with_their_default_files() {
 }
 
 #[test]
-fn paths_must_start_with_dot_slash_exist_and_stay_inside_the_root() {
+fn paths_must_start_with_dot_slash_and_stay_inside_the_root() {
     let root = plugin_dir("paths");
     write(&root.join("cmd.md"), "");
     write(&root.join("sub/x.md"), "");
     let outside = plugin_dir("paths-outside");
     write(&outside.join("x.md"), "");
     std::os::unix::fs::symlink(outside.join("x.md"), root.join("link.md")).unwrap();
-    for bad in [
-        "cmd.md",
-        "./missing.md",
-        "./sub/../cmd.md",
-        "./link.md",
-        "/etc/passwd",
-        ".",
-    ] {
+    for bad in ["cmd.md", "./sub/../cmd.md", "./link.md", "/etc/passwd", "."] {
         manifest(&root, &format!(r#"{{"name":"p","commands":"{bad}"}}"#));
         let err = load(&root).unwrap_err();
         assert!(err.contains(&format!("`{bad}`")), "{bad}: {err}");
     }
+}
+
+#[test]
+fn a_missing_manifest_path_is_skipped_with_a_warning() {
+    let root = plugin_dir("missing-path");
+    write(&root.join("cmd.md"), "");
+    manifest(&root, r#"{"name":"p","commands":"./missing"}"#);
+    let plugin = load(&root).unwrap();
+    assert!(plugin.commands.is_empty());
+    assert!(
+        plugin.warnings.iter().any(|w| w.contains("`./missing`")),
+        "{:?}",
+        plugin.warnings
+    );
 }
 
 #[test]

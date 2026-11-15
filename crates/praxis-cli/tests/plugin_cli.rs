@@ -366,3 +366,32 @@ fn config_sets_a_user_config_value_and_list_json_shows_it_unless_sensitive() {
     assert_eq!(token["set"], true);
     assert!(token["value"].is_null(), "{token}");
 }
+
+#[test]
+fn installs_from_a_git_url_whose_manifest_names_a_missing_skills_dir() {
+    // morluto/rea: `.claude-plugin/plugin.json` says `"skills": "./skills"`, but the repo
+    // keeps its skills under `.agents/` and `.cursor-plugin/`, so that path is absent.
+    let home = temp("missing-path");
+    let src = home.join("rea.git");
+    fs::create_dir_all(src.join(".claude-plugin")).unwrap();
+    fs::write(
+        src.join(".claude-plugin/plugin.json"),
+        r#"{"name": "rea", "skills": "./skills"}"#,
+    )
+    .unwrap();
+    git(&src, &["init", "--quiet"]);
+    git(&src, &["add", "."]);
+    git(&src, &["commit", "--quiet", "-m", "one"]);
+
+    let url = format!("file://{}", src.display());
+    let shown = stdout(&praxis(&home, &["install", &url]));
+    assert!(shown.contains("Installed rea"), "{shown}");
+    assert!(
+        shown.contains("./skills"),
+        "missing path not warned: {shown}"
+    );
+    assert!(
+        home.join("xdg-data/praxis/plugins/rea/.claude-plugin/plugin.json")
+            .is_file()
+    );
+}
