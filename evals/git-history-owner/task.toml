@@ -1,0 +1,5 @@
+prompt = '''Which commit last changed parse_config in src/config.rs? Use this repo's git history, not just the current file: the latest commit may touch other files. Write only that commit's subject line into ANSWER.txt.'''
+tags = ["mcp"]
+
+max_turns = 20
+wall_time_secs = 600

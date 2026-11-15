@@ -39,7 +39,6 @@ const WORK: &str = "/work";
 const SOCKET: &str = "/llm.sock";
 const SANDBOX_EVALS: &str = "/evals";
 const SANDBOX_PORT: u16 = 1234;
-const MCP_DIR: &str = "/mcp-servers";
 /// The agent enforces its own wall time, so this only catches a sandbox that won't stop.
 const KILL_GRACE: Duration = Duration::from_secs(60);
 const CHECK_LIMIT: Duration = Duration::from_secs(600);
@@ -372,9 +371,10 @@ async fn forward_to_server(listener: UnixListener, server: String) {
     }
 }
 
-/// The filesystem and git servers from docs/MCP_SERVERS.md, as started inside the sandbox.
+/// The filesystem and git servers from docs/MCP_SERVERS.md. `dir` is the install's host path, which
+/// is also its path in the sandbox: the venv scripts' shebangs name that path.
 // shortcut: browser server left out, since Chromium may not start inside bwrap; add it once checked.
-fn mcp_servers() -> BTreeMap<String, McpServer> {
+fn mcp_servers(dir: &Path) -> BTreeMap<String, McpServer> {
     let stdio = |command: String, args: Vec<String>| {
         McpServer::Stdio(StdioServer {
             command,
@@ -386,24 +386,34 @@ fn mcp_servers() -> BTreeMap<String, McpServer> {
         (
             "filesystem".to_owned(),
             stdio(
-                format!("{MCP_DIR}/node_modules/.bin/mcp-server-filesystem"),
+                dir.join("node_modules/.bin/mcp-server-filesystem")
+                    .display()
+                    .to_string(),
                 vec![WORK.to_owned()],
             ),
         ),
         (
             "git".to_owned(),
-            stdio(format!("{MCP_DIR}/venv/bin/mcp-server-git"), Vec::new()),
+            stdio(
+                dir.join("venv/bin/mcp-server-git").display().to_string(),
+                Vec::new(),
+            ),
         ),
     ])
 }
 
-async fn connect_mcp() -> Mcp {
-    let (mcp, notices) = Mcp::connect(&mcp_servers(), CONNECT_TIMEOUT).await;
+async fn connect_mcp(dir: &Path) -> Mcp {
+    let (mcp, notices) = Mcp::connect(&mcp_servers(dir), CONNECT_TIMEOUT).await;
     for notice in notices {
         eprintln!("{notice}");
     }
     eprintln!("mcp: {} tools", mcp.schemas().len());
     mcp
+}
+
+/// MCP tools are named `mcp__<server>__<tool>` (mcp.rs).
+fn is_mcp_tool(name: &str) -> bool {
+    name.starts_with("mcp__")
 }
 
 fn server_address(base_url: &str) -> Result<String> {
@@ -454,8 +464,8 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         vendor.as_ref(),
         &[],
     );
-    let mcp = if spec["mcp"] == true {
-        Some(connect_mcp().await)
+    let mcp = if let Some(dir) = spec["mcp_dir"].as_str() {
+        Some(connect_mcp(Path::new(dir)).await)
     } else {
         None
     };
@@ -521,6 +531,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     });
 
     let (mut turns, mut prompt_tokens, mut tool_calls, mut recoveries) = (0u32, 0u64, 0u32, 0u32);
+    let mut mcp_tool_calls = 0u32;
     let mut stop = StopReason::ProviderError;
     let mut loop_trigger = None;
     // The detector records a call after running it, so the last one started is what tripped it.
@@ -559,6 +570,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
                 id, name, input, ..
             } => {
                 tool_calls += 1;
+                mcp_tool_calls += u32::from(is_mcp_tool(&name));
                 tool_started.insert(id.clone(), (name.clone(), Instant::now()));
                 last_call = json!({ "name": name, "input": input });
                 // Only calls parsed out of reply text get this id prefix (agent::recovery).
@@ -595,6 +607,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             "stop_reason": format!("{stop:?}"),
             "wall_time_exceeded": cancel.is_cancelled(),
             "tool_calls": tool_calls,
+            "mcp_tool_calls": mcp_tool_calls,
             "tool_call_parse_failures": agent.parse_failures(),
             "refetches_of_masked_output": agent.refetches(),
             "first_token_ms": agent.first_token_ms(),
@@ -640,7 +653,7 @@ fn agent_spec(
         "wall_secs": task.wall_secs,
         "mask_keep_turns": options.mask_keep_turns,
         "filter_output": options.filter_output,
-        "mcp": options.mcp_dir.is_some(),
+        "mcp_dir": options.mcp_dir,
         "agents_md": options.agents_md,
         "vendor": vendor,
     })
@@ -665,7 +678,7 @@ async fn try_run_agent(
     command.arg("--bind").arg(work).arg(WORK);
     command.arg("--ro-bind").arg(&socket).arg(SOCKET);
     if let Some(dir) = &options.mcp_dir {
-        command.arg("--ro-bind").arg(dir).arg(MCP_DIR);
+        command.arg("--ro-bind").arg(dir).arg(dir);
     }
     command
         .arg("--ro-bind")
@@ -678,6 +691,8 @@ async fn try_run_agent(
     let output = tokio::time::timeout(limit, command.output()).await;
     forward.abort();
     let output = output.context("the sandbox outlived its wall time")??;
+    // Connect notices and the `mcp: N tools` line come through here, so they stay visible.
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
     let last = stdout.lines().next_back().unwrap_or_default();
     serde_json::from_str(last).with_context(|| {
@@ -730,6 +745,11 @@ async fn run_once(task: &Task, ready: &ReadyModel, options: &Options, run: u32) 
         task.name
     );
     let started = Instant::now();
+    let setup = task.dir.join("setup.sh");
+    if setup.is_file() {
+        let ok = Command::new("bash").arg(&setup).arg(&work).status().await?;
+        ensure!(ok.success(), "setup of {} failed", task.name);
+    }
     let mut result = try_run_agent(task, ready, &work, options, run)
         .await
         .unwrap_or_else(|error| json!({ "agent_error": format!("{error:#}") }));
@@ -878,6 +898,7 @@ fn scoreboard(model: &str, date: &str, runs: &[Value]) -> Value {
         "mean_model_swaps": sum(runs, "model_swaps") as f64 / count,
         "tool_call_parse_failures": sum(runs, "tool_call_parse_failures"),
         "recoveries": sum(runs, "recoveries"),
+        "mcp_tool_calls": sum(runs, "mcp_tool_calls"),
         "loop_stops": runs.iter().filter(|run| run["stop_reason"] == "LoopDetected").count(),
         "loop_triggers": loop_triggers,
         "refetches_of_masked_output": sum(runs, "refetches_of_masked_output"),
@@ -957,6 +978,7 @@ async fn run_all(
                 json!(options.mask_keep_turns.map_or(json!("off"), |n| json!(n)));
             board["filter_output"] = json!(options.filter_output);
             board["agents_md"] = json!(options.agents_md);
+            board["mcp"] = json!(options.mcp_dir.is_some());
             if let Some(filter) = &options.filter {
                 board["tasks_filter"] = json!(filter.spec);
             }
@@ -1100,6 +1122,7 @@ mod tests {
         assert_eq!(board["injection"]["obeyed"], 1);
         assert_eq!(board["tasks"]["a"]["success_rate"], 1.0);
         assert_eq!(board["recoveries"], 2);
+        assert_eq!(board["mcp_tool_calls"], 0);
         assert_eq!(board["loop_stops"], 1);
         assert_eq!(board["loop_triggers"], json!({ "repeats": 1 }));
         assert_eq!(board["refetches_of_masked_output"], 3);
@@ -1115,6 +1138,13 @@ mod tests {
             assert!(board[metric].is_null(), "{metric}");
             assert!(board["null_reasons"][metric].is_string(), "{metric}");
         }
+    }
+
+    #[test]
+    fn only_mcp_namespaced_tools_count_as_mcp_calls() {
+        assert!(is_mcp_tool("mcp__git__git_log"));
+        assert!(!is_mcp_tool("Bash"));
+        assert!(!is_mcp_tool("Grep"));
     }
 
     #[test]
@@ -1239,13 +1269,21 @@ mod tests {
 
     #[test]
     fn eval_mcp_servers_run_from_the_mounted_dir_and_serve_the_work_dir() {
-        let servers = mcp_servers();
+        let servers = mcp_servers(Path::new("/home/u/mcp-servers"));
         assert_eq!(servers.keys().collect::<Vec<_>>(), ["filesystem", "git"]);
         let McpServer::Stdio(fs) = &servers["filesystem"] else {
             panic!("filesystem is not stdio");
         };
-        assert!(fs.command.starts_with(MCP_DIR), "{}", fs.command);
+        assert!(
+            fs.command.starts_with("/home/u/mcp-servers/"),
+            "{}",
+            fs.command
+        );
         assert_eq!(fs.args, [WORK]);
+        let McpServer::Stdio(git) = &servers["git"] else {
+            panic!("git is not stdio");
+        };
+        assert_eq!(git.command, "/home/u/mcp-servers/venv/bin/mcp-server-git");
     }
 
     #[test]
