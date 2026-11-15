@@ -1735,6 +1735,18 @@ mod tests {
             mcp_off: BTreeSet::new(),
         };
         server.sessions().insert("s".into(), slot);
+        server.sessions().get_mut("s").unwrap().mcp = vec![praxis_core::mcp::ServerStatus {
+            name: "fs".into(),
+            source: McpSource::Project,
+            status: praxis_core::mcp::Health::NeedsApproval,
+            tools: Vec::new(),
+            command: Some("/nonexistent/mcp-fs".into()),
+        }];
+        let waiting = server.mcp_servers("s").unwrap();
+        assert_eq!(
+            waiting["servers"][0]["command"], "/nonexistent/mcp-fs",
+            "{waiting}"
+        );
         // The approval is stored, the connect fails and is a notice, and the list shows the result.
         let reply = approve_reply(&server, "s", "fs").await.unwrap();
         assert_eq!(reply["name"], "fs");
@@ -1755,6 +1767,37 @@ mod tests {
             Some(("s".into(), "fs".into()))
         );
         assert_eq!(approve_params(&json!({"sessionId": "s"})), None);
+    }
+
+    #[test]
+    fn replay_shows_a_subagents_calls_under_its_parent_and_a_plain_message_as_is() {
+        let entry = |value: Value| serde_json::from_value::<Entry>(value).unwrap();
+        let plain = replay(entry(json!({"role": "user", "content": "hi"})));
+        assert!(
+            matches!(plain[..], [v1::SessionUpdate::UserMessageChunk(_)]),
+            "{plain:?}"
+        );
+        let call = entry(
+            json!({"subagent_of": "c0", "role": "assistant", "content": null,
+            "tool_calls": [{"id": "c1", "name": "Read", "arguments": "{}"}]}),
+        );
+        assert!(!replay(call).is_empty());
+        let result = entry(json!({"subagent_of": "c0", "role": "tool",
+            "tool_call_id": "c1", "content": "ok"}));
+        assert!(!replay(result).is_empty());
+        // A subagent's prompts and system text are not replayed as chat.
+        let prompt = entry(json!({"subagent_of": "c0", "role": "user", "content": "go"}));
+        assert!(replay(prompt).is_empty());
+        let system = entry(json!({"role": "system", "content": "rules"}));
+        assert!(replay(system).is_empty());
+        // Memory injected mid-turn is not a chat bubble.
+        let memory = entry(json!({"role": "user",
+            "content": format!("{MEMORY_MARK}remember this")}));
+        assert!(replay(memory).is_empty());
+        assert!(matches!(
+            stop_reason(StopReason::MaxTokens),
+            Some(v1::StopReason::MaxTokens)
+        ));
     }
 
     #[test]
