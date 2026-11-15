@@ -1277,7 +1277,7 @@ flowchart LR
   - **Needs:** T14.3 (to confirm a rule before saving it).
   - **Done when:** the agent may propose an edit to the user file `~/.config/praxis/AGENTS.md` (already loaded as `Instructions from:`, SPEC §12) only through an approval prompt that shows the diff, never silently; a project file it writes stays unlabelled until approved by the existing trust store (T13.6). A `/remember` command appends one confirmed line. Tests that an unapproved write is refused and an approved one is labelled next session. Stop and ask before any path that lets model output become trusted instructions without a person.
 
-- [ ] **T14.5 Eval task filter** · *Should*
+- [x] **T14.5 Eval task filter** · *Should*
   - **Why:** an MCP comparison (T4.x) only needs the MCP tasks, and full boards take hours.
   - **Needs:** none. `--mcp DIR` already wires servers in.
   - **Done when:** `cargo xtask eval --tasks <glob>[,<glob>]` runs only matching task directories, and a task's `task.toml` may set `tags = ["mcp"]` so `--tasks tag:mcp` works; the board records the filter. Unit test on argument parsing and selection.

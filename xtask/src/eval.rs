@@ -62,6 +62,8 @@ struct Options {
     /// Install dir of the real MCP servers (docs/MCP_SERVERS.md), bound read-only into the sandbox
     /// when set. Off by default so boards without MCP stay comparable (T4.5).
     mcp_dir: Option<PathBuf>,
+    /// `--tasks`: runs only the matching tasks (T14.5). `None` runs them all.
+    filter: Option<TaskFilter>,
 }
 
 struct Task {
@@ -71,6 +73,86 @@ struct Task {
     max_turns: u32,
     wall_secs: u64,
     context: u32,
+    /// From the optional `tags` array in task.toml, matched by `tag:<name>` in `--tasks`.
+    tags: Vec<String>,
+}
+
+/// The `--tasks` value, kept as typed so the scoreboard can record it.
+struct TaskFilter {
+    spec: String,
+    patterns: Vec<TaskPattern>,
+}
+
+enum TaskPattern {
+    /// A task directory name; `*` matches any run of characters.
+    Name(String),
+    Tag(String),
+}
+
+impl TaskFilter {
+    fn parse(spec: &str) -> Result<Self> {
+        let patterns = spec
+            .split(',')
+            .map(|piece| {
+                let piece = piece.trim();
+                match piece.strip_prefix("tag:") {
+                    Some("") => bail!("--tasks: empty tag name in {spec:?}"),
+                    Some(tag) => Ok(TaskPattern::Tag(tag.to_owned())),
+                    None if piece.is_empty() => bail!("--tasks: empty pattern in {spec:?}"),
+                    None => Ok(TaskPattern::Name(piece.to_owned())),
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            spec: spec.to_owned(),
+            patterns,
+        })
+    }
+
+    fn matches(&self, task: &Task) -> bool {
+        self.patterns.iter().any(|pattern| match pattern {
+            TaskPattern::Name(glob) => glob_matches(glob, &task.name),
+            TaskPattern::Tag(tag) => task.tags.contains(tag),
+        })
+    }
+}
+
+/// Whole-string match where `*` stands for any run of characters, so no glob crate is needed.
+fn glob_matches(pattern: &str, text: &str) -> bool {
+    let (pattern, text) = (pattern.as_bytes(), text.as_bytes());
+    let (mut p, mut t) = (0, 0);
+    // Where the last `*` was, and the text position it has consumed up to, to retry from there.
+    let mut star: Option<(usize, usize)> = None;
+    while t < text.len() {
+        if p < pattern.len() && pattern[p] == b'*' {
+            star = Some((p, t));
+            p += 1;
+        } else if p < pattern.len() && pattern[p] == text[t] {
+            p += 1;
+            t += 1;
+        } else if let Some((star_p, star_t)) = star {
+            p = star_p + 1;
+            t = star_t + 1;
+            star = Some((star_p, star_t + 1));
+        } else {
+            return false;
+        }
+    }
+    pattern[p..].iter().all(|&c| c == b'*')
+}
+
+fn select_tasks(tasks: Vec<Task>, filter: &TaskFilter, evals_dir: &Path) -> Result<Vec<Task>> {
+    let selected: Vec<Task> = tasks
+        .into_iter()
+        .filter(|task| filter.matches(task))
+        .collect();
+    ensure!(
+        !selected.is_empty(),
+        "--tasks {} matches no task in {}",
+        filter.spec,
+        evals_dir.display()
+    );
+    Ok(selected)
 }
 
 fn parse_options(args: &[String], root: &Path) -> Result<Options> {
@@ -85,6 +167,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         agents_md: false,
         agent_exe: PathBuf::new(),
         mcp_dir: None,
+        filter: None,
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -105,6 +188,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
                 options.mask_keep_turns = Some(turns);
             }
             "--mcp" => options.mcp_dir = Some(value.into()),
+            "--tasks" => options.filter = Some(TaskFilter::parse(value)?),
             "--filter-output" => {
                 options.filter_output = match value.as_str() {
                     "on" => true,
@@ -124,7 +208,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
     }
     ensure!(
         !options.model.is_empty() && options.runs > 0,
-        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off] [--filter-output on|off] [--agents-md on|off] [--mcp DIR]"
+        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off] [--filter-output on|off] [--agents-md on|off] [--mcp DIR] [--tasks <glob>|tag:<name>[,...]]"
     );
     Ok(options)
 }
@@ -147,7 +231,21 @@ fn load_tasks(evals_dir: &Path) -> Result<Vec<Task>> {
             .with_context(|| toml_path.display().to_string())?;
         let int = |key: &str| table.get(key).and_then(toml::Value::as_integer);
         let required = |key: &str| int(key).with_context(|| format!("{name}: no {key}"));
+        let tags = match table.get("tags") {
+            None => Vec::new(),
+            Some(value) => value
+                .as_array()
+                .with_context(|| format!("{name}: tags is not an array"))?
+                .iter()
+                .map(|tag| {
+                    tag.as_str()
+                        .map(str::to_owned)
+                        .with_context(|| format!("{name}: tags must be strings"))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
         tasks.push(Task {
+            tags,
             prompt: table
                 .get("prompt")
                 .and_then(toml::Value::as_str)
@@ -859,6 +957,9 @@ async fn run_all(
                 json!(options.mask_keep_turns.map_or(json!("off"), |n| json!(n)));
             board["filter_output"] = json!(options.filter_output);
             board["agents_md"] = json!(options.agents_md);
+            if let Some(filter) = &options.filter {
+                board["tasks_filter"] = json!(filter.spec);
+            }
             fs::write(out, serde_json::to_string_pretty(&board)? + "\n")?;
         }
     }
@@ -873,6 +974,10 @@ pub async fn eval(args: &[String], root: &Path) -> Result<()> {
     fs::copy(env::current_exe()?, &options.agent_exe).context("copying the agent binary")?;
     server_address(&options.base_url)?;
     let tasks = load_tasks(&options.evals_dir)?;
+    let tasks = match &options.filter {
+        Some(filter) => select_tasks(tasks, filter, &options.evals_dir)?,
+        None => tasks,
+    };
     let out = options.out.clone().unwrap_or_else(|| {
         let file = format!("{}.json", options.model.replace('/', "_"));
         root.join("evals/results").join(file)
@@ -1031,6 +1136,7 @@ mod tests {
             max_turns: 1,
             wall_secs: 1,
             context: 1,
+            tags: Vec::new(),
         };
         let ready = |id: &str| ReadyModel {
             instance_id: id.to_owned(),
@@ -1082,6 +1188,7 @@ mod tests {
             max_turns: 1,
             wall_secs: 1,
             context: 1,
+            tags: Vec::new(),
         };
         let ready = ReadyModel {
             instance_id: "m".to_owned(),
@@ -1187,5 +1294,103 @@ mod tests {
         assert!(parse(&["--agents-md", "on"]).unwrap());
         assert!(!parse(&["--agents-md", "off"]).unwrap());
         assert!(parse(&["--agents-md", "yes"]).is_err());
+    }
+
+    fn task_named(name: &str, tags: &[&str]) -> Task {
+        Task {
+            name: name.to_owned(),
+            dir: PathBuf::new(),
+            prompt: "p".to_owned(),
+            max_turns: 1,
+            wall_secs: 1,
+            context: 1,
+            tags: tags.iter().map(|tag| (*tag).to_owned()).collect(),
+        }
+    }
+
+    #[test]
+    fn tasks_are_unfiltered_by_default_and_the_filter_is_kept_as_typed() {
+        let args = ["--model", "m"].map(str::to_owned);
+        assert!(
+            parse_options(&args, Path::new("/"))
+                .unwrap()
+                .filter
+                .is_none()
+        );
+        let args = ["--model", "m", "--tasks", "add-*,tag:mcp"].map(str::to_owned);
+        let filter = parse_options(&args, Path::new("/"))
+            .unwrap()
+            .filter
+            .unwrap();
+        assert_eq!(filter.spec, "add-*,tag:mcp");
+        assert!(
+            matches!(&filter.patterns[..], [TaskPattern::Name(glob), TaskPattern::Tag(tag)] if glob == "add-*" && tag == "mcp")
+        );
+    }
+
+    #[test]
+    fn a_task_filter_rejects_empty_pieces() {
+        assert!(TaskFilter::parse("a,,b").is_err());
+        assert!(TaskFilter::parse("tag:").is_err());
+        assert!(TaskFilter::parse("").is_err());
+    }
+
+    #[test]
+    fn globs_match_whole_names_with_star_wildcards() {
+        assert!(glob_matches("add-cli-flag", "add-cli-flag"));
+        assert!(!glob_matches("add", "add-cli-flag"));
+        assert!(glob_matches("add-*", "add-cli-flag"));
+        assert!(!glob_matches("add-*", "rename-type"));
+        assert!(glob_matches("*-type", "rename-type"));
+        assert!(glob_matches("*", ""));
+        assert!(glob_matches("a*b*c", "axxbyyc"));
+        assert!(!glob_matches("a*b*c", "axxbyy"));
+        assert!(glob_matches("**", "x"));
+    }
+
+    #[test]
+    fn a_filter_selects_by_name_glob_or_tag() {
+        let tasks = vec![
+            task_named("add-cli-flag", &[]),
+            task_named("rename-type", &["mcp"]),
+            task_named("rename-module", &[]),
+        ];
+        let filter = TaskFilter::parse("rename-*,tag:mcp").unwrap();
+        let names: Vec<String> = select_tasks(tasks, &filter, Path::new("/evals"))
+            .unwrap()
+            .into_iter()
+            .map(|task| task.name)
+            .collect();
+        assert_eq!(names, ["rename-type", "rename-module"]);
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_is_an_error() {
+        let tasks = vec![task_named("add-cli-flag", &[])];
+        let filter = TaskFilter::parse("tag:mcp").unwrap();
+        assert!(select_tasks(tasks, &filter, Path::new("/evals")).is_err());
+    }
+
+    #[test]
+    fn task_toml_tags_default_to_none_and_must_be_strings() {
+        let dir = TempDir::new().unwrap();
+        let write = |name: &str, extra: &str| {
+            let task = dir.0.join(name);
+            fs::create_dir(&task).unwrap();
+            let body = format!("prompt = 'p'\nmax_turns = 1\nwall_time_secs = 1\n{extra}");
+            fs::write(task.join("task.toml"), body).unwrap();
+        };
+        write("plain", "");
+        write("tagged", "tags = [\"mcp\"]\n");
+        write("bad", "tags = [1]\n");
+        let Err(error) = load_tasks(&dir.0) else {
+            panic!("a non-string tag must not load");
+        };
+        assert!(format!("{error:#}").contains("bad"));
+        fs::remove_dir_all(dir.0.join("bad")).unwrap();
+        let tasks = load_tasks(&dir.0).unwrap();
+        let tags = |name: &str| tasks.iter().find(|t| t.name == name).unwrap().tags.clone();
+        assert!(tags("plain").is_empty());
+        assert_eq!(tags("tagged"), ["mcp"]);
     }
 }
