@@ -207,17 +207,37 @@ body.dragging {
   color: var(--vscode-input-placeholderForeground);
 }
 
-/* Shown while a prompt starts with `/` (view::suggestions); `hidden` keeps it out of layout. */
+/* Shown while a prompt starts with `/` (view::suggestions); `hidden` keeps it out of layout.
+   The doc panel sits beside the list, not inside it, so the list's overflow scroll never clips it. */
+.command-menu {
+  align-items: flex-start;
+  display: flex;
+  gap: 6px;
+}
+
 .commands {
   border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
   background: var(--vscode-editorWidget-background);
+  flex: 1 1 0;
   max-height: 220px;
+  min-width: 0;
   overflow-y: auto;
   margin-bottom: 6px;
 }
 
-.commands[hidden] {
+.commands[hidden],
+.command-doc[hidden] {
   display: none;
+}
+
+.command-doc {
+  border: 1px solid var(--vscode-widget-border, var(--vscode-editorWidget-border));
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-descriptionForeground);
+  flex: 0 1 240px;
+  margin-bottom: 6px;
+  overflow-wrap: anywhere;
+  padding: 4px 8px;
 }
 
 .command-source {
@@ -241,11 +261,6 @@ body.dragging {
 .command:hover {
   background: var(--vscode-list-activeSelectionBackground);
   color: var(--vscode-list-activeSelectionForeground);
-}
-
-.command-description {
-  color: var(--vscode-descriptionForeground);
-  margin-left: 8px;
 }
 
 .context-bar {

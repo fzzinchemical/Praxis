@@ -105,6 +105,8 @@ struct Ui {
     /// Commands the agent announced for this session, and the autocomplete list over them.
     commands: Vec<view::Command>,
     menu: Element,
+    /// Panel beside the list holding the description of the hovered or highlighted command.
+    command_doc: Element,
     /// Whether the list is open (closed by Escape, reopened by typing) and its highlighted row.
     menu_open: bool,
     selected: usize,
@@ -162,22 +164,32 @@ impl Ui {
                 option.set_attribute("data-command", &command.name)?;
                 option.set_attribute("aria-selected", &(row == self.selected).to_string())?;
                 option.set_class_name("command");
-                let name = self.document.create_element("span")?;
-                name.set_text_content(Some(&format!("/{}", command.name)));
-                let description = self.document.create_element("span")?;
-                description.set_class_name("command-description");
-                description.set_text_content(Some(&command.description));
-                option.append_child(&name)?;
-                option.append_child(&description)?;
+                option.set_text_content(Some(&format!("/{}", command.name)));
                 group.append_child(&option)?;
                 row += 1;
             }
             self.menu.append_child(&group)?;
         }
+        let highlighted = groups
+            .iter()
+            .flat_map(|(_, items)| items)
+            .nth(self.selected);
+        self.show_doc(highlighted.map(|command| command.description.as_str()))?;
         if groups.is_empty() {
             self.menu.set_attribute("hidden", "")
         } else {
             self.menu.remove_attribute("hidden")
+        }
+    }
+
+    /// Shows `description` in the panel beside the list, or hides the panel when there is none.
+    fn show_doc(&self, description: Option<&str>) -> Result<(), JsValue> {
+        match description.filter(|text| !text.is_empty()) {
+            Some(text) => {
+                self.command_doc.set_text_content(Some(text));
+                self.command_doc.remove_attribute("hidden")
+            }
+            None => self.command_doc.set_attribute("hidden", ""),
         }
     }
 
@@ -324,6 +336,7 @@ pub fn start() -> Result<(), JsValue> {
     let profile_fields = by_id(&document, "profile-fields")?;
     let profile_save: HtmlElement = by_id(&document, "profile-save")?.dyn_into()?;
     let menu = by_id(&document, "commands")?;
+    let command_doc = by_id(&document, "command-doc")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         document,
@@ -348,6 +361,7 @@ pub fn start() -> Result<(), JsValue> {
         input: input.clone(),
         commands: Vec::new(),
         menu: menu.clone(),
+        command_doc: command_doc.clone(),
         menu_open: false,
         selected: 0,
         turns: 0,
@@ -401,6 +415,30 @@ pub fn start() -> Result<(), JsValue> {
     });
     menu.add_event_listener_with_callback("click", on_pick.as_ref().unchecked_ref())?;
     on_pick.forget();
+
+    let state = ui.clone();
+    let on_hover = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let current = state.borrow();
+        if let Ok(Some(option)) = target.closest("[data-command]")
+            && let Some(name) = option.get_attribute("data-command")
+            && let Some(command) = current.commands.iter().find(|c| c.name == name)
+        {
+            let _ = current.show_doc(Some(&command.description));
+        }
+    });
+    menu.add_event_listener_with_callback("mouseover", on_hover.as_ref().unchecked_ref())?;
+    on_hover.forget();
+
+    // Leaving the list falls back to the highlighted row's description.
+    let state = ui.clone();
+    let on_leave = Closure::<dyn FnMut(Event)>::new(move |_: Event| {
+        let _ = state.borrow().render_menu();
+    });
+    menu.add_event_listener_with_callback("mouseleave", on_leave.as_ref().unchecked_ref())?;
+    on_leave.forget();
 
     // Enter goes through the form's submit path, so the Send handler stays the only send logic.
     let submit_form = form.clone();
