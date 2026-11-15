@@ -419,8 +419,9 @@ body.dragging {
   width: 80px;
 }
 
-/* One 2.4s loop: dots pop in one by one, then pac-man sweeps right, eats each dot as it arrives and slides under the word.
-   Pac-man moves 90px in 1.44s, about 18.7px (one dot gap) per 0.3s, so each dot's 0.3s delay keeps appear and eat in step. */
+/* One 2.4s loop: dots pop in one by one, then pac-man sweeps right and eats each dot as its mouth reaches it.
+   Dot centres sit at 16, 34.7, 53.3 and 72px and vanish at 44%, 56.5%, 69% and 81.5% (0.3s = 12.5% apart), so
+   pac-man's centre (left + 6px) moves one 18.7px gap per 12.5%, and it fades out just after the last dot. */
 .working-man {
   --pac-ink: var(--vscode-textLink-foreground, #3794ff);
   /* Mouth: a wedge centred on 90deg (facing right), half-angle --mouth, opened and closed by working-chomp. */
@@ -471,10 +472,10 @@ body.dragging {
 .working-dots i:nth-child(4) { animation-delay: 0.9s; }
 
 @keyframes working-eat {
-  0%, 40% { opacity: 0; transform: translateX(0); }
+  0%, 40% { opacity: 0; transform: translateX(4px); }
   43% { opacity: 1; }
-  84% { opacity: 1; }
-  90%, 100% { opacity: 0; transform: translateX(90px); }
+  81.5% { opacity: 1; transform: translateX(66px); }
+  84%, 100% { opacity: 0; transform: translateX(70px); }
 }
 
 @keyframes working-chomp {
@@ -489,7 +490,7 @@ body.dragging {
   44%, 100% { opacity: 0; transform: scale(0); }
 }
 
-/* Dims while pac-man passes under the word (working-eat has faded out by 90%, before it reaches the word). */
+/* Dims once pac-man has eaten the last dot and faded out (working-eat ends at 84%). */
 @keyframes working-word {
   0%, 88%, 100% { opacity: 1; }
   94% { opacity: 0.4; }
