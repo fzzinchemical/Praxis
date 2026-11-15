@@ -1719,15 +1719,17 @@ fn agent_schema(agents: &[AgentDef]) -> ToolSchema {
     ToolSchema {
         name: "Agent".to_owned(),
         description: format!(
-            "Hand a self-contained task to an agent, which works alone and returns a summary. \
-             To run subagents in parallel, call Agent several times in one response. Agents:\n{}",
+            "Hand one self-contained task to an agent, which works alone and returns a summary. \
+             Each call takes exactly one task. For several independent tasks, split them and make \
+             one Agent call per task, all in the same response, so they run in parallel; never \
+             bundle several tasks into one prompt. Agents:\n{}",
             list.join("\n")
         ),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
                 "subagent_type": {"type": "string", "description": "The agent's name from the list."},
-                "prompt": {"type": "string", "description": "The full task; the agent sees nothing else."}
+                "prompt": {"type": "string", "description": "One task, fully described; the agent sees nothing else."}
             },
             "required": ["subagent_type", "prompt"],
             "additionalProperties": false
