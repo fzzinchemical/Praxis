@@ -16,3 +16,7 @@ PATH="$HOME/mcp-servers/node_modules/.bin:$HOME/mcp-servers/venv/bin:$PATH" \
   PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright" \
   cargo test -p praxis-core --test mcp_real -- --ignored --nocapture
 ```
+
+## Eval with MCP servers (T4.5)
+
+`cargo xtask eval --model <id> --mcp ~/mcp-servers` mounts the install read-only at `/mcp-servers` inside the sandbox and starts the filesystem and git servers there. The browser server is left out: Chromium may not start inside bwrap, and the real-server check above covers it outside the sandbox. Without `--mcp` the boards stay as before.

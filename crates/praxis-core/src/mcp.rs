@@ -203,7 +203,12 @@ fn synthetic_tools(server: &str, catalog: &Catalog) -> Vec<Tool> {
         tools.push(Tool {
             schema: ToolSchema {
                 name: format!("mcp__{server}__get_prompt"),
-                description: format!("Gets a prompt from `{server}`.\n{}", list.join("\n")),
+                // Small models sent the call without `name`, so the description states it.
+                description: format!(
+                    "Gets a prompt from `{server}`. `name` is required and is one of: {}.\n{}",
+                    catalog.prompts.iter().map(|p| p.name.as_str()).collect::<Vec<_>>().join(", "),
+                    list.join("\n")
+                ),
                 parameters: json!({
                     "type": "object",
                     "properties": {

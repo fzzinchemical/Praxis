@@ -194,6 +194,18 @@ async fn resources_and_prompts_are_tools() {
         "{names:?}"
     );
 
+    let prompt_tool = mcp
+        .schemas()
+        .into_iter()
+        .find(|t| t.name == "mcp__test__get_prompt")
+        .unwrap();
+    assert!(
+        prompt_tool
+            .description
+            .contains("`name` is required and is one of: greet"),
+        "{}",
+        prompt_tool.description
+    );
     let cancel = CancellationToken::new();
     let read = mcp
         .call(

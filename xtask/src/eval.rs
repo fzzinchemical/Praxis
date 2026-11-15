@@ -9,8 +9,10 @@ use praxis_core::agent::profile::ProfileLayer;
 use praxis_core::agent::{
     Agent, AgentConfig, AgentEvent, PermissionReply, Severity, StopReason, system_prompt,
 };
+use praxis_core::config::{McpServer, StdioServer};
 use praxis_core::context::compaction::CompactionState;
 use praxis_core::context::compaction::DEFAULT_MASK_KEEP_TURNS;
+use praxis_core::mcp::{CONNECT_TIMEOUT, Mcp};
 use praxis_core::provider::{LoadPolicy, Provider, ReadyModel};
 use praxis_core::sandbox::Sandbox;
 use praxis_core::tools::ToolContext;
@@ -37,6 +39,7 @@ const WORK: &str = "/work";
 const SOCKET: &str = "/llm.sock";
 const SANDBOX_EVALS: &str = "/evals";
 const SANDBOX_PORT: u16 = 1234;
+const MCP_DIR: &str = "/mcp-servers";
 /// The agent enforces its own wall time, so this only catches a sandbox that won't stop.
 const KILL_GRACE: Duration = Duration::from_secs(60);
 const CHECK_LIMIT: Duration = Duration::from_secs(600);
@@ -56,6 +59,9 @@ struct Options {
     agents_md: bool,
     /// A private copy of this binary for the sandboxes, so a rebuild mid-run can't remove it.
     agent_exe: PathBuf,
+    /// Install dir of the real MCP servers (docs/MCP_SERVERS.md), bound read-only into the sandbox
+    /// when set. Off by default so boards without MCP stay comparable (T4.5).
+    mcp_dir: Option<PathBuf>,
 }
 
 struct Task {
@@ -78,6 +84,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
         filter_output: true,
         agents_md: false,
         agent_exe: PathBuf::new(),
+        mcp_dir: None,
     };
     let mut args = args.iter();
     while let Some(flag) = args.next() {
@@ -97,6 +104,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
                     .context("--mask-keep-turns needs a number or off")?;
                 options.mask_keep_turns = Some(turns);
             }
+            "--mcp" => options.mcp_dir = Some(value.into()),
             "--filter-output" => {
                 options.filter_output = match value.as_str() {
                     "on" => true,
@@ -116,7 +124,7 @@ fn parse_options(args: &[String], root: &Path) -> Result<Options> {
     }
     ensure!(
         !options.model.is_empty() && options.runs > 0,
-        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off] [--filter-output on|off] [--agents-md on|off]"
+        "usage: cargo xtask eval --model <id> [--runs N] [--base-url URL] [--evals-dir DIR] [--out FILE] [--mask-keep-turns N|off] [--filter-output on|off] [--agents-md on|off] [--mcp DIR]"
     );
     Ok(options)
 }
@@ -266,6 +274,40 @@ async fn forward_to_server(listener: UnixListener, server: String) {
     }
 }
 
+/// The filesystem and git servers from docs/MCP_SERVERS.md, as started inside the sandbox.
+// shortcut: browser server left out, since Chromium may not start inside bwrap; add it once checked.
+fn mcp_servers() -> BTreeMap<String, McpServer> {
+    let stdio = |command: String, args: Vec<String>| {
+        McpServer::Stdio(StdioServer {
+            command,
+            args,
+            env: BTreeMap::new(),
+        })
+    };
+    BTreeMap::from([
+        (
+            "filesystem".to_owned(),
+            stdio(
+                format!("{MCP_DIR}/node_modules/.bin/mcp-server-filesystem"),
+                vec![WORK.to_owned()],
+            ),
+        ),
+        (
+            "git".to_owned(),
+            stdio(format!("{MCP_DIR}/venv/bin/mcp-server-git"), Vec::new()),
+        ),
+    ])
+}
+
+async fn connect_mcp() -> Mcp {
+    let (mcp, notices) = Mcp::connect(&mcp_servers(), CONNECT_TIMEOUT).await;
+    for notice in notices {
+        eprintln!("{notice}");
+    }
+    eprintln!("mcp: {} tools", mcp.schemas().len());
+    mcp
+}
+
 fn server_address(base_url: &str) -> Result<String> {
     let rest = base_url
         .strip_prefix("http://")
@@ -314,6 +356,11 @@ pub async fn agent_main(spec: &str) -> Result<()> {
         vendor.as_ref(),
         &[],
     );
+    let mcp = if spec["mcp"] == true {
+        Some(connect_mcp().await)
+    } else {
+        None
+    };
     let mut agent = Agent::new(
         Arc::new(provider),
         // Same sandbox as the CLI, applied inside the eval's own bwrap container.
@@ -357,6 +404,9 @@ pub async fn agent_main(spec: &str) -> Result<()> {
     )
     // As in the CLI and ACP, so the eval sends the Agent tool the product sends (T13.9).
     .with_agents(Vec::new());
+    if let Some(mcp) = mcp {
+        agent = agent.with_mcp(Arc::new(mcp));
+    }
     let cancel = CancellationToken::new();
     let timer = cancel.clone();
     let wall_secs = number("wall_secs")?;
@@ -492,6 +542,7 @@ fn agent_spec(
         "wall_secs": task.wall_secs,
         "mask_keep_turns": options.mask_keep_turns,
         "filter_output": options.filter_output,
+        "mcp": options.mcp_dir.is_some(),
         "agents_md": options.agents_md,
         "vendor": vendor,
     })
@@ -515,6 +566,9 @@ async fn try_run_agent(
     let mut command = sandbox();
     command.arg("--bind").arg(work).arg(WORK);
     command.arg("--ro-bind").arg(&socket).arg(SOCKET);
+    if let Some(dir) = &options.mcp_dir {
+        command.arg("--ro-bind").arg(dir).arg(MCP_DIR);
+    }
     command
         .arg("--ro-bind")
         .arg(&options.agent_exe)
@@ -1074,6 +1128,33 @@ mod tests {
         assert_eq!(parse("5").unwrap(), Some(5));
         assert_eq!(parse("off").unwrap(), None);
         assert!(parse("lots").is_err());
+    }
+
+    #[test]
+    fn eval_mcp_servers_run_from_the_mounted_dir_and_serve_the_work_dir() {
+        let servers = mcp_servers();
+        assert_eq!(servers.keys().collect::<Vec<_>>(), ["filesystem", "git"]);
+        let McpServer::Stdio(fs) = &servers["filesystem"] else {
+            panic!("filesystem is not stdio");
+        };
+        assert!(fs.command.starts_with(MCP_DIR), "{}", fs.command);
+        assert_eq!(fs.args, [WORK]);
+    }
+
+    #[test]
+    fn mcp_servers_are_off_unless_a_dir_is_given() {
+        let args = ["--model", "m"].map(str::to_owned);
+        assert!(
+            parse_options(&args, Path::new("/"))
+                .unwrap()
+                .mcp_dir
+                .is_none()
+        );
+        let with = ["--model", "m", "--mcp", "/home/u/mcp-servers"].map(str::to_owned);
+        assert_eq!(
+            parse_options(&with, Path::new("/")).unwrap().mcp_dir,
+            Some(PathBuf::from("/home/u/mcp-servers"))
+        );
     }
 
     #[test]
