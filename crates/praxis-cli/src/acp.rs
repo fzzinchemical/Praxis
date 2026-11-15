@@ -8,6 +8,7 @@ use agent_client_protocol::{
 use praxis_core::agent::{
     Agent, AgentEvent, PermissionReply, StopReason, SubagentStops, ToolCallId, ToolOutcome, title,
 };
+use praxis_core::mcp::ServerStatus;
 use praxis_core::permissions::Mode;
 use praxis_core::plugin::Skill;
 use praxis_core::provider::{MEMORY_MARK, Message, ToolCall};
@@ -15,7 +16,7 @@ use praxis_core::session::{self, Entry, SessionLog};
 use praxis_core::tools::{DiagnosticsReader, EditorReader};
 use praxis_core::tools::{FileDiff, ToolOutput};
 use serde_json::{Value, json};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -54,6 +55,10 @@ struct Slot {
     model: String,
     /// The permission mode the session's turns use; session-only, so a new session starts on the config's.
     mode: Mode,
+    /// The session's MCP servers, as connected when it opened. Kept here so listing them never waits for a turn.
+    mcp: Vec<ServerStatus>,
+    /// Servers the session turned off; pushed into the agent when a turn starts.
+    mcp_off: BTreeSet<String>,
 }
 
 struct Server<M> {
@@ -80,6 +85,11 @@ const DIAGNOSTICS: &str = "_praxis/diagnostics";
 const REWIND: &str = "_praxis/rewind";
 /// Extension request the panel sends for "Revert file": `sessionId`, `path`. Answered with `path`.
 const REVERT: &str = "_praxis/revert_file";
+/// Extension request listing the session's MCP servers: `sessionId`. Answered with `servers`.
+const MCP_SERVERS: &str = "_praxis/mcp_servers";
+/// Extension request that turns one MCP server on or off for the session: `sessionId`, `name`,
+/// `enabled`. Applies from the session's next turn (SPEC §13).
+const SET_MCP_ENABLED: &str = "_praxis/set_mcp_enabled";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 
@@ -183,6 +193,7 @@ impl<M: Models> Server<M> {
             .map(|e| e.message.clone())
             .collect();
         let subagents = agent.subagent_stops();
+        let mcp = agent.mcp_servers();
         let agent = Some(agent.with_session(log, main));
         let cancel = CancellationToken::new();
         let model = self.models.default_key();
@@ -192,6 +203,8 @@ impl<M: Models> Server<M> {
             subagents,
             model: model.clone(),
             mode,
+            mcp,
+            mcp_off: BTreeSet::new(),
         };
         self.sessions().insert(id.clone(), slot);
         Ok((id, prior, model))
@@ -202,12 +215,53 @@ impl<M: Models> Server<M> {
         let slot = sessions
             .get_mut(id)
             .ok_or_else(|| Error::invalid_params().data(format!("unknown session `{id}`")))?;
-        let agent = slot
+        let mut agent = slot
             .agent
             .take()
             .ok_or_else(|| Error::invalid_params().data("a prompt is already running"))?;
+        agent.set_mcp_disabled(slot.mcp_off.clone());
         slot.cancel = CancellationToken::new();
         Ok((agent, slot.cancel.clone()))
+    }
+
+    /// The session's MCP servers and whether each is on. Answered from the slot, so it also
+    /// works while a turn runs.
+    fn mcp_servers(&self, id: &str) -> Result<Value, Error> {
+        let sessions = self.sessions();
+        let slot = sessions
+            .get(id)
+            .ok_or_else(|| Error::invalid_params().data(format!("unknown session `{id}`")))?;
+        let servers: Vec<Value> = slot
+            .mcp
+            .iter()
+            .map(|s| {
+                json!({
+                    "name": s.name,
+                    "source": s.source.as_str(),
+                    "status": s.status.as_str(),
+                    "tools": s.tools,
+                    "enabled": !slot.mcp_off.contains(&s.name),
+                })
+            })
+            .collect();
+        Ok(json!({"servers": servers}))
+    }
+
+    /// Turns one MCP server on or off for session `id`, from its next turn (SPEC §13).
+    fn set_mcp_enabled(&self, id: &str, name: &str, enabled: bool) -> Result<(), Error> {
+        let mut sessions = self.sessions();
+        let slot = sessions
+            .get_mut(id)
+            .ok_or_else(|| Error::invalid_params().data(format!("unknown session `{id}`")))?;
+        if !slot.mcp.iter().any(|s| s.name == name) {
+            return Err(Error::invalid_params().data(format!("no MCP server named `{name}`")));
+        }
+        if enabled {
+            slot.mcp_off.remove(name);
+        } else {
+            slot.mcp_off.insert(name.to_owned());
+        }
+        Ok(())
     }
 
     fn end_turn(&self, id: &str, agent: Agent) {
@@ -638,6 +692,32 @@ pub fn agent(
                         Ok(()) => responder.respond(json!({"path": path})),
                         Err(e) => responder
                             .respond_with_error(Error::invalid_params().data(e.to_string())),
+                    };
+                }
+                if req.method() == MCP_SERVERS {
+                    let Some(session) = req.params()["sessionId"].as_str() else {
+                        let error = Error::invalid_params().data("mcp_servers needs a sessionId");
+                        return responder.respond_with_error(error);
+                    };
+                    return match for_rewind.mcp_servers(session) {
+                        Ok(list) => responder.respond(list),
+                        Err(e) => responder.respond_with_error(e),
+                    };
+                }
+                if req.method() == SET_MCP_ENABLED {
+                    let params = req.params();
+                    let (Some(session), Some(name), Some(enabled)) = (
+                        params["sessionId"].as_str(),
+                        params["name"].as_str(),
+                        params["enabled"].as_bool(),
+                    ) else {
+                        let error = Error::invalid_params()
+                            .data("set_mcp_enabled needs a sessionId, a name and enabled");
+                        return responder.respond_with_error(error);
+                    };
+                    return match for_rewind.set_mcp_enabled(session, name, enabled) {
+                        Ok(()) => responder.respond(json!({"name": name, "enabled": enabled})),
+                        Err(e) => responder.respond_with_error(e),
                     };
                 }
                 if req.method() != REWIND {
@@ -1445,6 +1525,94 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn the_mcp_extension_requests_answer_and_refuse_bad_input() {
+        let dir = temp_dir("mcp-requests");
+        let server = fake_server().await;
+        let run = Client.v1().connect_with(praxis(&server, &dir), async |cx| {
+            let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+            cx.send_request(init).block_task().await?;
+            let session = cx
+                .send_request(v1::NewSessionRequest::new(&dir))
+                .block_task()
+                .await?
+                .session_id
+                .to_string();
+            let listed = UntypedMessage::new(MCP_SERVERS, json!({"sessionId": session}))?;
+            let listed = cx.send_request(listed).block_task().await?;
+            let toggle = json!({"sessionId": session, "name": "nope", "enabled": false});
+            let refused = cx
+                .send_request(UntypedMessage::new(SET_MCP_ENABLED, toggle)?)
+                .block_task()
+                .await;
+            let missing = UntypedMessage::new(MCP_SERVERS, json!({}))?;
+            let no_session = cx.send_request(missing).block_task().await;
+            Ok((listed, refused.is_err(), no_session.is_err()))
+        });
+        let (listed, refused, no_session) = tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(listed["servers"], json!([]));
+        assert!(
+            refused,
+            "a toggle for an unknown server must be an error reply"
+        );
+        assert!(
+            no_session,
+            "a request without a sessionId must be an error reply"
+        );
+    }
+
+    /// A session's MCP toggles live in its slot: listed with their enabled flag, changed per
+    /// session, and unknown names or sessions are refused (SPEC §11).
+    #[test]
+    fn mcp_toggles_are_per_session_and_refuse_unknown_names() {
+        use praxis_core::config::McpSource;
+        use praxis_core::mcp::{Health, ServerStatus};
+        let dir = temp_dir("mcp-toggles");
+        let server = Server {
+            new_agent: Box::new(|| unreachable!("no new agent is needed")),
+            models: FakeModels,
+            sessions_dir: dir.join("sessions"),
+            commands: Vec::new(),
+            sessions: Mutex::new(HashMap::new()),
+            client_reads: AtomicBool::new(false),
+            client_diagnostics: AtomicBool::new(false),
+        };
+        let status = ServerStatus {
+            name: "git".into(),
+            source: McpSource::Plugin,
+            status: Health::Connected,
+            tools: vec!["git_status".into()],
+        };
+        let slot = Slot {
+            agent: None,
+            cancel: CancellationToken::new(),
+            subagents: SubagentStops::default(),
+            model: "m".into(),
+            mode: Mode::Ask,
+            mcp: vec![status],
+            mcp_off: BTreeSet::new(),
+        };
+        server.sessions().insert("s".into(), slot);
+        server.set_mcp_enabled("s", "git", false).unwrap();
+        let listed = server.mcp_servers("s").unwrap();
+        assert_eq!(
+            listed,
+            json!({"servers": [{"name": "git", "source": "plugin", "status": "connected",
+                "tools": ["git_status"], "enabled": false}]})
+        );
+        assert!(server.set_mcp_enabled("s", "nope", true).is_err());
+        assert!(server.set_mcp_enabled("gone", "git", true).is_err());
+        assert!(server.mcp_servers("gone").is_err());
+        server.set_mcp_enabled("s", "git", true).unwrap();
+        assert_eq!(
+            server.mcp_servers("s").unwrap()["servers"][0]["enabled"],
+            true
+        );
+    }
+
     /// Stands in for a turn whose task panicked, so its agent never comes back.
     fn crashed_turn() -> Agent {
         panic!("turn crashed")
@@ -1516,6 +1684,8 @@ mod tests {
             cancel: CancellationToken::new(),
             model: "m".into(),
             mode: Mode::Ask,
+            mcp: Vec::new(),
+            mcp_off: BTreeSet::new(),
         };
         server.sessions().insert("s".into(), slot);
         let (_agent, _cancel) = server.begin_turn("s").unwrap();

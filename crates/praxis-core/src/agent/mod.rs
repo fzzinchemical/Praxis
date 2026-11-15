@@ -14,7 +14,7 @@ use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::{ScopedRule, SessionFacts, dir_memory};
 use crate::hooks::{Hook, Outcome, PermissionDecision};
-use crate::mcp::Mcp;
+use crate::mcp::{Mcp, ServerStatus};
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::plugin::{AgentDef, Skill, render};
 use crate::provider::{
@@ -27,7 +27,7 @@ use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -213,6 +213,8 @@ pub struct Agent {
     /// The first failed log write, which stops the turn.
     log_error: Option<std::io::Error>,
     mcp: Option<Arc<Mcp>>,
+    /// Servers the session turned off (SPEC §13). Session-only; applied from the next request.
+    mcp_off: BTreeSet<String>,
     /// Plugin skills, indexed in the prefix and loaded by the `Skill` tool.
     skills: Vec<Skill>,
     /// `PreToolUse` hooks from enabled plugins, with each plugin's root.
@@ -328,6 +330,7 @@ impl Agent {
             session: None,
             log_error: None,
             mcp: None,
+            mcp_off: BTreeSet::new(),
             skills: Vec::new(),
             hooks: Vec::new(),
             mcp_index: String::new(),
@@ -364,6 +367,36 @@ impl Agent {
         self.mcp = Some(mcp);
         self.reassemble_prefix();
         self
+    }
+
+    /// Turns MCP servers off (`off` names them) for this session, from the next request. Their
+    /// tools leave `tools` or the index, and calls to them fail (SPEC §13). Nothing is saved.
+    // shortcut: indexed or direct mode is still decided once at `with_mcp`, so turning servers
+    // off never switches a session between the two.
+    pub fn set_mcp_disabled(&mut self, off: BTreeSet<String>) {
+        if off == self.mcp_off {
+            return;
+        }
+        self.mcp_off = off;
+        let Some(mcp) = self.mcp.as_ref() else {
+            return;
+        };
+        let enabled = mcp.schemas_without(&self.mcp_off);
+        if self.mcp_index.is_empty() {
+            self.tool_schemas.retain(|t| !t.name.starts_with("mcp__"));
+            self.tool_schemas.extend(enabled);
+        } else {
+            self.mcp_index = mcp_index(&enabled);
+        }
+        self.reassemble_prefix();
+    }
+
+    /// The session's MCP servers, as connected at session start.
+    pub fn mcp_servers(&self) -> Vec<ServerStatus> {
+        self.mcp
+            .as_ref()
+            .map(|mcp| mcp.server_statuses())
+            .unwrap_or_default()
     }
 
     /// Adds the `Skill` tool and the skills' index to the prefix. Call before the first turn.
@@ -443,12 +476,16 @@ impl Agent {
                 .collect();
             // Agents only see the MCP tools they may use (SPEC §12).
             if !self.mcp_index.is_empty() {
-                let schemas = self.mcp.iter().flat_map(|m| m.schemas());
+                let schemas = self
+                    .mcp
+                    .iter()
+                    .flat_map(|m| m.schemas_without(&self.mcp_off));
                 let permitted: Vec<ToolSchema> =
                     schemas.filter(|s| child.permits(&s.name)).collect();
                 child.mcp_index = mcp_index(&permitted);
             }
             child.mcp.clone_from(&self.mcp);
+            child.mcp_off.clone_from(&self.mcp_off);
             child.hooks.clone_from(&self.hooks);
             child.swaps = Arc::clone(&self.swaps);
             child.reassemble_prefix();
@@ -1048,7 +1085,7 @@ impl Agent {
         let found: Vec<String> = self
             .mcp
             .iter()
-            .flat_map(|mcp| mcp.schemas())
+            .flat_map(|mcp| mcp.schemas_without(&self.mcp_off))
             .filter(|s| self.permits(&s.name))
             .filter(|s| {
                 let text = format!("{} {}", s.name, s.description).to_lowercase();
@@ -1125,6 +1162,16 @@ impl Agent {
 
     /// Only a call that passes this may reach the permission path (SPEC §5.3).
     fn validate(&self, name: &str, input: &Value) -> Result<(), String> {
+        if let Some(server) = self
+            .mcp
+            .as_ref()
+            .and_then(|mcp| mcp.server_of(name))
+            .filter(|server| self.mcp_off.contains(*server))
+        {
+            return Err(format!(
+                "MCP server `{server}` is turned off for this session."
+            ));
+        }
         if name == "CallTool" && !self.mcp_index.is_empty() {
             // A valid `CallTool` was unwrapped before it got here.
             return Err(

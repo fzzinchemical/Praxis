@@ -42,9 +42,32 @@ pub struct Config {
     pub profiles: BTreeMap<String, ProfileLayer>,
     /// `[mcp.name]` servers (SPEC §13). Project ones run code, so they need approval.
     pub mcp: BTreeMap<String, McpServer>,
+    /// Where each `mcp` server was declared. Filled by the loader, never read from a file.
+    #[serde(skip)]
+    pub mcp_sources: BTreeMap<String, McpSource>,
     /// Hooks from Claude Code settings files. Filled by the loader, never read from a file.
     #[serde(skip)]
     pub hooks: Vec<Hook>,
+}
+
+/// Which layer declared an MCP server, as the session's server list shows it (SPEC §11, §13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum McpSource {
+    User,
+    Project,
+    Plugin,
+    LmStudio,
+}
+
+impl McpSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Project => "project",
+            Self::Plugin => "plugin",
+            Self::LmStudio => "lmstudio",
+        }
+    }
 }
 
 /// An MCP server, from `[mcp.name]` or Claude Code's `.mcp.json` shape (SPEC §8, §13).
@@ -374,6 +397,9 @@ pub fn load_with_approval(
     let mut hooks = Vec::new();
     // Names Praxis config defines, approved or not; LM Studio's servers can't take them.
     let mut defined = Vec::new();
+    // Names of the project's approved MCP servers, so each can say it came from the project.
+    let mut project_mcp = std::collections::BTreeSet::new();
+    let mut lmstudio_mcp = std::collections::BTreeSet::new();
     // Claude Code's user file sits below the praxis user layer and needs no approval: it's the
     // user's own file (SPEC §8).
     if let Some(path) = &sources.claude_user {
@@ -441,6 +467,9 @@ pub fn load_with_approval(
                 ));
             }
         }
+        if let Some(Value::Table(servers)) = project.get("mcp") {
+            project_mcp.extend(servers.keys().cloned());
+        }
         merge(&mut merged, project, "");
     }
     if let Some(path) = &sources.lmstudio_mcp {
@@ -459,6 +488,9 @@ pub fn load_with_approval(
         if has_servers {
             let text = toml::to_string(&lmstudio).map_err(|e| error("config", e))?;
             if is_approved(&sources, path, &text, approve)? {
+                if let Some(Value::Table(servers)) = lmstudio.get("mcp") {
+                    lmstudio_mcp.extend(servers.keys().cloned());
+                }
                 merge(&mut merged, lmstudio, "");
             } else {
                 notices.push(format!(
@@ -486,6 +518,20 @@ pub fn load_with_approval(
     let mut config: Config = merged
         .try_into()
         .map_err(|e: toml::de::Error| error("config", e.message()))?;
+    config.mcp_sources = config
+        .mcp
+        .keys()
+        .map(|name| {
+            let source = if project_mcp.contains(name) {
+                McpSource::Project
+            } else if lmstudio_mcp.contains(name) {
+                McpSource::LmStudio
+            } else {
+                McpSource::User
+            };
+            (name.clone(), source)
+        })
+        .collect();
     config.hooks = hooks;
     Ok(Loaded { config, notices })
 }

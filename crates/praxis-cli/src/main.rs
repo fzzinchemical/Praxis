@@ -1208,6 +1208,13 @@ async fn run(
     };
     let plugins = load_plugins(&workspace, &config);
     let mut servers = config.mcp.clone();
+    let mut sources = config.mcp_sources.clone();
+    sources.extend(
+        plugins
+            .mcp
+            .keys()
+            .map(|name| (name.clone(), praxis_core::mcp::McpSource::Plugin)),
+    );
     servers.extend(plugins.mcp);
     // Connecting needs only config, so it overlaps the model load (F11). Pinning stays after the reply.
     let connect = async {
@@ -1278,7 +1285,8 @@ async fn run(
         policy,
         masking: true,
     };
-    let mcp = connected.map(|(mut mcp, mut notices)| {
+    let mcp = connected.map(|(mcp, mut notices)| {
+        let mut mcp = mcp.with_sources(&sources);
         notices.extend(mcp.pin(trust.as_ref(), &mut |change| {
             approve_mcp_change(change, terminal.as_mut())
         }));

@@ -827,6 +827,8 @@ Stop reasons: `end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancell
 
 **Stopping one subagent (T10.12):** the extension notification `_praxis/cancel_subagent` with params `{sessionId, toolCallId}` cancels the subagent running under that `Agent` call and nothing else. Each subagent runs under its own child of the turn's token, so the `Agent` call completes with the text `The user stopped this subagent.` (not an error) and the turn goes on to its end. Unknown ids and finished subagents are ignored. Other extension notifications are ignored too.
 
+**MCP servers (T4.7):** `_praxis/mcp_servers` with `{sessionId}` answers `{servers: [{name, source, status, tools, enabled}]}`, where `source` is `user`, `project`, `plugin` or `lmstudio`, `status` is `connected`, `failed` or `needs_approval`, and `tools` is the list of tool names without the `mcp__server__` prefix. `_praxis/set_mcp_enabled` with `{sessionId, name, enabled}` answers `{name, enabled}`. Both are session-only and nothing is persisted. A change applies from the session's next turn.
+
 **Rewinding to a turn (T11.5):** the extension request `_praxis/rewind` with params `{sessionId, turn}` runs `Agent::rewind_to_turn` (SPEC §8) and answers `{turn}`. An out-of-window turn, or a turn still running, is an error reply and changes nothing. The panel's "Rewind to here" button on a user message sends it, and on success cuts the chat back to that message.
 
 Checked against `v1::schema` in schema crate 1.15.1 (T0.5, [ADR 0003](adr/0003-keep-acp-for-the-front-end-protocol.md)):
@@ -1050,6 +1052,8 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 - **Description scan:** at approval, flag instruction-like wording, encoded content and unusual length as a warning only. It catches part of the problem and has false positives, so it never blocks and never counts as a defence.
 - **Timeouts:** default 60 s per call, and cancellation is forwarded.
 - **Schemas:** weak models choke on large schemas, so strip `$comment`, `examples` and long descriptions in the prompt, but validate against the original.
+
+- **Session toggles (T4.7):** a session can turn a server off. Its tools leave `tools` (or the indexed list and `ToolSearch`), and calls to them fail with a tool error saying the server is off. The change applies from the next request, since a changed tool list breaks the prompt cache (§7). The set is kept per session and never saved.
 
 Start with tools, then resources and prompts.
 

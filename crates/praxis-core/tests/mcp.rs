@@ -8,7 +8,7 @@
 use praxis_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use praxis_core::config::{HttpServer, McpServer, StdioServer};
 use praxis_core::hooks::{Hook, Matcher};
-use praxis_core::mcp::Mcp;
+use praxis_core::mcp::{Health, Mcp, McpSource};
 use praxis_core::provider::Provider;
 use praxis_core::tools::ToolContext;
 use praxis_core::trust::TrustStore;
@@ -464,6 +464,8 @@ async fn changed_descriptions_hide_the_tool_until_approved_again() {
     );
     // The scan only warns: approving still offers the tool.
     assert!(echo.to_lowercase().contains("warning"), "{echo}");
+    let held = mcp.server_statuses();
+    assert_eq!(held[0].status, Health::NeedsApproval, "{held:?}");
 
     let (mut mcp, _) = Mcp::connect(&with(hostile), Duration::from_secs(10)).await;
     mcp.pin(Some(&store), &mut |_| true);
@@ -777,6 +779,143 @@ async fn subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools() {
     }
 }
 
+/// Runs one turn and returns the output of its tool call, if it made one.
+async fn play(agent: &mut Agent) -> Option<praxis_core::tools::ToolOutput> {
+    let (tx, mut rx) = mpsc::channel(256);
+    agent
+        .run_turn("go".into(), &tx, CancellationToken::new())
+        .await;
+    drop(tx);
+    let mut output = None;
+    while let Some(event) = rx.recv().await {
+        if let AgentEvent::ToolFinished {
+            outcome: ToolOutcome::Completed(out),
+            ..
+        } = event
+        {
+            output = Some(out);
+        }
+    }
+    output
+}
+
+/// Turn two's requests and the output of its tool call, after the test server was turned off
+/// for the session between turn one and turn two (T4.7). Each mock answers once, in order.
+async fn after_turning_the_server_off(
+    context_size: u32,
+    tool: &str,
+    arguments: &str,
+) -> (Vec<Value>, Option<praxis_core::tools::ToolOutput>) {
+    let model = MockServer::start().await;
+    let call = json!({"index": 0, "id": "c1", "function": {"name": tool, "arguments": arguments}});
+    let text = |content: &str| {
+        ResponseTemplate::new(200).set_body_raw(
+            sse(&[json!({"choices": [{"delta": {"content": content}, "finish_reason": "stop"}]})]),
+            "text/event-stream",
+        )
+    };
+    Mock::given(matchers::method("POST"))
+        .respond_with(text("one"))
+        .up_to_n_times(1)
+        .mount(&model)
+        .await;
+    Mock::given(matchers::method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            sse(&[
+                json!({"choices": [{"delta": {"tool_calls": [call]}, "finish_reason": null}]}),
+                json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            ]),
+            "text/event-stream",
+        ))
+        .up_to_n_times(1)
+        .mount(&model)
+        .await;
+    Mock::given(matchers::method("POST"))
+        .respond_with(text("two"))
+        .mount(&model)
+        .await;
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let policy =
+        praxis_core::permissions::Policy::new(Default::default(), &["mcp__test".to_owned()], &[])
+            .unwrap();
+    let mut agent = Agent::new(
+        Arc::new(Provider::new(&model.uri(), None).unwrap()),
+        Arc::new(ToolContext::new(&std::env::temp_dir()).unwrap()),
+        AgentConfig {
+            model: "m".into(),
+            context_size,
+            system_prompt: "sys".into(),
+            memory: Vec::new(),
+            scoped_rules: Vec::new(),
+            mask_keep_turns: 10,
+            max_turn_requests: 5,
+            profile: praxis_core::agent::profile::ModelProfile::default(),
+            seed: None,
+            policy,
+            masking: true,
+        },
+    )
+    .with_mcp(Arc::new(mcp));
+    play(&mut agent).await;
+    agent.set_mcp_disabled(std::collections::BTreeSet::from(["test".to_owned()]));
+    let output = play(&mut agent).await;
+    let requests = model
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    (requests, output)
+}
+
+async fn a_server_turned_off_leaves_the_next_turn_and_its_calls_fail() {
+    // Direct mode: the schemas are in `tools`, and a call names the tool itself.
+    let (requests, output) =
+        after_turning_the_server_off(100_000, "mcp__test__echo", r#"{"text":"hi"}"#).await;
+    assert!(requests[0].to_string().contains("mcp__test__echo"));
+    assert!(!requests[1].to_string().contains("mcp__test__echo"));
+    let output = output.unwrap();
+    assert!(
+        output.is_error && output.content.contains("turned off"),
+        "{}",
+        output.content
+    );
+
+    // Indexed mode: the search and the call both leave the server out.
+    let (requests, output) =
+        after_turning_the_server_off(SMALL_CONTEXT, "ToolSearch", r#"{"query":"echo"}"#).await;
+    assert!(requests[0].to_string().contains("mcp__test__echo"));
+    assert!(!requests[1].to_string().contains("mcp__test__echo"));
+    assert!(output.unwrap().content.contains("No MCP tool matches"));
+    let (_, output) = after_turning_the_server_off(SMALL_CONTEXT, "CallTool", ECHO_CALL).await;
+    let output = output.unwrap();
+    assert!(
+        output.is_error && output.content.contains("turned off"),
+        "{}",
+        output.content
+    );
+}
+
+async fn statuses_name_each_servers_source_health_and_tools() {
+    let (mcp, _) = Mcp::connect(&servers(), Duration::from_secs(2)).await;
+    let mcp = mcp.with_sources(&BTreeMap::from([("test".to_owned(), McpSource::Plugin)]));
+    let statuses = mcp.server_statuses();
+    let find = |name: &str| statuses.iter().find(|s| s.name == name).unwrap().clone();
+    let test = find("test");
+    assert_eq!(
+        (test.source, test.status),
+        (McpSource::Plugin, Health::Connected)
+    );
+    assert!(test.tools.contains(&"echo".to_owned()), "{test:?}");
+    let broken = find("broken");
+    assert_eq!(
+        (broken.source, broken.status, broken.tools.len()),
+        (McpSource::User, Health::Failed, 0)
+    );
+    assert_eq!(find("slow").status, Health::Failed);
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -814,4 +953,8 @@ fn main() {
     println!("indexed_requests_keep_a_stable_prefix ... ok");
     runtime.block_on(subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools());
     println!("subagents_keep_indexed_mode_and_their_limits_apply_to_inner_tools ... ok");
+    runtime.block_on(a_server_turned_off_leaves_the_next_turn_and_its_calls_fail());
+    println!("a_server_turned_off_leaves_the_next_turn_and_its_calls_fail ... ok");
+    runtime.block_on(statuses_name_each_servers_source_health_and_tools());
+    println!("statuses_name_each_servers_source_health_and_tools ... ok");
 }

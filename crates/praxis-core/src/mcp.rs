@@ -1,6 +1,7 @@
 //! MCP client over stdio (SPEC §13). Tools are listed once at connect and frozen, so the
 //! `tools` array never changes mid-session (SPEC §7).
 
+pub use crate::config::McpSource;
 use crate::config::{HttpServer, McpServer};
 use crate::provider::{ToolSchema, is_loopback};
 use crate::tools::ToolOutput;
@@ -17,7 +18,7 @@ use rmcp::transport::TokioChildProcess;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{ClientHandler, RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::process::Stdio;
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -61,11 +62,44 @@ impl ClientHandler for Handler {
 
 type Client = RunningService<RoleClient, Handler>;
 
+/// Where a server stands for the session's server list (SPEC §13).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    Connected,
+    Failed,
+    /// Some of its tools are hidden until the user approves their changed definitions.
+    NeedsApproval,
+}
+
+impl Health {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Connected => "connected",
+            Self::Failed => "failed",
+            Self::NeedsApproval => "needs_approval",
+        }
+    }
+}
+
+/// One configured server as the session's server list shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerStatus {
+    pub name: String,
+    pub source: McpSource,
+    pub status: Health,
+    /// The names the server reports for its tools, without the `mcp__server__` prefix.
+    pub tools: Vec<String>,
+}
+
 /// The connected servers and their frozen tools.
 #[derive(Default)]
 pub struct Mcp {
     clients: Mutex<HashMap<String, Client>>,
     servers: BTreeMap<String, McpServer>,
+    /// Every configured server's source, including ones that failed to connect.
+    sources: BTreeMap<String, McpSource>,
+    /// Servers with a tool hidden by `pin`, awaiting approval.
+    held: BTreeSet<String>,
     /// Servers already restarted after a crash; a second crash leaves them down.
     reconnected: Mutex<HashSet<String>>,
     tools: Vec<Tool>,
@@ -249,6 +283,7 @@ impl Mcp {
         let mut mcp = Self::default();
         let mut notices = Vec::new();
         for (server, config, result) in join_all(attempts).await {
+            mcp.sources.insert(server.clone(), McpSource::User);
             match result {
                 Ok((client, catalog)) => {
                     mcp.tools.extend(catalog.tools.iter().map(|tool| Tool {
@@ -289,6 +324,7 @@ impl Mcp {
             return Vec::new();
         };
         let mut notices = Vec::new();
+        let held = &mut self.held;
         self.tools.retain(|tool| {
             let schema = &tool.schema;
             let name = &schema.name;
@@ -331,6 +367,7 @@ impl Mcp {
                 notices.push(format!(
                     "MCP tool `{name}` is hidden: its definition changed and needs your approval."
                 ));
+                held.insert(tool.server.clone());
                 return false;
             }
             let pinned = store
@@ -344,8 +381,61 @@ impl Mcp {
         notices
     }
 
+    /// Records each server's source where the loader knows it; others stay `User`. Names
+    /// that aren't configured are ignored.
+    pub fn with_sources(mut self, sources: &BTreeMap<String, McpSource>) -> Self {
+        for (name, source) in sources {
+            if let Some(slot) = self.sources.get_mut(name) {
+                *slot = *source;
+            }
+        }
+        self
+    }
+
     pub fn schemas(&self) -> Vec<ToolSchema> {
         self.tools.iter().map(|tool| tool.schema.clone()).collect()
+    }
+
+    /// The schemas of every server not in `off`, for a session that turned some off (SPEC §13).
+    pub fn schemas_without(&self, off: &BTreeSet<String>) -> Vec<ToolSchema> {
+        self.tools
+            .iter()
+            .filter(|tool| !off.contains(&tool.server))
+            .map(|tool| tool.schema.clone())
+            .collect()
+    }
+
+    /// The server that owns the model-visible tool `name`, if there is one.
+    pub fn server_of(&self, name: &str) -> Option<&str> {
+        self.find(name).map(|tool| tool.server.as_str())
+    }
+
+    /// Every configured server, connected or not, in name order.
+    pub fn server_statuses(&self) -> Vec<ServerStatus> {
+        let clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
+        self.sources
+            .iter()
+            .map(|(name, source)| ServerStatus {
+                name: name.clone(),
+                source: *source,
+                status: if !clients.contains_key(name) {
+                    Health::Failed
+                } else if self.held.contains(name) {
+                    Health::NeedsApproval
+                } else {
+                    Health::Connected
+                },
+                tools: self
+                    .tools
+                    .iter()
+                    .filter(|t| &t.server == name)
+                    .filter_map(|t| match &t.op {
+                        Op::Tool(tool) => Some(tool.clone()),
+                        Op::ReadResource | Op::GetPrompt => None,
+                    })
+                    .collect(),
+            })
+            .collect()
     }
 
     pub(crate) fn schema(&self, name: &str) -> Option<&ToolSchema> {

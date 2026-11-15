@@ -441,9 +441,10 @@ flowchart LR
   - **Needs:** T4.1.
   - **Done when:** a test server that changes a description has that tool hidden until approved again, with the change shown; the description scan warns but never blocks; plugin servers are covered.
 
-- [ ] **T4.7 Session MCP toggles** (§11, §13)
+- [x] **T4.7 Session MCP toggles** (§11, §13)
   - **Needs:** T4.3.
   - **Done when:** ACP ext method `_praxis/mcp_servers` (`{sessionId}`) answers `{servers: [{name, source, status, tools, enabled}]}` (`source`: `user`|`project`|`plugin`|`lmstudio`; `status`: `connected`|`failed`|`needs_approval`), and `_praxis/set_mcp_enabled` (`{sessionId, name, enabled}`) turns a server off or on for that session only, from the next turn (prompt cache, §7). A disabled server's tools are absent from `tools` and from indexed search, and calls to them fail. Nothing is persisted. Tested through the fake server.
+  - **Contract:** `tools` is an array of tool names as the server reports them, without the `mcp__server__` prefix, e.g. `["git_status", "git_log"]`. Example entry: `{"name":"git","source":"user","status":"connected","tools":["git_status","git_log"],"enabled":true}`.
 
 - [ ] **T4.8 MCP sidebar view** (§12)
   - **Needs:** T4.7.

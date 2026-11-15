@@ -4,8 +4,8 @@
 #![cfg(test)]
 
 use praxis_core::config::{
-    AgentSettings, Backend, Loaded, McpServer, ModelRef, Sources, load, load_with_approval,
-    set_profile_field,
+    AgentSettings, Backend, Loaded, McpServer, McpSource, ModelRef, Sources, load,
+    load_with_approval, set_profile_field,
 };
 use praxis_core::permissions::Mode;
 use praxis_core::trust::TrustStore;
@@ -563,6 +563,7 @@ fn lmstudio_mcp_servers_load_once_approved() {
         if s.command == "mcp-fs" && s.args == ["."]));
     assert!(matches!(&loaded.config.mcp["web"], McpServer::Http(h)
         if h.url == "https://x/mcp"));
+    assert_eq!(loaded.config.mcp_sources["fs"], McpSource::LmStudio);
 }
 
 #[test]
@@ -765,4 +766,23 @@ fn set_profile_field_refuses_a_table_it_cannot_edit_safely() {
     let path = file(original);
     assert!(set_profile_field(&path, "m", "top_k", "4").is_err());
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn mcp_servers_remember_whether_the_user_or_the_project_declared_them() {
+    let user = file("[mcp.mine]\ncommand = \"x\"\n");
+    let project = file("");
+    let mcp_json = file(r#"{"mcpServers": {"theirs": {"command": "y"}}}"#);
+    let Loaded { config, .. } = load_with_approval(
+        Sources {
+            user: Some(user),
+            project: Some(project),
+            mcp_json: Some(mcp_json),
+            ..Sources::default()
+        },
+        &mut |_, _| true,
+    )
+    .unwrap();
+    assert_eq!(config.mcp_sources["mine"], McpSource::User);
+    assert_eq!(config.mcp_sources["theirs"], McpSource::Project);
 }
