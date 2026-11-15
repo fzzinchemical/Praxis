@@ -65,10 +65,21 @@ pub fn suggestions<'a>(commands: &'a [Command], prompt: &str) -> Vec<(&'a str, V
     groups
 }
 
+/// Names for subagents, in the order a session starts them; the list wraps after the last one.
+pub const SUBAGENT_NAMES: [&str; 10] = [
+    "Blinky", "Pinky", "Inky", "Clyde", "Red", "Blue", "Green", "Yellow", "Purple", "Teal",
+];
+
+/// The name of the `index`th subagent a session started (0-based).
+pub fn subagent_name(index: usize) -> &'static str {
+    SUBAGENT_NAMES[index % SUBAGENT_NAMES.len()]
+}
+
 /// The one-line summary of a subagent's `Agent` call block. The caller sets it as text, never HTML,
 /// since the type name comes from the model.
 /// `usage` is the subagent's (prompt tokens, context length), once it has reported them.
 pub fn subagent_summary(
+    name: &str,
     kind: &str,
     calls: usize,
     status: &str,
@@ -84,7 +95,7 @@ pub fn subagent_summary(
     } else {
         "tool calls"
     };
-    let line = format!("{kind} · {calls} {noun} · {state}");
+    let line = format!("{name} · {kind} · {calls} {noun} · {state}");
     match usage {
         Some((prompt, context)) => {
             format!(
@@ -366,26 +377,38 @@ mod tests {
     }
 
     #[test]
-    fn a_subagent_summary_names_its_type_calls_and_status() {
+    fn a_subagent_summary_names_its_name_type_calls_and_status() {
         assert_eq!(
-            subagent_summary("Explore", 6, "in_progress", None),
-            "Explore · 6 tool calls · running"
+            subagent_summary("Blinky", "Explore", 6, "in_progress", None),
+            "Blinky · Explore · 6 tool calls · running"
         );
         assert_eq!(
-            subagent_summary("general", 1, "completed", None),
-            "general · 1 tool call · completed"
+            subagent_summary("Pinky", "general", 1, "completed", None),
+            "Pinky · general · 1 tool call · completed"
         );
         assert_eq!(
-            subagent_summary("general", 0, "failed", None),
-            "general · 0 tool calls · failed"
+            subagent_summary("Inky", "general", 0, "failed", None),
+            "Inky · general · 0 tool calls · failed"
+        );
+    }
+
+    #[test]
+    fn subagents_take_the_names_in_order_and_wrap_after_the_list() {
+        let names: Vec<&str> = (0..12).map(subagent_name).collect();
+        assert_eq!(
+            names,
+            [
+                "Blinky", "Pinky", "Inky", "Clyde", "Red", "Blue", "Green", "Yellow", "Purple",
+                "Teal", "Blinky", "Pinky"
+            ]
         );
     }
 
     #[test]
     fn a_subagent_summary_shows_its_prompt_size_against_the_context() {
         assert_eq!(
-            subagent_summary("general", 2, "in_progress", Some((12_000, 32_000))),
-            "general · 2 tool calls · running · 12k / 32k tokens"
+            subagent_summary("Clyde", "general", 2, "in_progress", Some((12_000, 32_000))),
+            "Clyde · general · 2 tool calls · running · 12k / 32k tokens"
         );
     }
 

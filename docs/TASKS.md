@@ -1257,7 +1257,7 @@ flowchart LR
     T14_8 --> T14_10
 ```
 
-- [ ] **T14.1 Subagent colour names** · *Could*
+- [x] **T14.1 Subagent colour names** · *Could*
   - **Why:** every subagent shows as `general`, so parallel ones can't be told apart in the panel (`subagent_summary` in `praxis-vscode-ui/src/view.rs`).
   - **Needs:** none.
   - **Done when:** each subagent started in a session gets the next name from a fixed list (red, pink, cyan, orange, then plain colours) shown next to its `subagent_type`, reused only after the list wraps; the name lives in the session, not the model prompt, so the prompt prefix doesn't change. Unit test on the name sequence and the existing summary test updated.

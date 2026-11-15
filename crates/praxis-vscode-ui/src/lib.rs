@@ -36,6 +36,8 @@ struct Tool {
     status: String,
     /// The subagent's type, set only on an `Agent` call.
     kind: Option<String>,
+    /// The subagent's name in the panel, given once when its type first arrives.
+    name: Option<&'static str>,
     /// Calls nested under this one.
     calls: usize,
     /// The subagent's (prompt tokens, context length), once it has reported them.
@@ -54,7 +56,13 @@ struct Tool {
 /// Sets a block's summary as text, never HTML: titles and types come from the model.
 fn show_summary(tool: &Tool) -> Result<(), JsValue> {
     let line = match &tool.kind {
-        Some(kind) => subagent_summary(kind, tool.calls, &tool.status, tool.usage),
+        Some(kind) => subagent_summary(
+            tool.name.unwrap_or("Subagent"),
+            kind,
+            tool.calls,
+            &tool.status,
+            tool.usage,
+        ),
         None => format!("{} ({})", tool.title, tool.status),
     };
     tool.summary.set_text_content(Some(&line));
@@ -102,6 +110,8 @@ struct Ui {
     input: HtmlTextAreaElement,
     /// User turns shown so far, so each bubble's "Rewind to here" knows its turn number.
     turns: usize,
+    /// Subagents this panel has named so far, for the next name in the list.
+    subagents: usize,
     /// Commands the agent announced for this session, and the autocomplete list over them.
     commands: Vec<view::Command>,
     menu: Element,
@@ -372,6 +382,7 @@ pub fn start() -> Result<(), JsValue> {
         menu_open: false,
         selected: 0,
         turns: 0,
+        subagents: 0,
     }));
 
     let state = ui.clone();
@@ -1023,6 +1034,7 @@ impl Ui {
                 title: "tool".to_owned(),
                 status: String::new(),
                 kind: None,
+                name: None,
                 calls: 0,
                 usage: None,
                 file: None,
@@ -1040,6 +1052,10 @@ impl Ui {
             tool.title = title.to_owned();
         }
         if let Some(kind) = message["subagent"].as_str() {
+            if tool.kind.is_none() {
+                tool.name = Some(view::subagent_name(self.subagents));
+                self.subagents += 1;
+            }
             tool.kind = Some(kind.to_owned());
         }
         if tool.kind.is_some() && tool.stop.is_none() {
