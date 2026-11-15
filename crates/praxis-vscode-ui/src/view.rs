@@ -131,15 +131,48 @@ pub enum Phase {
     RunningTool,
 }
 
-/// The playful words the busy indicator cycles through, one every two seconds.
-pub const WORKING_WORDS: [&str; 5] = ["Chomping", "Munching", "Pondering", "Crunching", "Nibbling"];
+/// The playful words the busy indicator cycles through, one every two seconds: Pac-Man words mixed
+/// with thinking words.
+pub const WORKING_WORDS: [&str; 30] = [
+    "Chomping",
+    "Munching",
+    "Nibbling",
+    "Gobbling",
+    "Crunching",
+    "Snacking",
+    "Devouring",
+    "Nomming",
+    "Gulping",
+    "Dot-hunting",
+    "Pellet-popping",
+    "Maze-running",
+    "Ghost-dodging",
+    "Power-pelleting",
+    "Fruit-hunting",
+    "Pondering",
+    "Mulling",
+    "Ruminating",
+    "Brewing",
+    "Scheming",
+    "Tinkering",
+    "Noodling",
+    "Percolating",
+    "Puzzling",
+    "Hatching",
+    "Weighing",
+    "Sifting",
+    "Contemplating",
+    "Reasoning",
+    "Musing",
+];
 
-/// The indicator's word `elapsed_secs` into a turn. Reduced motion keeps one static word.
-pub fn working_word(elapsed_secs: u64, reduced_motion: bool) -> &'static str {
+/// The indicator's word `elapsed_secs` into a turn. `offset` (the turn number, from the caller)
+/// shifts the start so consecutive turns don't open on the same word. Reduced motion keeps one word.
+pub fn working_word(elapsed_secs: u64, offset: usize, reduced_motion: bool) -> &'static str {
     if reduced_motion {
         return "Working";
     }
-    WORKING_WORDS[(elapsed_secs / 2) as usize % WORKING_WORDS.len()]
+    WORKING_WORDS[((elapsed_secs / 2) as usize + offset) % WORKING_WORDS.len()]
 }
 
 /// The child index that a rewind to user turn `turn` (1-based) cuts the chat at: the `user`
@@ -358,16 +391,23 @@ mod tests {
 
     #[test]
     fn working_word_cycles_every_two_seconds_and_wraps() {
-        assert_eq!(working_word(0, false), "Chomping");
-        assert_eq!(working_word(1, false), "Chomping");
-        assert_eq!(working_word(2, false), "Munching");
-        assert_eq!(working_word(10, false), "Chomping");
+        assert_eq!(working_word(0, 0, false), "Chomping");
+        assert_eq!(working_word(1, 0, false), "Chomping");
+        assert_eq!(working_word(2, 0, false), "Munching");
+        assert_eq!(working_word(60, 0, false), "Chomping");
+    }
+
+    #[test]
+    fn a_turn_offset_starts_the_cycle_on_a_different_word() {
+        assert_eq!(working_word(0, 1, false), "Munching");
+        assert_eq!(working_word(0, 2, false), "Nibbling");
+        assert_eq!(working_word(0, 30, false), "Chomping");
     }
 
     #[test]
     fn reduced_motion_keeps_one_static_word() {
-        assert_eq!(working_word(0, true), "Working");
-        assert_eq!(working_word(7, true), "Working");
+        assert_eq!(working_word(0, 0, true), "Working");
+        assert_eq!(working_word(7, 3, true), "Working");
     }
 
     #[test]

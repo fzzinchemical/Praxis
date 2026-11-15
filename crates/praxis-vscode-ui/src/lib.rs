@@ -875,7 +875,10 @@ impl Ui {
         let Some(word) = self.document.get_element_by_id("working-word") else {
             return;
         };
-        let text = format!("{}\u{2026}", view::working_word(elapsed, reduced_motion()));
+        let text = format!(
+            "{}\u{2026}",
+            view::working_word(elapsed, self.turns, reduced_motion())
+        );
         if word.text_content().as_deref() != Some(text.as_str()) {
             word.set_text_content(Some(&text));
         }

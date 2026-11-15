@@ -1287,7 +1287,7 @@ flowchart LR
   - **Needs:** T14.5.
   - **Done when:** this rule is in AGENTS.md and T7's release task names the full board as a 1.0 gate; beta tasks whose "Done when" asks for a full eval say "targeted eval (T14.5) or deferred to 1.0".
 
-- [ ] **T14.7 More waiting words** · *Could*
+- [x] **T14.7 More waiting words** · *Could*
   - **Why:** the busy indicator cycles through only five words (`WORKING_WORDS` in `praxis-vscode-ui/src/view.rs`).
   - **Needs:** none.
   - **Done when:** the list holds about 30 words and the start offset is picked per turn so turns don't all open on the same word; reduced motion still shows `Working`. The existing `working_word` test is updated, plus one for the offset.
