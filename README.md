@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.5.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.5.1-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -289,6 +289,15 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 1.5.1-beta
+
+- LM Studio's HTTP 500 "Context size has been exceeded." is handled as a context overflow: the request is no longer retried three times unchanged, and the next one compacts the history.
+- VS Code: prompts sent while a turn runs wait in a queue above the input. Each can be removed, and the next is sent when the turn ends. A cancel, an error or a denied permission pauses the queue until you resume it. The CLI has no queue yet.
+- VS Code: subagents get names (Blinky, Pinky, Inky, Clyde, then colours), so parallel ones can be told apart.
+- VS Code: the busy indicator has about 30 words and starts each turn on a different one.
+- `cargo xtask eval --tasks <glob>|tag:<name>` runs only matching eval tasks, and `task.toml` takes a `tags` list.
+- These changes have no eval run; full eval boards now run only before 1.0.
 
 ### New in 1.5.0-beta
 

@@ -715,7 +715,7 @@ flowchart LR
 - [ ] **T7.4 Release** `HUMAN` approves
   - **Name:** `praxis` (owner, 2026-11-12; Marx's unity of thought and action). Renamed from `harness` on 2026-11-13.
   - **Needs:** T7.1, T7.2, T7.6.
-  - **Done when:** binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval.
+  - **Done when:** binaries and `.vsix` are built, and §10 and the eval scoreboard pass on the release build. Publishing happens only with explicit approval. The full 3-run eval board on both chosen models is the 1.0 gate (T14.6).
 
 - [ ] **T7.5 Timed real-use trial** `HUMAN` · *Could*
   - **Needs:** T5.6.
@@ -1287,6 +1287,7 @@ flowchart LR
   - **Why:** owner decision 2026-11-15: betas ship with targeted or no eval runs (as 1.4.0, M13); the full 3-run board on both models runs once, before 1.0.
   - **Needs:** T14.5.
   - **Done when:** this rule is in AGENTS.md and T7's release task names the full board as a 1.0 gate; beta tasks whose "Done when" asks for a full eval say "targeted eval (T14.5) or deferred to 1.0".
+  - **Status:** the AGENTS.md rule and the T7.4 gate are in (1.5.1-beta). Rewording the open beta tasks' eval clauses is left.
 
 - [x] **T14.7 More waiting words** · *Could*
   - **Why:** the busy indicator cycles through only five words (`WORKING_WORDS` in `praxis-vscode-ui/src/view.rs`).

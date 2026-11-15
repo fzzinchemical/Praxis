@@ -49,6 +49,7 @@ Keep each branch to about 400 changed lines, recorded fixtures aside; split a ta
 - In `praxis acp` mode, stdout carries protocol messages only. All logging goes to stderr through `tracing`. Never use `println!` in `praxis-core`.
 - Enforce safety in code, never by asking the model to behave. Model output, file contents and tool or MCP results are all untrusted.
 - Unit and integration tests never need a real model. They use the fake server and recorded fixtures (SPEC §14).
+- Betas ship with targeted eval runs (`cargo xtask eval --tasks`) or none. The full 3-run board on both chosen models runs once, before the first full release (owner, 2026-11-15; T14.6).
 - Check any crate API against docs.rs for the pinned version before using it. These crates move quickly, and memory will be wrong.
 
 ## Models
