@@ -1232,3 +1232,82 @@ flowchart LR
 - [ ] **T13.12 Release 1.4.0-beta** `HUMAN` approves
   - **Needs:** T13.1 to T13.6. Cut *Should* and *Could* tasks that aren't done instead of waiting for them.
   - **Done when:** the README lists the fixes as unmeasured, `./scripts/release v1.4.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
+
+## M14: Planned: owner TODO of 2026-11-15
+
+> From the owner's `TODO.md`. Each task reuses something that already exists, so none needs a new dependency. Order: T14.1 and T14.2 are small and independent; T14.3 and T14.4 share the prompt round trip that T14.3 builds; T14.5 and T14.6 change only `xtask eval` and the release rule.
+
+```mermaid
+flowchart LR
+    T14_1["T14.1<br/>Subagent colour names"]
+    T14_2["T14.2<br/>Queued prompts"]
+    T14_3["T14.3<br/>AskUser tool"]
+    T14_4["T14.4<br/>Agent-written AGENTS file"]
+    T14_5["T14.5<br/>Eval task filter"]
+    T14_6["T14.6<br/>Full eval before 1.0"]
+    T14_7["T14.7<br/>More waiting words"]
+    T14_8["T14.8<br/>Agentic behaviour research"]
+    T14_9["T14.9<br/>Git-first workflow"]
+    T14_3 --> T14_4
+    T14_5 --> T14_6
+    T14_5 --> T14_8
+    T14_10["T14.10<br/>Orchestrator-worker research"]
+    T14_11["T14.11<br/>500 context overflow"]
+    T14_8 --> T14_9
+    T14_8 --> T14_10
+```
+
+- [ ] **T14.1 Subagent colour names** · *Could*
+  - **Why:** every subagent shows as `general`, so parallel ones can't be told apart in the panel (`subagent_summary` in `praxis-vscode-ui/src/view.rs`).
+  - **Needs:** none.
+  - **Done when:** each subagent started in a session gets the next name from a fixed list (red, pink, cyan, orange, then plain colours) shown next to its `subagent_type`, reused only after the list wraps; the name lives in the session, not the model prompt, so the prompt prefix doesn't change. Unit test on the name sequence and the existing summary test updated.
+
+- [ ] **T14.2 Queued prompts** · *Should*
+  - **Why:** `can_send` blocks input while a turn runs, so the user waits to type the next step.
+  - **Needs:** none.
+  - **Done when:** in the panel, sending while busy appends to a visible, removable queue; each queued prompt is sent as a normal `session/prompt` when the turn ends with `end_turn`, and the queue pauses (not drops) on cancel, error or a permission denial. The CLI reads queued lines from its existing terminal-reader channel the same way. UI unit tests for queue, remove and pause; no core change.
+
+- [ ] **T14.3 AskUser tool** · *Should*
+  - **Why:** small models guess at unclear requests; a question with choices is cheaper than a wrong edit.
+  - **Needs:** none. Built-in tool names are a compatibility surface, so use Claude Code's `AskUserQuestion` name and input shape (SPEC §6).
+  - **Done when:** the tool takes 1–4 questions with 2–4 options, single or multi choice, plus free text; in ACP it reuses the permission-request round trip (spawned, never awaited in the handler, SPEC §11) and the panel shows a floating chooser with the recommended option first; the CLI shows a numbered list; piped runs return "no user available" so the model proceeds. The system prompt gets one line on when to ask. Fake-server tests for each frontend; an eval run must show no fall in success, since questions end the turn in evals.
+
+- [ ] **T14.4 Agent-written AGENTS file** · *Could* · `HUMAN` decides the §10 question
+  - **Why:** the agent should learn how the owner wants it to work and keep that across sessions, like `~/.claude/CLAUDE.md` does for Claude Code.
+  - **Needs:** T14.3 (to confirm a rule before saving it).
+  - **Done when:** the agent may propose an edit to the user file `~/.config/praxis/AGENTS.md` (already loaded as `Instructions from:`, SPEC §12) only through an approval prompt that shows the diff, never silently; a project file it writes stays unlabelled until approved by the existing trust store (T13.6). A `/remember` command appends one confirmed line. Tests that an unapproved write is refused and an approved one is labelled next session. Stop and ask before any path that lets model output become trusted instructions without a person.
+
+- [ ] **T14.5 Eval task filter** · *Should*
+  - **Why:** an MCP comparison (T4.x) only needs the MCP tasks, and full boards take hours.
+  - **Needs:** none. `--mcp DIR` already wires servers in.
+  - **Done when:** `cargo xtask eval --tasks <glob>[,<glob>]` runs only matching task directories, and a task's `task.toml` may set `tags = ["mcp"]` so `--tasks tag:mcp` works; the board records the filter. Unit test on argument parsing and selection.
+
+- [ ] **T14.6 Full eval only before the first full release** · process
+  - **Why:** owner decision 2026-11-15: betas ship with targeted or no eval runs (as 1.4.0, M13); the full 3-run board on both models runs once, before 1.0.
+  - **Needs:** T14.5.
+  - **Done when:** this rule is in AGENTS.md and T7's release task names the full board as a 1.0 gate; beta tasks whose "Done when" asks for a full eval say "targeted eval (T14.5) or deferred to 1.0".
+
+- [ ] **T14.7 More waiting words** · *Could*
+  - **Why:** the busy indicator cycles through only five words (`WORKING_WORDS` in `praxis-vscode-ui/src/view.rs`).
+  - **Needs:** none.
+  - **Done when:** the list holds about 30 words and the start offset is picked per turn so turns don't all open on the same word; reduced motion still shows `Working`. The existing `working_word` test is updated, plus one for the offset.
+
+- [ ] **T14.8 Research: agentic behaviour for small models** · research
+  - **Why:** M13 showed that most failures came from the harness, not from model ability. We need evidence on which behaviours (plan, then read, then edit, then test; asking when unsure; checking work) small models can be pushed into, and how.
+  - **Needs:** T14.5, so each idea can be checked on a targeted task set.
+  - **Done when:** `docs/RESEARCH.md` has a section that compares the published methods with what OpenCode and Claude Code do (prompt wording, nudges like T13.7, tool design, recovery), ranks them by expected gain against prefix and cache cost (SPEC §7) and no helper model, and turns the top 3 into tasks with eval hypotheses. No product code.
+
+- [ ] **T14.9 Git-first workflow** · *Should* · scope to confirm with the owner
+  - **Why:** agents work on the raw file system when git would serve better: listing with `find` rather than `git ls-files`, checking their own changes by rereading files rather than with `git diff`, and no checkpoint before risky edits. Glob and Grep already respect `.gitignore` (`tools/search.rs`).
+  - **Needs:** T14.8, which picks prompt wording against tool changes.
+  - **Done when:** in a git workspace, the system prompt says to use `git status`, `git diff` and `git ls-files` to orient and review, and the T13.7 nudge points to `git diff`; `git` commands that only read are allowed in `ask` mode with no prompt (permission rule test); commits, pushes and history rewrites still ask. A fake-server test shows the prompt line appears only when `.git` exists. Targeted eval (T14.5) shows no fall in success.
+
+- [ ] **T14.10 Research: orchestrator and worker communication** · research
+  - **Why:** only a worker's final report reaches the orchestrator (ADR 0005, T8.5). We have no evidence on what a brief or a report should hold so that small workers succeed and the orchestrator's context stays small.
+  - **Needs:** T14.8 (same method and eval set).
+  - **Done when:** a section in `docs/RESEARCH.md` compares the hand-off formats in use (a structured brief with goal, files and done check; a report schema; a worker asking the orchestrator a question; shared scratch files) by success, tokens and model swaps on one GPU, and turns the best one into a task with an eval hypothesis. No product code.
+
+- [ ] **T14.11 LM Studio's HTTP 500 "Context size has been exceeded"** · bug · *Must*
+  - **Why:** seen 2026-11-15 on qwen3.5-4b. `classify_error` (`provider/mod.rs`) only recognises `exceed_context_size_error`, so this wording becomes `HttpStatus` 500. T13.2 then retries the same over-long request 3 times, and the turn fails without the `ContextOverflow` path that compacts and continues (`agent/mod.rs`, `compact_next`).
+  - **Needs:** none.
+  - **Done when:** a fixture with this body (status 500, `{"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}`, exact shape to be recorded) is classified as `ContextOverflow` with unknown sizes, is not retried, and leads to compaction on the next request (fake-server test). Also find out why the budget let the prompt grow past the context: the history at that point, `max_tokens` from T13.3 and the loaded `context_length`. Add a gotcha: LM Studio reports overflow in at least two forms.
