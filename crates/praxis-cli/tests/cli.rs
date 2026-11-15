@@ -628,6 +628,15 @@ async fn acp_lists_a_waiting_project_server_and_approval_stores_and_connects_it(
     )
     .await;
     assert!(unknown["error"].is_object(), "{unknown}");
+    let no_name = ask(
+        &mut stdin,
+        &mut lines,
+        6,
+        "_praxis/approve_mcp_server",
+        json!({"sessionId": session}),
+    )
+    .await;
+    assert!(no_name["error"].is_object(), "{no_name}");
     let _ = child.kill().await;
 }
 

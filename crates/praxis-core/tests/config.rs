@@ -538,6 +538,27 @@ fn a_project_server_name_with_a_control_character_is_a_config_error() {
     assert!(error.to_string().contains("control character"), "{error}");
 }
 
+#[test]
+fn lmstudio_servers_wait_for_their_own_approval() {
+    let lmstudio = file(r#"{"mcpServers": {"git": {"type": "stdio", "command": "git-mcp"}}}"#);
+    let store = TrustStore::new(lmstudio.with_file_name("trust.json"));
+    let sources = || Sources {
+        lmstudio_mcp: Some(lmstudio.clone()),
+        trust: Some(store.clone()),
+        ..Sources::default()
+    };
+    let refused = load_with_approval(sources(), &mut |_, _| false)
+        .unwrap()
+        .config;
+    assert!(refused.mcp.is_empty());
+    let pending = &refused.mcp_pending["git"];
+    assert_eq!(pending.source, McpSource::LmStudio);
+    store.set(&pending.key, &pending.digest).unwrap();
+    let approved = load(sources()).unwrap().config;
+    assert_eq!(approved.mcp_sources["git"], McpSource::LmStudio);
+    assert!(approved.mcp_pending.is_empty());
+}
+
 fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
     let path = project.with_file_name(".mcp.json");
     fs::write(&path, json).unwrap();

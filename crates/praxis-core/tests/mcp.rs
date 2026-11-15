@@ -995,6 +995,108 @@ async fn approval_text_shows_env_quotes_arguments_and_escapes_control_characters
     assert!(!text.contains("s3cret"), "{text}");
 }
 
+/// An agent with `mcp` and no model behind it: approval never calls the model.
+fn bare_agent(mcp: Mcp, context_size: u32) -> Agent {
+    let config = AgentConfig {
+        model: "m".into(),
+        context_size,
+        system_prompt: "sys".into(),
+        memory: Vec::new(),
+        scoped_rules: Vec::new(),
+        mask_keep_turns: 10,
+        max_turn_requests: 5,
+        profile: praxis_core::agent::profile::ModelProfile::default(),
+        seed: None,
+        policy: praxis_core::permissions::Policy::default(),
+        masking: true,
+    };
+    Agent::new(
+        Arc::new(Provider::new("http://127.0.0.1:1", None).unwrap()),
+        Arc::new(ToolContext::new(&std::env::temp_dir()).unwrap()),
+        config,
+    )
+    .with_mcp(Arc::new(mcp))
+}
+
+fn waiting(name: &str, server: McpServer) -> BTreeMap<String, PendingMcp> {
+    BTreeMap::from([(
+        name.to_owned(),
+        PendingMcp {
+            server,
+            source: McpSource::Project,
+            key: format!("server:/p#{name}"),
+            digest: format!("digest-{name}"),
+        },
+    )])
+}
+
+async fn an_agent_approves_a_waiting_server_and_stores_it() {
+    let dir = std::env::temp_dir().join(format!("praxis-mcp-agent-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = TrustStore::new(dir.join("trust.json"));
+    let me = std::env::current_exe().unwrap();
+    let mut pending = waiting("test", server(me.to_str().unwrap(), &["serve"]));
+    pending.extend(waiting("bad", server("/nonexistent/mcp-bad", &[])));
+    let mut agent = bare_agent(Mcp::default().with_unapproved(&pending), 100_000);
+    let status = |agent: &Agent, name: &str| {
+        agent
+            .mcp_servers()
+            .into_iter()
+            .find(|s| s.name == name)
+            .unwrap()
+            .status
+    };
+
+    let notices = agent.approve_mcp("test", &store).await.unwrap();
+    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(
+        store.get("server:/p#test").unwrap().as_deref(),
+        Some("digest-test")
+    );
+    assert_eq!(status(&agent, "test"), Health::Connected);
+
+    // A failed connect keeps the approval and says so.
+    let notices = agent.approve_mcp("bad", &store).await.unwrap();
+    assert!(notices[0].contains("unavailable"), "{notices:?}");
+    assert_eq!(
+        store.get("server:/p#bad").unwrap().as_deref(),
+        Some("digest-bad")
+    );
+    assert_eq!(status(&agent, "bad"), Health::Failed);
+
+    let again = agent.approve_mcp("test", &store).await.unwrap_err();
+    assert!(again.contains("no MCP server named `test`"), "{again}");
+    let no_servers = bare_agent(Mcp::default(), 100_000)
+        .approve_mcp("x", &store)
+        .await
+        .unwrap_err();
+    assert!(no_servers.contains("`x`"), "{no_servers}");
+}
+
+async fn approving_in_indexed_mode_rebuilds_the_index() {
+    let dir = std::env::temp_dir().join(format!("praxis-mcp-indexed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = TrustStore::new(dir.join("trust.json"));
+    let me = std::env::current_exe().unwrap();
+    // A description this large pushes the schemas over the indexed threshold.
+    let big = "x".repeat(40_000);
+    let (connected, _) = Mcp::connect(
+        &BTreeMap::from([(
+            "big".to_owned(),
+            server(me.to_str().unwrap(), &["serve", &big]),
+        )]),
+        Duration::from_secs(10),
+    )
+    .await;
+    let pending = waiting("test", server(me.to_str().unwrap(), &["serve"]));
+    let mut agent = bare_agent(connected.with_unapproved(&pending), 4096);
+    agent.approve_mcp("test", &store).await.unwrap();
+    let statuses = agent.mcp_servers();
+    let find = |name: &str| statuses.iter().find(|s| s.name == name).unwrap().status;
+    assert_eq!(find("big"), Health::Connected);
+    assert_eq!(find("test"), Health::Connected);
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -1038,6 +1140,10 @@ fn main() {
     println!("statuses_name_each_servers_source_health_and_tools ... ok");
     runtime.block_on(a_waiting_server_connects_only_once_approved());
     println!("a_waiting_server_connects_only_once_approved ... ok");
+    runtime.block_on(an_agent_approves_a_waiting_server_and_stores_it());
+    println!("an_agent_approves_a_waiting_server_and_stores_it ... ok");
+    runtime.block_on(approving_in_indexed_mode_rebuilds_the_index());
+    println!("approving_in_indexed_mode_rebuilds_the_index ... ok");
     runtime.block_on(approval_text_shows_env_quotes_arguments_and_escapes_control_characters());
     println!("approval_text_shows_env_quotes_arguments_and_escapes_control_characters ... ok");
 }
