@@ -301,7 +301,7 @@ flowchart LR
 
 - [ ] **T2.16 Agent sampling layer** (§5.5) · *Should*
   - **Needs:** T2.14.
-  - **Done when:** a built-in, model-independent sampling override over the vendor preset (for example a temperature cap) is kept only if a 3-run eval on both chosen models shows higher success with no worse wall time than the vendor preset alone; otherwise the result is recorded and the task closed.
+  - **Done when:** a built-in, model-independent sampling override over the vendor preset (for example a temperature cap) is kept only if a targeted 3-run eval (T14.5) on both chosen models, or the 1.0 board, shows higher success with no worse wall time than the vendor preset alone; otherwise the result is recorded and the task closed.
 
 ---
 
@@ -1271,7 +1271,7 @@ flowchart LR
 - [ ] **T14.3 AskUser tool** · *Should*
   - **Why:** small models guess at unclear requests; a question with choices is cheaper than a wrong edit.
   - **Needs:** none. Built-in tool names are a compatibility surface, so use Claude Code's `AskUserQuestion` name and input shape (SPEC §6).
-  - **Done when:** the tool takes 1–4 questions with 2–4 options, single or multi choice, plus free text; in ACP it reuses the permission-request round trip (spawned, never awaited in the handler, SPEC §11) and the panel shows a floating chooser with the recommended option first; the CLI shows a numbered list; piped runs return "no user available" so the model proceeds. The system prompt gets one line on when to ask. Fake-server tests for each frontend; an eval run must show no fall in success, since questions end the turn in evals.
+  - **Done when:** the tool takes 1–4 questions with 2–4 options, single or multi choice, plus free text; in ACP it reuses the permission-request round trip (spawned, never awaited in the handler, SPEC §11) and the panel shows a floating chooser with the recommended option first; the CLI shows a numbered list; piped runs return "no user available" so the model proceeds. The system prompt gets one line on when to ask. Fake-server tests for each frontend; a targeted eval (T14.5) or the 1.0 board must show no fall in success, since questions end the turn in evals.
 
 - [ ] **T14.4 Agent-written AGENTS file** · *Could* · `HUMAN` decides the §10 question
   - **Why:** the agent should learn how the owner wants it to work and keep that across sessions, like `~/.claude/CLAUDE.md` does for Claude Code.
@@ -1283,11 +1283,11 @@ flowchart LR
   - **Needs:** none. `--mcp DIR` already wires servers in.
   - **Done when:** `cargo xtask eval --tasks <glob>[,<glob>]` runs only matching task directories, and a task's `task.toml` may set `tags = ["mcp"]` so `--tasks tag:mcp` works; the board records the filter. Unit test on argument parsing and selection.
 
-- [ ] **T14.6 Full eval only before the first full release** · process
+- [x] **T14.6 Full eval only before the first full release** · process
   - **Why:** owner decision 2026-11-15: betas ship with targeted or no eval runs (as 1.4.0, M13); the full 3-run board on both models runs once, before 1.0.
   - **Needs:** T14.5.
   - **Done when:** this rule is in AGENTS.md and T7's release task names the full board as a 1.0 gate; beta tasks whose "Done when" asks for a full eval say "targeted eval (T14.5) or deferred to 1.0".
-  - **Status:** the AGENTS.md rule and the T7.4 gate are in (1.5.1-beta). Rewording the open beta tasks' eval clauses is left.
+  - **Result:** the AGENTS.md rule and the T7.4 gate are in (1.5.1-beta); the open beta tasks' eval clauses (T2.16, T14.3) now name a targeted eval or defer to 1.0.
 
 - [x] **T14.7 More waiting words** · *Could*
   - **Why:** the busy indicator cycles through only five words (`WORKING_WORDS` in `praxis-vscode-ui/src/view.rs`).
