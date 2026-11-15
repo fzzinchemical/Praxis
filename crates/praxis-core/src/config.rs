@@ -320,6 +320,9 @@ pub struct Sources {
     /// The project's `.mcp.json`, read as the project's `mcp` table, with or without the
     /// `mcpServers` wrapper. Needs `project`, whose approval it shares.
     pub mcp_json: Option<PathBuf>,
+    /// LM Studio's `~/.lmstudio/mcp.json`, same shape as `.mcp.json`. A user-level source that
+    /// still needs approval, keyed by its own path; a name Praxis config defines wins (SPEC §8).
+    pub lmstudio_mcp: Option<PathBuf>,
     /// The process environment; only `PRAXIS_*` names are read.
     pub env: Vec<(String, String)>,
     /// `--config-override` entries, as `KEY=VALUE` with dotted keys.
@@ -369,6 +372,8 @@ pub fn load_with_approval(
     let mut merged = Table::new();
     let mut notices = Vec::new();
     let mut hooks = Vec::new();
+    // Names Praxis config defines, approved or not; LM Studio's servers can't take them.
+    let mut defined = Vec::new();
     // Claude Code's user file sits below the praxis user layer and needs no approval: it's the
     // user's own file (SPEC §8).
     if let Some(path) = &sources.claude_user {
@@ -386,6 +391,7 @@ pub fn load_with_approval(
         if let Some(json) = &sources.mcp_json {
             merge(&mut project, read_mcp_json(json)?, "");
         }
+        defined.extend(mcp_names(&project));
         for key in PROJECT_NEVER {
             if remove(&mut project, key).is_some() {
                 notices.push(format!(
@@ -422,20 +428,7 @@ pub fn load_with_approval(
         }
         if !keys.is_empty() {
             let text = toml::to_string(&shown).map_err(|e| error("config", e))?;
-            let digest = hash(&text);
-            let store_error = |e: String| error("trust store", e);
-            let stored = match &sources.trust {
-                Some(store) => store.is_approved(path, &digest).map_err(store_error)?,
-                None => false,
-            };
-            let approved = stored || approve(path, &text);
-            if approved
-                && !stored
-                && let Some(store) = &sources.trust
-            {
-                store.approve(path, &digest).map_err(store_error)?;
-            }
-            if approved {
+            if is_approved(&sources, path, &text, approve)? {
                 merge(&mut project, widening, "");
                 for events in &project_hooks {
                     parse_hooks(events, &mut hooks, &mut notices);
@@ -449,6 +442,31 @@ pub fn load_with_approval(
             }
         }
         merge(&mut merged, project, "");
+    }
+    if let Some(path) = &sources.lmstudio_mcp {
+        defined.extend(mcp_names(&merged));
+        let mut lmstudio = read_mcp_json(path).unwrap_or_else(|e| {
+            notices.push(format!("Ignored LM Studio's MCP servers: {e}."));
+            Table::new()
+        });
+        if let Some(Value::Table(servers)) = lmstudio.get_mut("mcp") {
+            servers.retain(|name, _| !defined.iter().any(|d| d == name));
+        }
+        let has_servers = lmstudio
+            .get("mcp")
+            .and_then(Value::as_table)
+            .is_some_and(|servers| !servers.is_empty());
+        if has_servers {
+            let text = toml::to_string(&lmstudio).map_err(|e| error("config", e))?;
+            if is_approved(&sources, path, &text, approve)? {
+                merge(&mut merged, lmstudio, "");
+            } else {
+                notices.push(format!(
+                    "Ignored `mcp` from {}: LM Studio's MCP servers need your approval.",
+                    path.display()
+                ));
+            }
+        }
     }
     let env = sources.env.iter().filter_map(|(name, value)| {
         let key = name.strip_prefix(ENV_PREFIX)?;
@@ -652,6 +670,39 @@ fn split_widening(project: &mut Table, user_mode: Mode) -> (Table, Vec<String>) 
         }
     }
     (widening, keys.iter().map(|k| format!("`{k}`")).collect())
+}
+
+/// Whether widening config from `path` may apply: stored in the trust store, or approved now.
+/// A new approval is stored, so the next run doesn't ask again.
+fn is_approved(
+    sources: &Sources,
+    path: &Path,
+    text: &str,
+    approve: &mut dyn FnMut(&Path, &str) -> bool,
+) -> Result<bool, ConfigError> {
+    let digest = hash(text);
+    let store_error = |e: String| error("trust store", e);
+    let stored = match &sources.trust {
+        Some(store) => store.is_approved(path, &digest).map_err(store_error)?,
+        None => false,
+    };
+    let approved = stored || approve(path, text);
+    if approved
+        && !stored
+        && let Some(store) = &sources.trust
+    {
+        store.approve(path, &digest).map_err(store_error)?;
+    }
+    Ok(approved)
+}
+
+/// The server names in a table's `mcp` key.
+fn mcp_names(table: &Table) -> Vec<String> {
+    table
+        .get("mcp")
+        .and_then(Value::as_table)
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 fn merge(base: &mut Table, over: Table, path: &str) {

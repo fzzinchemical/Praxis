@@ -526,6 +526,7 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
         user: xdg_path("XDG_CONFIG_HOME", ".config", "config.toml"),
         project: Some(workspace.join(".praxis/config.toml")),
         mcp_json: Some(workspace.join(".mcp.json")),
+        lmstudio_mcp: std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".lmstudio/mcp.json")),
         // Non-Unicode variables can't hold config values, so they're skipped.
         env: std::env::vars_os()
             .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))

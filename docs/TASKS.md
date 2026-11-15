@@ -449,7 +449,7 @@ flowchart LR
   - **Needs:** T4.7.
   - **Done when:** VS Code has an "MCP Servers" tree view beside Sessions listing each server with status, source and tool count, with an on/off toggle per server (keyboard reachable) calling `_praxis/set_mcp_enabled`; expanding a server lists its tools. Refreshes when the session changes.
 
-- [ ] **T4.9 LM Studio `mcp.json`** (§8, §13)
+- [x] **T4.9 LM Studio `mcp.json`** (§8, §13)
   - **Needs:** T4.6.
   - **Done when:** servers in `~/.lmstudio/mcp.json` (LM Studio's `mcpServers` shape) load as an extra user-level source with `source` `lmstudio`; a name already in Praxis config wins; first use asks for approval as a project `.mcp.json` does, and tool definitions are pinned. A missing or malformed file gives a notice, never a crash.
 

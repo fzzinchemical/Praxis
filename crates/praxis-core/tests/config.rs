@@ -69,6 +69,7 @@ fn later_layers_win_over_earlier_ones() {
         trust: None,
         claude_user: None,
         claude_project: Vec::new(),
+        lmstudio_mcp: None,
     })
     .unwrap();
     let config = loaded.config;
@@ -94,6 +95,7 @@ fn permission_rule_lists_merge_and_other_values_replace() {
         trust: None,
         claude_user: None,
         claude_project: Vec::new(),
+        lmstudio_mcp: None,
     })
     .unwrap()
     .config;
@@ -528,6 +530,137 @@ fn mcp_json_loads_with_or_without_the_wrapper_once_approved() {
         if h.url == "https://x/mcp" && h.headers["Authorization"] == "Bearer ${TOKEN}"));
     let local = &mcp_json(&project, bare, true).config.mcp["local"];
     assert!(matches!(local, McpServer::Stdio(s) if s.command == "srv" && s.args == ["-v"]));
+}
+
+/// Writes `mcp.json` beside a fresh temp dir and loads it as LM Studio's file. Returns the paths
+/// the approval prompt was asked about.
+fn lmstudio_json(json: &str, answer: bool) -> (Loaded, Vec<PathBuf>) {
+    let path = file("").with_file_name("mcp.json");
+    fs::write(&path, json).unwrap();
+    let mut asked = Vec::new();
+    let loaded = load_with_approval(
+        Sources {
+            lmstudio_mcp: Some(path),
+            ..Sources::default()
+        },
+        &mut |asked_path, _| {
+            asked.push(asked_path.to_owned());
+            answer
+        },
+    )
+    .unwrap();
+    (loaded, asked)
+}
+
+#[test]
+fn lmstudio_mcp_servers_load_once_approved() {
+    let json = r#"{"mcpServers": {"fs": {"command": "mcp-fs", "args": ["."]},
+        "web": {"url": "https://x/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}}"#;
+    let (loaded, asked) = lmstudio_json(json, true);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].ends_with("mcp.json"));
+    assert!(matches!(&loaded.config.mcp["fs"], McpServer::Stdio(s)
+        if s.command == "mcp-fs" && s.args == ["."]));
+    assert!(matches!(&loaded.config.mcp["web"], McpServer::Http(h)
+        if h.url == "https://x/mcp"));
+}
+
+#[test]
+fn lmstudio_mcp_servers_need_approval_before_they_run() {
+    let (loaded, asked) = lmstudio_json(r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#, false);
+    assert_eq!(asked.len(), 1);
+    assert!(loaded.config.mcp.is_empty());
+    assert!(
+        loaded.notices.iter().any(|n| n.contains("mcp.json")),
+        "{:?}",
+        loaded.notices
+    );
+}
+
+#[test]
+fn approved_lmstudio_mcp_servers_are_not_asked_again() {
+    let json = r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#;
+    let path = file("").with_file_name("mcp.json");
+    fs::write(&path, json).unwrap();
+    let trust = TrustStore::new(path.with_file_name("trust.json"));
+    let load_with = |answer: bool| {
+        load_with_approval(
+            Sources {
+                lmstudio_mcp: Some(path.clone()),
+                trust: Some(trust.clone()),
+                ..Sources::default()
+            },
+            &mut |_, _| answer,
+        )
+        .unwrap()
+    };
+    assert!(load_with(true).config.mcp.contains_key("fs"));
+    // The second run has no one to ask, so only the stored approval can load it.
+    assert!(load_with(false).config.mcp.contains_key("fs"));
+}
+
+#[test]
+fn praxis_config_wins_over_an_lmstudio_server_with_the_same_name() {
+    let user = file("[mcp.web]\ncommand = \"praxis-web\"\n");
+    let path = user.with_file_name("mcp.json");
+    fs::write(
+        &path,
+        r#"{"mcpServers": {"web": {"command": "lm-web"}, "fs": {"command": "lm-fs"}}}"#,
+    )
+    .unwrap();
+    let loaded = load_with_approval(
+        Sources {
+            user: Some(user),
+            lmstudio_mcp: Some(path),
+            ..Sources::default()
+        },
+        &mut |_, _| true,
+    )
+    .unwrap();
+    assert!(matches!(&loaded.config.mcp["web"], McpServer::Stdio(s) if s.command == "praxis-web"));
+    assert!(matches!(&loaded.config.mcp["fs"], McpServer::Stdio(s) if s.command == "lm-fs"));
+}
+
+#[test]
+fn an_unapproved_project_server_still_holds_its_name_against_lmstudio() {
+    let project = file("[mcp.web]\ncommand = \"project-web\"\n");
+    let path = project.with_file_name("mcp.json");
+    fs::write(&path, r#"{"mcpServers": {"web": {"command": "lm-web"}}}"#).unwrap();
+    // Approves only the LM Studio file, so the project's `web` stays refused.
+    let loaded = load_with_approval(
+        Sources {
+            project: Some(project),
+            lmstudio_mcp: Some(path),
+            ..Sources::default()
+        },
+        &mut |asked, _| asked.ends_with("mcp.json"),
+    )
+    .unwrap();
+    assert!(!loaded.config.mcp.contains_key("web"));
+}
+
+#[test]
+fn malformed_lmstudio_mcp_json_is_a_notice_not_an_error() {
+    let (loaded, asked) = lmstudio_json("{ \"mcpServers\": ", true);
+    assert!(loaded.config.mcp.is_empty());
+    assert!(asked.is_empty());
+    assert!(
+        loaded.notices.iter().any(|n| n.contains("LM Studio")),
+        "{:?}",
+        loaded.notices
+    );
+}
+
+#[test]
+fn missing_lmstudio_mcp_json_is_silent() {
+    let missing = file("").with_file_name("absent.json");
+    let loaded = load(Sources {
+        lmstudio_mcp: Some(missing),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert!(loaded.config.mcp.is_empty());
+    assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
 }
 
 #[test]

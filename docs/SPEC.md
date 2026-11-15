@@ -577,7 +577,7 @@ command = "mcp-server-filesystem"
 args = ["."]
 ```
 
-Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper.
+Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper. LM Studio's `~/.lmstudio/mcp.json` (`mcpServers` shape, `$HOME`) is a user-level source that needs approval like project MCP servers, keyed by its own path. A name already in Praxis config wins, and a missing file is silent; a malformed one gives a notice.
 
 ### Trust
 
@@ -1045,6 +1045,7 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 - **Tool list freeze:** `tools/list` results are fixed at session start per §7, with later `list_changed` notifications logged rather than applied.
 - **Results:** pass through the tool-result budget; non-text content is replaced by a short description.
 - **Resources and prompts:** a server that declares them gets one `mcp__<server>__read_resource` tool (enum of its URIs) and one `mcp__<server>__get_prompt` tool (enum of its prompt names). They go through the same permission, hook, pin and budget paths. A server tool with the same name wins.
+- **LM Studio servers:** `~/.lmstudio/mcp.json` loads as an extra source (§8). It's approved once, then pinned like any other server.
 - **Pinning:** on approval, store the SHA-256 of each tool's name, description and schema. Pins live in the trust store under `mcp:<tool name>`, beside the definition text so a change can be shown; a tool seen for the first time is pinned without asking, since its server was already approved. On any change, hide that tool from the model and ask again, showing what changed. This also covers plugin servers.
 - **Description scan:** at approval, flag instruction-like wording, encoded content and unusual length as a warning only. It catches part of the problem and has false positives, so it never blocks and never counts as a defence.
 - **Timeouts:** default 60 s per call, and cancellation is forwarded.
