@@ -1531,3 +1531,76 @@ async fn rewinding_to_a_turn_that_loaded_memory_restores_that_turn_whole() {
     ));
     fs::remove_dir_all(&workspace).unwrap();
 }
+
+/// A small model with text tool calls gets the same delegation guidance as a native one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_small_text_model_is_offered_and_told_about_the_agent_tool() {
+    use praxis_core::agent::profile::ModelProfile;
+    use praxis_core::agent::recovery::ToolFormat;
+
+    let server = MockServer::start().await;
+    Mock::given(matchers::method("POST"))
+        .respond_with(Script {
+            bodies: vec![text_reply("ok")],
+            next: AtomicUsize::new(0),
+        })
+        .mount(&server)
+        .await;
+    let workspace = new_workspace();
+    let config = AgentConfig {
+        model: "m".into(),
+        context_size: 4096,
+        system_prompt: "sys".into(),
+        memory: Vec::new(),
+        scoped_rules: Vec::new(),
+        mask_keep_turns: 10,
+        max_turn_requests: 50,
+        profile: ModelProfile {
+            tool_format: ToolFormat::HermesText,
+            ..ModelProfile::default()
+        },
+        seed: None,
+        policy: Policy::default(),
+        masking: true,
+    };
+    let scout = praxis_core::plugin::AgentDef {
+        skill: praxis_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: None,
+        disallowed_tools: Vec::new(),
+        max_turns: None,
+        model: None,
+    };
+    let mut agent = Agent::new(
+        Arc::new(Provider::new(&server.uri(), None).unwrap()),
+        Arc::new(ToolContext::new(&workspace).unwrap()),
+        config,
+    )
+    .with_agents(vec![scout]);
+    let (tx, mut rx) = mpsc::channel(16);
+    agent
+        .run_turn("go".into(), &tx, CancellationToken::new())
+        .await;
+    drop(tx);
+    while rx.recv().await.is_some() {}
+
+    let requests = server.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let system = body["messages"][0]["content"].as_str().unwrap();
+    assert!(system.contains("<tool_call>"), "{system}");
+    assert!(
+        system.contains("- Agent: Hand one self-contained task"),
+        "{system}"
+    );
+    assert!(
+        system.contains("hand each part to a subagent with the Agent tool"),
+        "{system}"
+    );
+    fs::remove_dir_all(&workspace).unwrap();
+}

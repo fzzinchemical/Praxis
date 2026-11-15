@@ -157,6 +157,11 @@ pub fn system_prompt() -> String {
         .to_string()
 }
 
+/// Added to the prefix only when the `Agent` tool is offered.
+const DELEGATION_HINT: &str = "\n\nWhen a task splits into self-contained parts, hand each part to a \
+     subagent with the Agent tool instead of doing them all yourself. Independent parts go in \
+     separate Agent calls in one response, so they run in parallel.";
+
 /// Failures of one tool in a row before the turn stops (SPEC §5.3).
 const MAX_CALL_FAILURES: u32 = 3;
 /// Continuations after a reply cut off at the output limit, before the turn stops (T13.3).
@@ -1587,7 +1592,15 @@ fn assemble_prefix(
     mcp_index: &str,
 ) -> (String, Option<String>) {
     let teaching = config.profile.tool_format.instructions(tool_schemas);
-    let base = config.system_prompt.clone() + teaching.as_deref().unwrap_or_default();
+    // Offering `Agent` alone isn't enough: the model must also be told when to use it. The same
+    // text goes to every model, so small ones are encouraged as large ones are.
+    let delegation = tool_schemas
+        .iter()
+        .any(|t| t.name == "Agent")
+        .then_some(DELEGATION_HINT);
+    let base = config.system_prompt.clone()
+        + delegation.unwrap_or_default()
+        + teaching.as_deref().unwrap_or_default();
     let mut facts = facts.render();
     if !mcp_index.is_empty() {
         facts = format!("{mcp_index}\n\n{facts}");
