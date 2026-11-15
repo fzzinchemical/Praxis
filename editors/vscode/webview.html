@@ -12,6 +12,10 @@
 <div id="output" role="log" tabindex="0" aria-live="polite" aria-label="Conversation"></div>
 <form id="prompt-form">
 <label for="prompt" class="visually-hidden">Message</label>
+<section id="queue" class="queue" aria-label="Queued prompts" hidden>
+<p id="queue-status" class="queue-status" hidden>Queue paused. <button type="button" id="queue-resume">Resume</button></p>
+<ol id="queue-list"></ol>
+</section>
 <textarea id="prompt" rows="2" aria-autocomplete="list" aria-controls="commands" placeholder="Ask Praxis. Enter sends, Shift+Enter adds a line. Shift+drag files here to attach."></textarea>
 <div class="command-menu">
 <div id="commands" class="commands" role="listbox" aria-label="Commands" hidden></div>

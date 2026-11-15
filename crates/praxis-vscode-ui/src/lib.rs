@@ -3,6 +3,7 @@
 //! Renders typed messages from the extension (`praxis-vscode/src/protocol.rs`) into the transcript
 //! and sends prompts, stop and permission answers back as typed messages.
 
+mod queue;
 mod view;
 
 use serde_json::{Value, json};
@@ -108,6 +109,12 @@ struct Ui {
     gear: HtmlElement,
     profile_fields: Element,
     input: HtmlTextAreaElement,
+    vscode: VsCodeApi,
+    /// Prompts typed during a turn, and the panel that shows them above the input.
+    queue: queue::Queue,
+    queue_box: Element,
+    queue_status: Element,
+    queue_list: Element,
     /// User turns shown so far, so each bubble's "Rewind to here" knows its turn number.
     turns: usize,
     /// Subagents this panel has named so far, for the next name in the list.
@@ -324,6 +331,14 @@ fn set_enabled(element: &Element, enabled: bool) -> Result<(), JsValue> {
 
 type Shared = Rc<RefCell<Ui>>;
 
+fn set_hidden(element: &Element, hidden: bool) -> Result<(), JsValue> {
+    if hidden {
+        element.set_attribute("hidden", "")
+    } else {
+        element.remove_attribute("hidden")
+    }
+}
+
 fn by_id(document: &Document, id: &str) -> Result<Element, JsValue> {
     document
         .get_element_by_id(id)
@@ -354,6 +369,9 @@ pub fn start() -> Result<(), JsValue> {
     let profile_save: HtmlElement = by_id(&document, "profile-save")?.dyn_into()?;
     let menu = by_id(&document, "commands")?;
     let command_doc = by_id(&document, "command-doc")?;
+    let queue_box = by_id(&document, "queue")?;
+    let queue_status = by_id(&document, "queue-status")?;
+    let queue_list = by_id(&document, "queue-list")?;
     let vscode = acquire_vscode_api();
     let ui: Shared = Rc::new(RefCell::new(Ui {
         document,
@@ -376,6 +394,11 @@ pub fn start() -> Result<(), JsValue> {
         gear: gear.clone(),
         profile_fields: profile_fields.clone(),
         input: input.clone(),
+        vscode: vscode.clone(),
+        queue: queue::Queue::default(),
+        queue_box: queue_box.clone(),
+        queue_status: queue_status.clone(),
+        queue_list: queue_list.clone(),
         commands: Vec::new(),
         menu: menu.clone(),
         command_doc: command_doc.clone(),
@@ -470,24 +493,23 @@ pub fn start() -> Result<(), JsValue> {
     input.add_event_listener_with_callback("keydown", on_key.as_ref().unchecked_ref())?;
     on_key.forget();
 
-    let (state, api) = (ui.clone(), vscode.clone());
+    let state = ui.clone();
     let on_submit = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         event.prevent_default();
         let text = input.value();
-        // Before the session is ready, or while a turn runs, a prompt would only be refused, so the text stays in the box.
-        let sendable = {
-            let ui = state.borrow();
-            view::can_send(ui.ready, &ui.phase)
-        };
-        if !text.trim().is_empty() && sendable {
-            let ui = state.borrow();
-            let message = json!({"type": "prompt", "text": text, "file": ui.attached_file(),
-                "files": ui.added, "problems": ui.problems.checked()});
-            drop(ui);
-            api.post_message(&message.to_string());
-            input.set_value("");
-            let _ = state.borrow_mut().begin(&text);
+        let mut ui = state.borrow_mut();
+        // Before the session is ready the text stays in the box; while a turn runs it joins the queue.
+        if text.trim().is_empty() || !ui.ready {
+            return;
         }
+        if view::can_send(ui.ready, &ui.phase) {
+            // A failed send leaves the turn unstarted; the prompt is already in the box to retry.
+            let _ = ui.send(&text);
+        } else {
+            ui.queue.push(text);
+            let _ = ui.render_queue();
+        }
+        input.set_value("");
     });
     form.add_event_listener_with_callback("submit", on_submit.as_ref().unchecked_ref())?;
 
@@ -563,8 +585,33 @@ pub fn start() -> Result<(), JsValue> {
     });
     stop.add_event_listener_with_callback("click", on_stop.as_ref().unchecked_ref())?;
 
+    // Remove and Resume on the queue panel; a Resume that cannot send right now does nothing.
+    let state = ui.clone();
+    let on_queue = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
+        let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
+            return;
+        };
+        let mut ui = state.borrow_mut();
+        if let Ok(Some(button)) = target.closest("[data-queue-remove]") {
+            if let Some(index) = button
+                .get_attribute("data-queue-remove")
+                .and_then(|i| i.parse().ok())
+            {
+                ui.queue.remove(index);
+            }
+        } else if target.id() == "queue-resume" && view::can_send(ui.ready, &ui.phase) {
+            // A failed send leaves the queue paused, so the owner can try again.
+            if let Some(next) = ui.queue.resume() {
+                let _ = ui.send(&next);
+            }
+        }
+        let _ = ui.render_queue();
+    });
+    queue_box.add_event_listener_with_callback("click", on_queue.as_ref().unchecked_ref())?;
+    on_queue.forget();
+
     // One delegated listener answers every permission prompt; buttons carry their request and option.
-    let api = vscode.clone();
+    let (api, state) = (vscode.clone(), ui.clone());
     let on_click = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         let Some(button) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
@@ -598,6 +645,9 @@ pub fn start() -> Result<(), JsValue> {
         let Ok(id) = serde_json::from_str::<Value>(&id) else {
             return;
         };
+        if option.starts_with("reject") {
+            state.borrow_mut().queue.pause();
+        }
         api.post_message(&json!({"type": "permission", "id": id, "option": option}).to_string());
         if let Ok(Some(prompt)) = button.closest("fieldset") {
             prompt.remove();
@@ -739,6 +789,36 @@ impl Ui {
         self.message = None;
         let note = format!("Rewound to before turn {turn}. Bash effects are not undone.");
         self.append("p", "notice", &note)?;
+        Ok(())
+    }
+
+    /// Posts a prompt the way a normal send does, then starts the turn it opens.
+    fn send(&mut self, text: &str) -> Result<(), JsValue> {
+        let message = json!({"type": "prompt", "text": text, "file": self.attached_file(),
+            "files": self.added, "problems": self.problems.checked()});
+        self.vscode.post_message(&message.to_string());
+        self.begin(text)
+    }
+
+    /// Shows the queued prompts above the input, each with its own Remove button.
+    fn render_queue(&self) -> Result<(), JsValue> {
+        let prompts = self.queue.prompts();
+        set_hidden(&self.queue_box, prompts.is_empty())?;
+        set_hidden(&self.queue_status, !self.queue.is_paused())?;
+        self.queue_list.set_text_content(Some(""));
+        for (index, prompt) in prompts.iter().enumerate() {
+            let item = self.document.create_element("li")?;
+            let text = self.document.create_element("span")?;
+            text.set_text_content(Some(prompt));
+            let remove = self.document.create_element("button")?;
+            remove.set_attribute("type", "button")?;
+            remove.set_attribute("data-queue-remove", &index.to_string())?;
+            remove.set_attribute("aria-label", &format!("Remove queued prompt: {prompt}"))?;
+            remove.set_text_content(Some("Remove"));
+            item.append_child(&text)?;
+            item.append_child(&remove)?;
+            self.queue_list.append_child(&item)?;
+        }
         Ok(())
     }
 
@@ -989,6 +1069,10 @@ impl Ui {
                         node.dyn_into::<Element>()?.remove();
                     }
                 }
+                if let Some(next) = self.queue.turn_ended(text("reason")) {
+                    self.send(&next)?;
+                }
+                self.render_queue()?;
             }
             _ => return Ok(()),
         }

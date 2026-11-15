@@ -547,3 +547,25 @@ summary:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: 2px;
 }
+
+.queue {
+  margin-bottom: 6px;
+}
+
+.queue ol {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.queue li {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.queue li span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

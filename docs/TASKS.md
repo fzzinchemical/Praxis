@@ -1266,6 +1266,7 @@ flowchart LR
   - **Why:** `can_send` blocks input while a turn runs, so the user waits to type the next step.
   - **Needs:** none.
   - **Done when:** in the panel, sending while busy appends to a visible, removable queue; each queued prompt is sent as a normal `session/prompt` when the turn ends with `end_turn`, and the queue pauses (not drops) on cancel, error or a permission denial. The CLI reads queued lines from its existing terminal-reader channel the same way. UI unit tests for queue, remove and pause; no core change.
+  - **Status:** panel side done on `feat/t14-2-queued-prompts` (queue in `praxis-vscode-ui/src/queue.rs`, tests pass). CLI part not done: it still needs the terminal-reader queue. Task left unticked until then.
 
 - [ ] **T14.3 AskUser tool** · *Should*
   - **Why:** small models guess at unclear requests; a question with choices is cheaper than a wrong edit.
