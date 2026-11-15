@@ -91,9 +91,10 @@ fn read_only_segment(segment: &str) -> bool {
     ];
     let mut words = segment.split_whitespace();
     match words.next() {
-        Some("cat" | "head" | "tail" | "ls" | "wc" | "stat" | "file" | "grep" | "diff") => true,
+        Some("cat" | "head" | "tail" | "ls" | "wc" | "stat" | "grep" | "diff") => true,
         Some("git") => match words.next() {
-            Some("status" | "log" | "show") => true,
+            // `--output=<file>` makes log and show write.
+            Some("status" | "log" | "show") => words.all(|w| !w.starts_with("--output")),
             // `git config --get key value` reads too, but a key first would make it a set.
             Some("config") => {
                 let flags: Vec<&str> = words.collect();
@@ -577,6 +578,8 @@ mod tests {
             "sh -c 'cat .git/config'",
             "cat $(echo .git/config)",
             "git config --unset core.hooksPath",
+            "git log --output=.git/hooks/pre-commit",
+            "file -C -m .git/hooks/x",
         ] {
             assert_eq!(p.decide("Bash", &bash(command).1), ASK_ONCE, "{command}");
         }
