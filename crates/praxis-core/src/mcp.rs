@@ -2,7 +2,7 @@
 //! `tools` array never changes mid-session (SPEC §7).
 
 pub use crate::config::McpSource;
-use crate::config::{HttpServer, McpServer};
+use crate::config::{HttpServer, McpServer, PendingMcp};
 use crate::provider::{ToolSchema, is_loopback};
 use crate::tools::ToolOutput;
 use crate::trust::{TrustStore, hash};
@@ -20,7 +20,7 @@ use rmcp::{ClientHandler, RoleClient, ServiceExt as _};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::process::Stdio;
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
@@ -30,12 +30,14 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// What a model-visible tool maps to on its server.
+#[derive(Clone)]
 enum Op {
     Tool(String),
     ReadResource,
     GetPrompt,
 }
 
+#[derive(Clone)]
 struct Tool {
     schema: ToolSchema,
     server: String,
@@ -89,17 +91,23 @@ pub struct ServerStatus {
     pub status: Health,
     /// The names the server reports for its tools, without the `mcp__server__` prefix.
     pub tools: Vec<String>,
+    /// What an approval would run (the command line, or the URL), shown before the user approves.
+    /// Only set for servers that need approval.
+    pub command: Option<String>,
 }
 
 /// The connected servers and their frozen tools.
 #[derive(Default)]
 pub struct Mcp {
-    clients: Mutex<HashMap<String, Client>>,
+    // Shared so a copy made for an approval reuses the running server.
+    clients: Mutex<HashMap<String, Arc<Client>>>,
     servers: BTreeMap<String, McpServer>,
     /// Every configured server's source, including ones that failed to connect.
     sources: BTreeMap<String, McpSource>,
     /// Servers with a tool hidden by `pin`, awaiting approval.
     held: BTreeSet<String>,
+    /// Servers waiting for the user's approval; they are listed but not connected.
+    unapproved: BTreeMap<String, PendingMcp>,
     /// Servers already restarted after a crash; a second crash leaves them down.
     reconnected: Mutex<HashSet<String>>,
     tools: Vec<Tool>,
@@ -110,6 +118,17 @@ impl std::fmt::Debug for Mcp {
         f.debug_struct("Mcp")
             .field("servers", &self.servers.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
+    }
+}
+
+/// The command line an approval would run, or the URL it would connect to.
+fn describe(server: &McpServer) -> String {
+    match server {
+        McpServer::Stdio(server) => std::iter::once(server.command.as_str())
+            .chain(server.args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+        McpServer::Http(server) => server.url.clone(),
     }
 }
 
@@ -285,29 +304,96 @@ impl Mcp {
         for (server, config, result) in join_all(attempts).await {
             mcp.sources.insert(server.clone(), McpSource::User);
             match result {
-                Ok((client, catalog)) => {
-                    mcp.tools.extend(catalog.tools.iter().map(|tool| Tool {
-                        schema: ToolSchema {
-                            name: format!("mcp__{server}__{}", tool.name),
-                            description: tool.description.clone().unwrap_or_default().into_owned(),
-                            parameters: Value::Object((*tool.input_schema).clone()),
-                        },
-                        server: server.clone(),
-                        op: Op::Tool(tool.name.to_string()),
-                    }));
-                    mcp.tools.extend(synthetic_tools(server, &catalog));
-                    mcp.clients
-                        .get_mut()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(server.clone(), client);
-                    mcp.servers.insert(server.clone(), config.clone());
-                }
+                Ok((client, catalog)) => mcp.adopt(server, config, client, catalog),
                 Err(error) => notices.push(format!(
                     "MCP server `{server}` is unavailable this session: {error}"
                 )),
             }
         }
         (mcp, notices)
+    }
+
+    fn adopt(&mut self, server: &str, config: &McpServer, client: Client, catalog: Catalog) {
+        self.tools.extend(catalog.tools.iter().map(|tool| Tool {
+            schema: ToolSchema {
+                name: format!("mcp__{server}__{}", tool.name),
+                description: tool.description.clone().unwrap_or_default().into_owned(),
+                parameters: Value::Object((*tool.input_schema).clone()),
+            },
+            server: server.to_owned(),
+            op: Op::Tool(tool.name.to_string()),
+        }));
+        self.tools.extend(synthetic_tools(server, &catalog));
+        self.clients
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(server.to_owned(), Arc::new(client));
+        self.servers.insert(server.to_owned(), config.clone());
+    }
+
+    /// Lists servers that wait for approval, so the session's list shows them (SPEC §13).
+    /// Their names join `sources`; they connect only through `approve`.
+    pub fn with_unapproved(mut self, pending: &BTreeMap<String, PendingMcp>) -> Self {
+        for (name, server) in pending {
+            self.sources.insert(name.clone(), server.source);
+        }
+        self.unapproved.clone_from(pending);
+        self
+    }
+
+    /// Connects an approved server for this session. The caller stores the approval first. Returns
+    /// a copy with it connected and a notice if it failed; `self` is unchanged, since other
+    /// sessions share it.
+    pub async fn approve(&self, name: &str, timeout: Duration) -> (Self, Option<String>) {
+        let mut next = self.copy();
+        let Some(pending) = next.unapproved.remove(name) else {
+            return (
+                next,
+                Some(format!("no MCP server named `{name}` is waiting")),
+            );
+        };
+        let result = tokio::time::timeout(timeout, connect_one(name, &pending.server))
+            .await
+            .unwrap_or_else(|_| Err(format!("no answer within {}s", timeout.as_secs())));
+        match result {
+            Ok((client, catalog)) => {
+                next.adopt(name, &pending.server, client, catalog);
+                (next, None)
+            }
+            Err(error) => (
+                next,
+                Some(format!(
+                    "MCP server `{name}` is unavailable this session: {error}"
+                )),
+            ),
+        }
+    }
+
+    /// The servers still waiting for approval, by name.
+    pub fn unapproved(&self) -> &BTreeMap<String, PendingMcp> {
+        &self.unapproved
+    }
+
+    fn copy(&self) -> Self {
+        Self {
+            clients: Mutex::new(
+                self.clients
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+            servers: self.servers.clone(),
+            sources: self.sources.clone(),
+            held: self.held.clone(),
+            unapproved: self.unapproved.clone(),
+            reconnected: Mutex::new(
+                self.reconnected
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clone(),
+            ),
+            tools: self.tools.clone(),
+        }
     }
 
     /// Pins each tool's name, description and schema (SPEC §13). A tool seen for the first
@@ -418,7 +504,9 @@ impl Mcp {
             .map(|(name, source)| ServerStatus {
                 name: name.clone(),
                 source: *source,
-                status: if !clients.contains_key(name) {
+                status: if self.unapproved.contains_key(name) {
+                    Health::NeedsApproval
+                } else if !clients.contains_key(name) {
                     Health::Failed
                 } else if self.held.contains(name) {
                     Health::NeedsApproval
@@ -434,6 +522,7 @@ impl Mcp {
                         Op::ReadResource | Op::GetPrompt => None,
                     })
                     .collect(),
+                command: self.unapproved.get(name).map(|p| describe(&p.server)),
             })
             .collect()
     }
@@ -469,7 +558,7 @@ impl Mcp {
         let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
         match restarted {
             Some((client, _)) => {
-                clients.insert(server.to_owned(), client);
+                clients.insert(server.to_owned(), Arc::new(client));
                 " It was restarted, so the call can be tried again."
             }
             None => {

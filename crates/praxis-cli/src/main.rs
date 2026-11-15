@@ -1143,12 +1143,13 @@ async fn serve_acp(
     new_agent: acp::NewAgent,
     models: impl acp::Models,
     commands: Vec<Skill>,
+    trust: Option<TrustStore>,
 ) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
         return Ok(EXIT_USAGE);
     };
-    acp::agent(new_agent, dir, models, commands)
+    acp::agent(new_agent, dir, models, commands, trust)
         .connect_to(agent_client_protocol::Stdio::new())
         .await?;
     Ok(0)
@@ -1218,7 +1219,7 @@ async fn run(
     servers.extend(plugins.mcp);
     // Connecting needs only config, so it overlaps the model load (F11). Pinning stays after the reply.
     let connect = async {
-        if servers.is_empty() {
+        if servers.is_empty() && config.mcp_pending.is_empty() {
             None
         } else {
             Some(praxis_core::mcp::Mcp::connect(&servers, praxis_core::mcp::CONNECT_TIMEOUT).await)
@@ -1243,6 +1244,7 @@ async fn run(
                 Box::new(move || Err(anyhow::anyhow!("{message}"))),
                 picker,
                 Vec::new(),
+                None,
             )
             .await;
         }
@@ -1286,7 +1288,9 @@ async fn run(
         masking: true,
     };
     let mcp = connected.map(|(mcp, mut notices)| {
-        let mut mcp = mcp.with_sources(&sources);
+        let mut mcp = mcp
+            .with_sources(&sources)
+            .with_unapproved(&config.mcp_pending);
         notices.extend(mcp.pin(trust.as_ref(), &mut |change| {
             approve_mcp_change(change, terminal.as_mut())
         }));
@@ -1315,7 +1319,7 @@ async fn run(
         })
     };
     if acp {
-        return serve_acp(Box::new(new_agent), picker, plugins.commands.clone()).await;
+        return serve_acp(Box::new(new_agent), picker, plugins.commands.clone(), trust).await;
     }
     let resume = cli.resume.as_ref().map(Option::as_deref);
     let agent = with_session(new_agent()?, resume, &session_workspace)?;

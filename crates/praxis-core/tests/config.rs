@@ -495,6 +495,34 @@ fn project_mcp_servers_need_approval_and_user_ones_dont() {
     assert!(matches!(&approved.mcp["theirs"], McpServer::Stdio(s) if s.args == ["--x"]));
 }
 
+#[test]
+fn a_refused_project_server_waits_and_its_own_approval_loads_it() {
+    let project = file("[mcp.theirs]\ncommand = \"evil\"\n");
+    let store = TrustStore::new(project.with_file_name("trust.json"));
+    let sources = || Sources {
+        project: Some(project.clone()),
+        trust: Some(store.clone()),
+        ..Sources::default()
+    };
+    let refused = load_with_approval(sources(), &mut |_, _| false)
+        .unwrap()
+        .config;
+    assert!(refused.mcp.is_empty());
+    let pending = &refused.mcp_pending["theirs"];
+    assert_eq!(pending.source, McpSource::Project);
+    store.set(&pending.key, &pending.digest).unwrap();
+
+    let approved = load(sources()).unwrap().config;
+    assert!(approved.mcp.contains_key("theirs"));
+    assert!(approved.mcp_pending.is_empty());
+
+    // A changed server waits for approval again.
+    fs::write(&project, "[mcp.theirs]\ncommand = \"worse\"\n").unwrap();
+    let changed = load(sources()).unwrap().config;
+    assert!(changed.mcp.is_empty());
+    assert!(changed.mcp_pending.contains_key("theirs"));
+}
+
 fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
     let path = project.with_file_name(".mcp.json");
     fs::write(&path, json).unwrap();

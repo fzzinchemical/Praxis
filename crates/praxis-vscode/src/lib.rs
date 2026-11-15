@@ -316,6 +316,14 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     refresh_plugins();
     create_mcp_view();
     command(&context, "praxis.refreshMcp", |_| refresh_mcp())?;
+    command(&context, "praxis.approveMcp", |item| {
+        if let Some(name) = item_id(&item)
+            .as_deref()
+            .and_then(|id| id.strip_prefix(MCP_PREFIX))
+        {
+            approve_mcp(name.to_owned());
+        }
+    })?;
     command(&context, "praxis.enablePlugin", |item| {
         if let Some(name) = item_id(&item) {
             enable_plugin(name);
@@ -1834,7 +1842,39 @@ fn mcp_server_node(server: &mcp::McpServer) -> JsValue {
             node(&[("state", JsValue::from_f64(checked))]),
         ),
         ("collapsibleState", JsValue::from_f64(collapsed)),
+        // Matches the `viewItem` menu entry that offers "Approve".
+        (
+            "contextValue",
+            JsValue::from_str(if server.status == mcp::Status::NeedsApproval {
+                "mcp-needs-approval"
+            } else {
+                "mcp-server"
+            }),
+        ),
     ])
+}
+
+/// Asks the user to confirm the server's command, then sends its approval. Nothing is approved
+/// without that confirmation (SPEC §8, §13).
+fn approve_mcp(name: String) {
+    let command = MCP.with(|mcp| {
+        mcp.borrow()
+            .as_ref()?
+            .servers
+            .iter()
+            .find(|server| server.name == name)?
+            .command
+            .clone()
+    });
+    let Some(command) = command else {
+        return;
+    };
+    let message = format!(
+        "Approve the MCP server `{name}`?\n\nPraxis will run this command on your machine, outside the sandbox:\n{command}\n\nA later change to it asks again."
+    );
+    confirm(&message, "Approve", move || {
+        send_mcp(|client| client.approve_mcp(&name));
+    });
 }
 
 /// The tree item a click or context-menu command was run on, by its `id`. From the palette the argument is absent.

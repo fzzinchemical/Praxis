@@ -512,6 +512,125 @@ async fn acp_without_a_loaded_model_stays_up_and_reports_it_on_session_new() {
 }
 
 /// An enabled plugin under the test's data dir, written directly so no git is involved.
+/// Sends one request and returns its answer, skipping the notifications that come before it.
+async fn ask(
+    stdin: &mut tokio::process::ChildStdin,
+    lines: &mut tokio::io::Lines<tokio::io::BufReader<tokio::process::ChildStdout>>,
+    id: u64,
+    method: &str,
+    params: Value,
+) -> Value {
+    let request = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+    stdin
+        .write_all(format!("{request}\n").as_bytes())
+        .await
+        .unwrap();
+    loop {
+        let line = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+            .await
+            .unwrap()
+            .unwrap()
+            .expect("stdout closed");
+        let message: Value = serde_json::from_str(&line).expect("stdout line is not JSON");
+        if message["id"] == id {
+            return message;
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_lists_a_waiting_project_server_and_approval_stores_and_connects_it() {
+    let server = server(Some(4096), Replies(vec![text_reply("unused")])).await;
+    let dir = workspace();
+    fs::write(
+        dir.join(".mcp.json"),
+        r#"{"mcpServers": {"fs": {"command": "/nonexistent/mcp-fs", "args": ["."]}}}"#,
+    )
+    .unwrap();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    ask(
+        &mut stdin,
+        &mut lines,
+        0,
+        "initialize",
+        json!({"protocolVersion": 1}),
+    )
+    .await;
+    let created = ask(
+        &mut stdin,
+        &mut lines,
+        1,
+        "session/new",
+        json!({"cwd": dir, "mcpServers": []}),
+    )
+    .await;
+    let session = created["result"]["sessionId"].clone();
+
+    let listed = ask(
+        &mut stdin,
+        &mut lines,
+        2,
+        "_praxis/mcp_servers",
+        json!({"sessionId": session}),
+    )
+    .await;
+    let fs_row = &listed["result"]["servers"][0];
+    assert_eq!(fs_row["name"], "fs", "{listed}");
+    assert_eq!(fs_row["status"], "needs_approval", "{listed}");
+    assert_eq!(fs_row["command"], "/nonexistent/mcp-fs .", "{listed}");
+
+    // The server can't start, so the approval is stored and the answer says why it isn't connected.
+    let approved = ask(
+        &mut stdin,
+        &mut lines,
+        3,
+        "_praxis/approve_mcp_server",
+        json!({"sessionId": session, "name": "fs"}),
+    )
+    .await;
+    assert_eq!(approved["result"]["name"], "fs", "{approved}");
+    assert!(
+        approved["result"]["notices"][0]
+            .as_str()
+            .unwrap()
+            .contains("fs"),
+        "{approved}"
+    );
+    let stored = fs::read_to_string(dir.join("xdg-data/praxis/trust.json")).unwrap();
+    assert!(
+        stored.contains("server:") && stored.contains("#fs"),
+        "{stored}"
+    );
+    let relisted = ask(
+        &mut stdin,
+        &mut lines,
+        4,
+        "_praxis/mcp_servers",
+        json!({"sessionId": session}),
+    )
+    .await;
+    assert_eq!(
+        relisted["result"]["servers"][0]["status"], "failed",
+        "{relisted}"
+    );
+
+    let unknown = ask(
+        &mut stdin,
+        &mut lines,
+        5,
+        "_praxis/approve_mcp_server",
+        json!({"sessionId": session, "name": "nope"}),
+    )
+    .await;
+    assert!(unknown["error"].is_object(), "{unknown}");
+    let _ = child.kill().await;
+}
+
 fn enabled_plugin(dir: &Path) {
     let plugins = dir.join("xdg-data/praxis/plugins");
     let root = plugins.join("demo");

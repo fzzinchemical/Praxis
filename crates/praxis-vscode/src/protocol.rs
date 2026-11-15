@@ -384,6 +384,7 @@ const REVERT: u64 = 1 << 40;
 /// The MCP list and toggle answers, above the prompt ids for the same reason as `REVERT`.
 const MCP_LIST: u64 = 1 << 41;
 const MCP_TOGGLE: u64 = (1 << 41) + 1;
+const MCP_APPROVE: u64 = (1 << 41) + 2;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -512,6 +513,13 @@ impl Client {
         Some(request(MCP_TOGGLE, "_praxis/set_mcp_enabled", params))
     }
 
+    /// The `_praxis/approve_mcp_server` request. Sent only after the user confirms the server's command.
+    pub fn approve_mcp(&self, name: &str) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "name": name});
+        Some(request(MCP_APPROVE, "_praxis/approve_mcp_server", params))
+    }
+
     /// The `_praxis/cancel_subagent` notification for a running subagent, or `None` while no session
     /// is open yet. A notification has no id, so the agent sends no answer.
     pub fn stop_subagent(&self, id: &str) -> Option<String> {
@@ -551,6 +559,11 @@ impl Client {
                 // Re-list so the view's checkbox shows what the agent really has.
                 Some(MCP_TOGGLE) => Reaction {
                     show: Some(notice(&format!("Could not change MCP server: {text}"))),
+                    send: self.mcp_servers(),
+                    ..Reaction::default()
+                },
+                Some(MCP_APPROVE) => Reaction {
+                    show: Some(notice(&format!("Could not approve MCP server: {text}"))),
                     send: self.mcp_servers(),
                     ..Reaction::default()
                 },
@@ -681,7 +694,7 @@ impl Client {
                 mcp: Some(result.clone()),
                 ..Reaction::default()
             },
-            Some(MCP_TOGGLE) => Reaction {
+            Some(MCP_TOGGLE | MCP_APPROVE) => Reaction {
                 send: self.mcp_servers(),
                 ..Reaction::default()
             },
@@ -1290,6 +1303,12 @@ mod tests {
         let done = format!(r#"{{"jsonrpc":"2.0","id":{MCP_TOGGLE},"result":{{}}}}"#);
         let reaction = client.on_line(&done);
         assert!(sent(&reaction)["method"] == "_praxis/mcp_servers");
+
+        let approve: Value = serde_json::from_str(&client.approve_mcp("fs").unwrap()).unwrap();
+        assert_eq!(approve["method"], "_praxis/approve_mcp_server");
+        assert_eq!(approve["params"]["name"], "fs");
+        let done = format!(r#"{{"jsonrpc":"2.0","id":{MCP_APPROVE},"result":{{}}}}"#);
+        assert!(sent(&client.on_line(&done))["method"] == "_praxis/mcp_servers");
     }
 
     #[test]

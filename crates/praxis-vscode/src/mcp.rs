@@ -12,6 +12,8 @@ pub struct McpServer {
     pub status: Status,
     pub tools: Vec<String>,
     pub enabled: bool,
+    /// What approving the server would run; set only for servers that need approval.
+    pub command: Option<String>,
 }
 
 /// The agent's `status`. A value this build does not know is kept, so a newer agent still lists its servers.
@@ -91,6 +93,7 @@ fn server(row: &Value) -> Result<McpServer, String> {
         enabled: row["enabled"]
             .as_bool()
             .ok_or("MCP server row without an `enabled` flag")?,
+        command: row["command"].as_str().map(str::to_owned),
     })
 }
 
@@ -131,6 +134,18 @@ mod tests {
             {"name": "bad", "source": "user", "status": "connected", "tools": []}
         ]});
         assert!(mcp_servers(&answer).is_err());
+    }
+
+    #[test]
+    fn a_server_waiting_for_approval_shows_what_it_would_run() {
+        let answer = json!({"servers": [
+            {"name": "fs", "source": "project", "status": "needs_approval", "tools": [],
+             "enabled": true, "command": "npx -y fs-server ."}
+        ]});
+        let rows = mcp_servers(&answer).expect("well-formed answer");
+        assert_eq!(rows[0].status, Status::NeedsApproval);
+        assert_eq!(rows[0].description(), "needs approval · project · 0 tools");
+        assert_eq!(rows[0].command.as_deref(), Some("npx -y fs-server ."));
     }
 
     #[test]

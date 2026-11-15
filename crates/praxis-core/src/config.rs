@@ -45,6 +45,9 @@ pub struct Config {
     /// Where each `mcp` server was declared. Filled by the loader, never read from a file.
     #[serde(skip)]
     pub mcp_sources: BTreeMap<String, McpSource>,
+    /// Project and LM Studio servers still waiting for approval, by name. Filled by the loader.
+    #[serde(skip)]
+    pub mcp_pending: BTreeMap<String, PendingMcp>,
     /// Hooks from Claude Code settings files. Filled by the loader, never read from a file.
     #[serde(skip)]
     pub hooks: Vec<Hook>,
@@ -68,6 +71,16 @@ impl McpSource {
             Self::LmStudio => "lmstudio",
         }
     }
+}
+
+/// A project or LM Studio MCP server that waits for approval. Approving stores `digest` under
+/// `key` in the trust store, so a changed server asks again (SPEC §8, §13).
+#[derive(Debug, Clone)]
+pub struct PendingMcp {
+    pub server: McpServer,
+    pub source: McpSource,
+    pub key: String,
+    pub digest: String,
 }
 
 /// An MCP server, from `[mcp.name]` or Claude Code's `.mcp.json` shape (SPEC §8, §13).
@@ -400,6 +413,7 @@ pub fn load_with_approval(
     // Names of the project's approved MCP servers, so each can say it came from the project.
     let mut project_mcp = std::collections::BTreeSet::new();
     let mut lmstudio_mcp = std::collections::BTreeSet::new();
+    let mut pending = BTreeMap::new();
     // Claude Code's user file sits below the praxis user layer and needs no approval: it's the
     // user's own file (SPEC §8).
     if let Some(path) = &sources.claude_user {
@@ -465,6 +479,16 @@ pub fn load_with_approval(
                     keys.join(", "),
                     path.display()
                 ));
+                if let Some(Value::Table(servers)) = widening.get("mcp") {
+                    let approved = split_servers(
+                        servers.clone(),
+                        path,
+                        McpSource::Project,
+                        &sources,
+                        &mut pending,
+                    )?;
+                    merge(&mut project, nested("mcp", Value::Table(approved)), "");
+                }
             }
         }
         if let Some(Value::Table(servers)) = project.get("mcp") {
@@ -487,17 +511,21 @@ pub fn load_with_approval(
             .is_some_and(|servers| !servers.is_empty());
         if has_servers {
             let text = toml::to_string(&lmstudio).map_err(|e| error("config", e))?;
-            if is_approved(&sources, path, &text, approve)? {
-                if let Some(Value::Table(servers)) = lmstudio.get("mcp") {
-                    lmstudio_mcp.extend(servers.keys().cloned());
-                }
-                merge(&mut merged, lmstudio, "");
+            let servers = match lmstudio.remove("mcp") {
+                Some(Value::Table(servers)) => servers,
+                _ => Table::new(),
+            };
+            let approved = if is_approved(&sources, path, &text, approve)? {
+                servers
             } else {
                 notices.push(format!(
                     "Ignored `mcp` from {}: LM Studio's MCP servers need your approval.",
                     path.display()
                 ));
-            }
+                split_servers(servers, path, McpSource::LmStudio, &sources, &mut pending)?
+            };
+            lmstudio_mcp.extend(approved.keys().cloned());
+            merge(&mut merged, nested("mcp", Value::Table(approved)), "");
         }
     }
     let env = sources.env.iter().filter_map(|(name, value)| {
@@ -533,7 +561,45 @@ pub fn load_with_approval(
         })
         .collect();
     config.hooks = hooks;
+    config.mcp_pending = pending;
     Ok(Loaded { config, notices })
+}
+
+/// Splits servers the block-wide approval didn't cover: one whose own approval is stored
+/// under its key is approved, and the rest wait for the user (SPEC §8, §13).
+fn split_servers(
+    servers: Table,
+    origin: &Path,
+    source: McpSource,
+    sources: &Sources,
+    pending: &mut BTreeMap<String, PendingMcp>,
+) -> Result<Table, ConfigError> {
+    let mut approved = Table::new();
+    for (name, value) in servers {
+        let key = format!("server:{}#{name}", origin.display());
+        let digest = hash(&value.to_string());
+        let stored = match &sources.trust {
+            Some(store) => store.get(&key).map_err(|e| error("trust store", e))?,
+            None => None,
+        };
+        if stored.as_deref() == Some(digest.as_str()) {
+            approved.insert(name, value);
+            continue;
+        }
+        let server = value
+            .try_into()
+            .map_err(|e: toml::de::Error| error(&origin.display().to_string(), e.message()))?;
+        pending.insert(
+            name,
+            PendingMcp {
+                server,
+                source,
+                key,
+                digest,
+            },
+        );
+    }
+    Ok(approved)
 }
 
 /// Reads a Claude Code settings file; a missing one is empty.

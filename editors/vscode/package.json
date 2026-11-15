@@ -23,7 +23,8 @@
       { "command": "praxis.setPluginOption", "title": "Praxis: Set Plugin Option" },
       { "command": "praxis.installPlugin", "title": "Praxis: Install Plugin", "icon": "$(add)" },
       { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" },
-      { "command": "praxis.refreshMcp", "title": "Praxis: Refresh MCP Servers", "icon": "$(refresh)" }
+      { "command": "praxis.refreshMcp", "title": "Praxis: Refresh MCP Servers", "icon": "$(refresh)" },
+      { "command": "praxis.approveMcp", "title": "Praxis: Approve MCP Server" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "praxis", "title": "Praxis", "icon": "media/praxis.svg" }]
@@ -48,9 +49,11 @@
         { "command": "praxis.deleteSession", "when": "view == praxis.sessions && viewItem == session", "group": "2_remove" },
         { "command": "praxis.enablePlugin", "when": "view == praxis.plugins && viewItem == plugin-disabled", "group": "1_state" },
         { "command": "praxis.disablePlugin", "when": "view == praxis.plugins && viewItem == plugin-enabled", "group": "1_state" },
-        { "command": "praxis.removePlugin", "when": "view == praxis.plugins && viewItem =~ /^plugin-/", "group": "2_remove" }
+        { "command": "praxis.removePlugin", "when": "view == praxis.plugins && viewItem =~ /^plugin-/", "group": "2_remove" },
+        { "command": "praxis.approveMcp", "when": "view == praxis.mcp && viewItem == mcp-needs-approval", "group": "1_state" }
       ],
       "commandPalette": [
+        { "command": "praxis.approveMcp", "when": "false" },
         { "command": "praxis.openSession", "when": "false" },
         { "command": "praxis.deleteSession", "when": "false" },
         { "command": "praxis.moveSessionToFolder", "when": "false" },

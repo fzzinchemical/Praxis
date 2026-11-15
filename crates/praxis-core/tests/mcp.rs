@@ -6,7 +6,7 @@
 #![allow(clippy::unwrap_used)]
 
 use praxis_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
-use praxis_core::config::{HttpServer, McpServer, StdioServer};
+use praxis_core::config::{HttpServer, McpServer, PendingMcp, StdioServer};
 use praxis_core::hooks::{Hook, Matcher};
 use praxis_core::mcp::{Health, Mcp, McpSource};
 use praxis_core::provider::Provider;
@@ -916,6 +916,42 @@ async fn statuses_name_each_servers_source_health_and_tools() {
     assert_eq!(find("slow").status, Health::Failed);
 }
 
+async fn a_waiting_server_connects_only_once_approved() {
+    let me = std::env::current_exe().unwrap();
+    let pending = BTreeMap::from([(
+        "test".to_owned(),
+        PendingMcp {
+            server: server(me.to_str().unwrap(), &["serve"]),
+            source: McpSource::Project,
+            key: "server:/proj/.praxis/config.toml#test".to_owned(),
+            digest: "unused".to_owned(),
+        },
+    )]);
+    let (mcp, _) = Mcp::connect(&BTreeMap::new(), Duration::from_secs(2)).await;
+    let mcp = mcp.with_unapproved(&pending);
+    let status = |mcp: &Mcp| {
+        mcp.server_statuses()
+            .into_iter()
+            .find(|s| s.name == "test")
+            .unwrap()
+    };
+    let waiting = status(&mcp);
+    assert_eq!(waiting.status, Health::NeedsApproval, "{waiting:?}");
+    assert!(waiting.command.unwrap().ends_with(" serve"));
+
+    let (approved, failure) = mcp.approve("test", Duration::from_secs(10)).await;
+    assert!(failure.is_none(), "{failure:?}");
+    assert_eq!(status(&approved).status, Health::Connected);
+    assert!(
+        approved
+            .schemas()
+            .iter()
+            .any(|s| s.name == "mcp__test__echo")
+    );
+    // The copy other sessions hold still waits.
+    assert_eq!(status(&mcp).status, Health::NeedsApproval);
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -957,4 +993,6 @@ fn main() {
     println!("a_server_turned_off_leaves_the_next_turn_and_its_calls_fail ... ok");
     runtime.block_on(statuses_name_each_servers_source_health_and_tools());
     println!("statuses_name_each_servers_source_health_and_tools ... ok");
+    runtime.block_on(a_waiting_server_connects_only_once_approved());
+    println!("a_waiting_server_connects_only_once_approved ... ok");
 }

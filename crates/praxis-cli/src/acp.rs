@@ -15,6 +15,7 @@ use praxis_core::provider::{MEMORY_MARK, Message, ToolCall};
 use praxis_core::session::{self, Entry, SessionLog};
 use praxis_core::tools::{DiagnosticsReader, EditorReader};
 use praxis_core::tools::{FileDiff, ToolOutput};
+use praxis_core::trust::TrustStore;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
@@ -67,6 +68,8 @@ struct Server<M> {
     sessions_dir: PathBuf,
     /// Plugin and standalone commands announced after each `session/new` and `session/load`.
     commands: Vec<Skill>,
+    /// Where a sidebar approval of an MCP server is stored (SPEC §8). `None` refuses approvals.
+    trust: Option<TrustStore>,
     sessions: Mutex<HashMap<String, Slot>>,
     /// Whether the client advertised `fs.readTextFile` at `initialize`.
     client_reads: AtomicBool,
@@ -90,6 +93,9 @@ const MCP_SERVERS: &str = "_praxis/mcp_servers";
 /// Extension request that turns one MCP server on or off for the session: `sessionId`, `name`,
 /// `enabled`. Applies from the session's next turn (SPEC §13).
 const SET_MCP_ENABLED: &str = "_praxis/set_mcp_enabled";
+/// Extension request for "Approve" in the MCP view: `sessionId`, `name`. Stores the user's approval
+/// of that server and connects it for the session. Answered with `name` and `notices` (SPEC §13).
+const APPROVE_MCP: &str = "_praxis/approve_mcp_server";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 
@@ -235,13 +241,18 @@ impl<M: Models> Server<M> {
             .mcp
             .iter()
             .map(|s| {
-                json!({
+                let mut row = json!({
                     "name": s.name,
                     "source": s.source.as_str(),
                     "status": s.status.as_str(),
                     "tools": s.tools,
                     "enabled": !slot.mcp_off.contains(&s.name),
-                })
+                });
+                // Only servers waiting for approval carry what the approval would run (SPEC §13).
+                if let Some(command) = &s.command {
+                    row["command"] = json!(command);
+                }
+                row
             })
             .collect();
         Ok(json!({"servers": servers}))
@@ -262,6 +273,26 @@ impl<M: Models> Server<M> {
             slot.mcp_off.insert(name.to_owned());
         }
         Ok(())
+    }
+
+    /// Approves one MCP server the user chose in the view and connects it for session `id`. Like
+    /// a revert, it holds the agent, so it waits for a running turn to end (SPEC §13).
+    async fn approve_mcp(&self, id: &str, name: &str) -> Result<Vec<String>, Error> {
+        let (mut agent, _) = self.begin_turn(id)?;
+        let outcome = match &self.trust {
+            Some(trust) => agent
+                .approve_mcp(name, trust)
+                .await
+                .map_err(|e| Error::invalid_params().data(e)),
+            None => Err(Error::invalid_params()
+                .data("approving an MCP server needs a home or data directory to store it in")),
+        };
+        let mcp = agent.mcp_servers();
+        self.end_turn(id, agent);
+        if let Some(slot) = self.sessions().get_mut(id) {
+            slot.mcp = mcp;
+        }
+        outcome
     }
 
     fn end_turn(&self, id: &str, agent: Agent) {
@@ -353,12 +384,14 @@ pub fn agent(
     sessions_dir: PathBuf,
     models: impl Models,
     commands: Vec<Skill>,
+    trust: Option<TrustStore>,
 ) -> impl ConnectTo<Client> {
     let server = Arc::new(Server {
         new_agent,
         models,
         sessions_dir,
         commands,
+        trust,
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
         client_diagnostics: AtomicBool::new(false),
@@ -670,7 +703,7 @@ pub fn agent(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: UntypedMessage, responder, _cx| {
+            async move |req: UntypedMessage, responder, cx| {
                 // Last in the chain, so it only sees methods no handler above took.
                 if req.method() == REVERT {
                     let params = req.params();
@@ -719,6 +752,27 @@ pub fn agent(
                         Ok(()) => responder.respond(json!({"name": name, "enabled": enabled})),
                         Err(e) => responder.respond_with_error(e),
                     };
+                }
+                if req.method() == APPROVE_MCP {
+                    let (Some(session), Some(name)) = (
+                        req.params()["sessionId"].as_str(),
+                        req.params()["name"].as_str(),
+                    ) else {
+                        let error = Error::invalid_params()
+                            .data("approve_mcp_server needs a sessionId and a name");
+                        return responder.respond_with_error(error);
+                    };
+                    let (session, name) = (session.to_owned(), name.to_owned());
+                    let server = for_rewind.clone();
+                    // Connecting can take seconds, so it runs off the dispatch loop, as loads do.
+                    return cx.clone().spawn(async move {
+                        match server.approve_mcp(&session, &name).await {
+                            Ok(notices) => {
+                                responder.respond(json!({"name": name, "notices": notices}))
+                            }
+                            Err(e) => responder.respond_with_error(e),
+                        }
+                    });
                 }
                 if req.method() != REWIND {
                     return responder.respond_with_error(Error::method_not_found());
@@ -1289,7 +1343,7 @@ mod tests {
             let provider = Arc::new(Provider::new(&url, None)?);
             Ok(Agent::new(provider, tools, config).with_agents(Vec::new()))
         });
-        agent(new_agent, dir.join("sessions"), FakeModels, commands)
+        agent(new_agent, dir.join("sessions"), FakeModels, commands, None)
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1576,6 +1630,7 @@ mod tests {
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
             commands: Vec::new(),
+            trust: None,
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
@@ -1585,6 +1640,7 @@ mod tests {
             source: McpSource::Plugin,
             status: Health::Connected,
             tools: vec!["git_status".into()],
+            command: None,
         };
         let slot = Slot {
             agent: None,
@@ -1657,6 +1713,7 @@ mod tests {
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
             commands: Vec::new(),
+            trust: None,
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
