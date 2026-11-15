@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.4.3-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.4.4-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -289,6 +289,13 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 1.4.4-beta
+
+- VS Code: pac-man takes the theme's link colour and fades out before it reaches the status word.
+- VS Code: the `/` command list shows each command's description in a side panel for the hovered or selected command, not inline.
+- Every model, small ones included, is told when to hand work to a subagent with the `Agent` tool.
+- Full access no longer asks before Bash commands that only read protected paths (`cat .git/config`, `git config --get`). Commands that may write to them still ask.
 
 ### New in 1.4.3-beta
 
