@@ -665,9 +665,9 @@ flowchart TD
 | `read-only` | allow | deny | deny |
 | `ask` | allow | ask | ask |
 | `auto-edit` | allow | allow in workspace | ask |
-| `full-access` | allow | allow in workspace | allow, except a `Bash` command with hard-denied text, which asks |
+| `full-access` | allow | allow in workspace | allow, except a `Bash` command that may write a hard-denied path, which asks |
 
-`full-access` (T10.7, owner approval 2026-11-13) loosens §10 for `Bash` and MCP calls: they run without asking, still under every deny rule and hard denial, which are checked first. Only the user can select it: in `config.toml`, a `--config-override`, or the VS Code setting `praxis.permissions.mode` (machine scope, so a workspace can't set it). A project's `permissions.mode = "full-access"` is dropped with a notice, approved or not. Every `Bash` command runs without asking, compound ones included (owner approval 2026-11-15), except one whose text reaches a hard-denied path, which still asks. The sandbox still applies.
+`full-access` (T10.7, owner approval 2026-11-13) loosens §10 for `Bash` and MCP calls: they run without asking, still under every deny rule and hard denial, which are checked first. Only the user can select it: in `config.toml`, a `--config-override`, or the VS Code setting `praxis.permissions.mode` (machine scope, so a workspace can't set it). A project's `permissions.mode = "full-access"` is dropped with a notice, approved or not. Every `Bash` command runs without asking, compound ones included (owner approval 2026-11-15), except one that may write a hard-denied path, which still asks (owner decision 2026-11-15). Reads of those paths run: `cat .git/config`, `ls .git/hooks`, `git config --get user.name`, `git config --list`, and `git status`, `git log`, `git show`. A command is a read only if every part (split on `;`, `&`, `|`, newlines) starts with one of those words and it has no redirect, `$`, backtick, parenthesis or brace. Anything else that names a hard-denied path asks, including `git config` without a read flag, `tee`, `touch`, `sh -c` and `$(...)`. The sandbox still applies.
 
 A hook `allow` skips the prompt but can't override `deny` rules or hard denials.
 

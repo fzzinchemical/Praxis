@@ -278,6 +278,35 @@ async fn bash_naming_a_hard_denied_path_always_needs_the_user() {
     assert!(!workspace.join(".mcp.json").exists());
 }
 
+/// Owner decision 2026-11-15: in full access a read that names a hard-denied path runs, while a
+/// command that could write there still asks.
+#[tokio::test(flavor = "multi_thread")]
+async fn full_access_reads_hard_denied_paths_but_still_asks_before_writing_them() {
+    let workspace = temp_dir("ws");
+    fs::create_dir_all(workspace.join(".git")).unwrap();
+    fs::write(workspace.join(".git/config"), "[user]\n").unwrap();
+    let (read, _) = run(
+        &workspace,
+        Mode::FullAccess,
+        "Bash",
+        json!({"command": "cat .git/config"}),
+    )
+    .await;
+    assert_eq!(read, Outcome::Ran);
+    let (write, _) = run(
+        &workspace,
+        Mode::FullAccess,
+        "Bash",
+        json!({"command": "git config core.hooksPath x"}),
+    )
+    .await;
+    assert_eq!(write, Outcome::Asked);
+    assert_eq!(
+        fs::read_to_string(workspace.join(".git/config")).unwrap(),
+        "[user]\n"
+    );
+}
+
 /// Invariant 4: write paths are checked after symlinks resolve, so a link can't reach a
 /// hard-denied folder or leave the workspace.
 #[tokio::test(flavor = "multi_thread")]

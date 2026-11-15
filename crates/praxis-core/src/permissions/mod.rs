@@ -45,8 +45,65 @@ fn hard_denied_bash(input: &Value) -> bool {
         .get("command")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    names_hard_denied(command)
+}
+
+fn bash_writes_hard_denied(input: &Value) -> bool {
+    let command = input
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    writes_hard_denied(command)
+}
+
+fn names_hard_denied(command: &str) -> bool {
     let lower = command.to_lowercase();
     HARD_DENIED_TEXT.iter().any(|t| lower.contains(t))
+}
+
+/// Whether a command that names a hard-denied path could write there (SPEC §9, §10). Fails
+/// closed: only simple reads (`cat`, `ls`, `git config --get`, ...) joined by `;`, `&`, `|` or
+/// newlines count as reads; any redirect, substitution or other command counts as a write.
+// shortcut: a read is judged by its first word only, so an interpreter or `xargs` is a write; add a real shell parser if reads need more.
+fn writes_hard_denied(command: &str) -> bool {
+    if !names_hard_denied(command) {
+        return false;
+    }
+    if command.contains(['>', '$', '`', '(', ')', '{', '}']) {
+        return true;
+    }
+    command
+        .split([';', '&', '|', '\n'])
+        .filter(|s| !s.trim().is_empty())
+        .any(|segment| !read_only_segment(segment))
+}
+
+fn read_only_segment(segment: &str) -> bool {
+    const WRITE_FLAGS: [&str; 8] = [
+        "--unset",
+        "--unset-all",
+        "--add",
+        "--replace-all",
+        "--rename-section",
+        "--remove-section",
+        "--edit",
+        "-e",
+    ];
+    let mut words = segment.split_whitespace();
+    match words.next() {
+        Some("cat" | "head" | "tail" | "ls" | "wc" | "stat" | "file" | "grep" | "diff") => true,
+        Some("git") => match words.next() {
+            Some("status" | "log" | "show") => true,
+            // `git config --get key value` reads too, but a key first would make it a set.
+            Some("config") => {
+                let flags: Vec<&str> = words.collect();
+                matches!(flags.first(), Some(&f) if f.starts_with("--get") || f == "--list" || f == "-l")
+                    && flags.iter().all(|f| !WRITE_FLAGS.contains(f))
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 /// `Tool` or `Tool(glob)`, as in Claude Code: `Bash(git status*)`, `Edit(src/**)`.
@@ -241,9 +298,9 @@ impl Permissions {
         match tool {
             _ if read_only => Decision::Allow,
             "Write" | "Edit" if self.policy.mode >= Mode::AutoEdit => Decision::Allow,
-            // Full access runs every Bash command, compound ones included. Hard-denied text still
-            // falls through to the ask below.
-            "Bash" if self.policy.mode == Mode::FullAccess && !hard_denied_bash(input) => {
+            // Full access runs every Bash command, compound ones included, unless it could write to
+            // a hard-denied path (SPEC §10). Reads of those paths run; writes fall through to the ask.
+            "Bash" if self.policy.mode == Mode::FullAccess && !bash_writes_hard_denied(input) => {
                 Decision::Allow
             }
             mcp if self.policy.mode == Mode::FullAccess && mcp.starts_with("mcp__") => {
@@ -471,7 +528,16 @@ mod tests {
                 &bash("cargo test && cargo fmt"),
                 Some(Decision::Allow),
             ),
-            (Mode::FullAccess, &bash("cat .git/config"), Some(ASK_ONCE)),
+            (
+                Mode::FullAccess,
+                &bash("cat .git/config"),
+                Some(Decision::Allow),
+            ),
+            (
+                Mode::FullAccess,
+                &bash("git config core.hooksPath x"),
+                Some(ASK_ONCE),
+            ),
             (Mode::FullAccess, &unknown, None),
         ] {
             let decision = permissions(mode, &[], &[]).decide(call.0, &call.1);
@@ -479,6 +545,40 @@ mod tests {
                 Some(expected) => assert_eq!(decision, expected, "{mode:?} {call:?}"),
                 None => assert!(denied(&decision), "{mode:?} {call:?}: {decision:?}"),
             }
+        }
+    }
+
+    /// Owner decision 2026-11-15: reads of hard-denied paths run in full access, writes still ask.
+    /// Unsure commands ask, so the fail-closed side is pinned too.
+    #[test]
+    fn full_access_asks_only_for_commands_that_may_write_a_hard_denied_path() {
+        let p = permissions(Mode::FullAccess, &[], &[]);
+        for command in [
+            "git config --get user.name",
+            "git config --list",
+            "cat .git/config",
+            "ls .git/hooks",
+            "cat .git/config | wc -l",
+            "grep hookspath .git/config; git status",
+        ] {
+            assert_eq!(
+                p.decide("Bash", &bash(command).1),
+                Decision::Allow,
+                "{command}"
+            );
+        }
+        for command in [
+            "git config core.hooksPath x",
+            "git config --get user.name && git config core.hooksPath x",
+            "echo x > .git/config",
+            "cat .git/config >> .praxis/x",
+            "echo x | tee .mcp.json",
+            "touch .git/hooks/pre-commit",
+            "sh -c 'cat .git/config'",
+            "cat $(echo .git/config)",
+            "git config --unset core.hooksPath",
+        ] {
+            assert_eq!(p.decide("Bash", &bash(command).1), ASK_ONCE, "{command}");
         }
     }
 
