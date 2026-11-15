@@ -183,13 +183,20 @@ impl Ui {
     }
 
     /// Shows `description` in the panel beside the list, or hides the panel when there is none.
+    /// The input names the panel in `aria-describedby` only while it shows, so screen readers
+    /// read the description when it appears and never a hidden element.
     fn show_doc(&self, description: Option<&str>) -> Result<(), JsValue> {
         match description.filter(|text| !text.is_empty()) {
             Some(text) => {
                 self.command_doc.set_text_content(Some(text));
+                self.input
+                    .set_attribute("aria-describedby", "command-doc")?;
                 self.command_doc.remove_attribute("hidden")
             }
-            None => self.command_doc.set_attribute("hidden", ""),
+            None => {
+                self.input.remove_attribute("aria-describedby")?;
+                self.command_doc.set_attribute("hidden", "")
+            }
         }
     }
 
