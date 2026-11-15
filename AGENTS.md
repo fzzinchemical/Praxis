@@ -71,7 +71,7 @@ Known before implementation. Details are in SPEC.
 
 - The pre-commit hook checks the working tree, not just the staged files, so unstaged changes can fail or pass a commit.
 - `scripts/verify` runs tests through `cargo llvm-cov` (pacman `cargo-llvm-cov`); code that runs only inside `sandbox-exec` shows as uncovered because the sandboxed child can't write its profile.
-- LM Studio reports context overflow as HTTP 200 plus SSE `event: error`, so checking the status alone misses it (ADR 0002).
+- LM Studio reports context overflow in two forms: HTTP 200 plus SSE `event: error` `exceed_context_size_error` (ADR 0002), and HTTP 500 with "Context size has been exceeded." (no token counts), so matching one form misses the other.
 - `qwen2.5-coder-7b-instruct` never emits native tool calls despite accepting `tools` (ADR 0002).
 - `--workspace` overrides `default-members`, so it pulls wasm crates into native builds. Use `--exclude` as `scripts/verify` does.
 - LM Studio's native chat can't take custom tools, and its OpenAI-compatible routes can't set context size. Chat through `/v1/chat/completions` and set context when loading the model through `/api/v1/models/load` (SPEC §5).

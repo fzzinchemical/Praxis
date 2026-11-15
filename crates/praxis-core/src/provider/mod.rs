@@ -67,6 +67,16 @@ fn classify_error(code: Option<&str>, message: String) -> ProviderError {
             context_size,
         };
     }
+    // LM Studio's HTTP 500 form of overflow carries no token counts, so the sizes stay unknown.
+    if message
+        .to_lowercase()
+        .contains("context size has been exceeded")
+    {
+        return ProviderError::ContextOverflow {
+            prompt_tokens: None,
+            context_size: None,
+        };
+    }
     if code == Some("model_not_found") {
         return ProviderError::ModelNotFound { message };
     }

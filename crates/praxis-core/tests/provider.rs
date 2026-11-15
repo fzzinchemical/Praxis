@@ -785,3 +785,30 @@ async fn an_sse_context_overflow_is_not_retried() {
     ));
     assert_eq!(sent_bodies(&server).await.len(), 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn lm_studio_500_context_size_exceeded_is_an_unsized_overflow_sent_once() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"error": {
+            "code": 500, "message": "Context size has been exceeded.", "type": "server_error",
+        }})))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    let error = provider
+        .chat(request(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(
+        error,
+        ProviderError::ContextOverflow {
+            prompt_tokens: None,
+            context_size: None,
+        }
+    ));
+    assert_eq!(sent_bodies(&server).await.len(), 1);
+}
