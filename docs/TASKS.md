@@ -400,13 +400,19 @@ flowchart LR
     T4_1 --> T4_6
 
     T4_6 --> T4_5
+    T4_7["T4.7<br/>Session MCP toggles"]
+    T4_8["T4.8<br/>MCP sidebar view"]
+    T4_9["T4.9<br/>LM Studio mcp.json"]
+    T4_3 --> T4_7
+    T4_7 --> T4_8
+    T4_6 --> T4_9
 
     classDef task fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef human fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:3px
     classDef other fill:#f3f4f6,stroke:#6b7280,color:#111827
     class T4_1,T4_2,T4_3,T4_4,T4_5 task
     class T2_5,T3_4 other
-    class T4_6 task
+    class T4_6,T4_7,T4_8,T4_9 task
 ```
 
 - [x] **T4.1 stdio client** (§13)
@@ -434,6 +440,18 @@ flowchart LR
 - [x] **T4.6 Pin MCP tool definitions** (§13)
   - **Needs:** T4.1.
   - **Done when:** a test server that changes a description has that tool hidden until approved again, with the change shown; the description scan warns but never blocks; plugin servers are covered.
+
+- [ ] **T4.7 Session MCP toggles** (§11, §13)
+  - **Needs:** T4.3.
+  - **Done when:** ACP ext method `_praxis/mcp_servers` (`{sessionId}`) answers `{servers: [{name, source, status, tools, enabled}]}` (`source`: `user`|`project`|`plugin`|`lmstudio`; `status`: `connected`|`failed`|`needs_approval`), and `_praxis/set_mcp_enabled` (`{sessionId, name, enabled}`) turns a server off or on for that session only, from the next turn (prompt cache, §7). A disabled server's tools are absent from `tools` and from indexed search, and calls to them fail. Nothing is persisted. Tested through the fake server.
+
+- [ ] **T4.8 MCP sidebar view** (§12)
+  - **Needs:** T4.7.
+  - **Done when:** VS Code has an "MCP Servers" tree view beside Sessions listing each server with status, source and tool count, with an on/off toggle per server (keyboard reachable) calling `_praxis/set_mcp_enabled`; expanding a server lists its tools. Refreshes when the session changes.
+
+- [ ] **T4.9 LM Studio `mcp.json`** (§8, §13)
+  - **Needs:** T4.6.
+  - **Done when:** servers in `~/.lmstudio/mcp.json` (LM Studio's `mcpServers` shape) load as an extra user-level source with `source` `lmstudio`; a name already in Praxis config wins; first use asks for approval as a project `.mcp.json` does, and tool definitions are pinned. A missing or malformed file gives a notice, never a crash.
 
 ---
 
