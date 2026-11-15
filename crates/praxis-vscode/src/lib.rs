@@ -4,11 +4,12 @@
 //! first workspace folder; prompts, stop and permission answers go to it, typed updates come back.
 
 mod details;
+mod mcp;
 mod plugins;
 mod profile;
 mod protocol;
 
-use js_sys::{Array, Object, Promise, Reflect};
+use js_sys::{Array, Function, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, config_args, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection,
@@ -313,6 +314,8 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     refresh_sessions();
     create_plugins_view(&output);
     refresh_plugins();
+    create_mcp_view();
+    command(&context, "praxis.refreshMcp", |_| refresh_mcp())?;
     command(&context, "praxis.enablePlugin", |item| {
         if let Some(name) = item_id(&item) {
             enable_plugin(name);
@@ -1005,6 +1008,12 @@ fn react(state: &Shared, mut reaction: Reaction) {
     if let Some(modes) = reaction.modes {
         panel.webview.post_message(&modes.to_string());
     }
+    if let Some(result) = reaction.mcp {
+        publish_mcp(mcp::mcp_servers(&result));
+    }
+    if reaction.session_ready {
+        refresh_mcp();
+    }
     if let Some(review) = reaction.review
         && let Err(error) = open_review(&review, &panel.output)
     {
@@ -1665,6 +1674,167 @@ fn plugin_log(text: &str) {
             plugins.output.append(text);
         }
     });
+}
+
+/// The MCP Servers view: the last `_praxis/mcp_servers` answer, from the newest open session.
+struct McpView {
+    emitter: EventEmitter,
+    servers: Vec<mcp::McpServer>,
+    /// Why the list is stale or empty (no session, or a failed listing), shown above the servers.
+    problem: Option<String>,
+}
+
+thread_local! {
+    static MCP: RefCell<Option<McpView>> = const { RefCell::new(None) };
+}
+
+/// Prefixes a server row's id, so the checkbox handler can tell a server from anything else.
+const MCP_PREFIX: &str = "mcp:";
+
+/// Registers the MCP Servers view. Each server row has a checkbox; VS Code reports its changes to `toggle_checkboxes`.
+fn create_mcp_view() {
+    let emitter = EventEmitter::new();
+    let provider = node(&[
+        ("onDidChangeTreeData", emitter.event()),
+        ("getTreeItem", callback(|item| item)),
+        (
+            "getChildren",
+            callback(|element| mcp_children(&element).into()),
+        ),
+    ]);
+    let view = create_tree_view("praxis.mcp", &node(&[("treeDataProvider", provider)]));
+    // shortcut: the view lives until the host exits, so its checkbox listener is never disposed.
+    let on_checkbox = callback(|event| {
+        toggle_checkboxes(&event);
+        JsValue::UNDEFINED
+    });
+    let _ = Reflect::get(&view, &"onDidChangeCheckboxState".into())
+        .and_then(|on| on.unchecked_into::<Function>().call1(&view, &on_checkbox));
+    MCP.with(|mcp| {
+        *mcp.borrow_mut() = Some(McpView {
+            emitter,
+            servers: Vec::new(),
+            problem: None,
+        });
+    });
+}
+
+/// Each `[item, state]` pair in a checkbox change; state 1 is checked. Only server rows carry a checkbox.
+fn toggle_checkboxes(event: &JsValue) {
+    let Some(pairs) = property(event, "items") else {
+        return;
+    };
+    for pair in pairs.unchecked_into::<Array>().iter() {
+        let pair = pair.unchecked_into::<Array>();
+        let id = item_id(&pair.get(0));
+        let Some(name) = id.as_deref().and_then(|id| id.strip_prefix(MCP_PREFIX)) else {
+            continue;
+        };
+        let enabled = pair.get(1).as_f64() == Some(1.0);
+        let name = name.to_owned();
+        send_mcp(|client| client.set_mcp_enabled(&name, enabled));
+    }
+}
+
+/// Lists the servers of the newest open session. Its answer comes back through `react`.
+fn refresh_mcp() {
+    send_mcp(Client::mcp_servers);
+}
+
+/// Sends one request on the newest open session that has one. With none, the view says so.
+fn send_mcp(build: impl Fn(&Client) -> Option<String>) {
+    let target = PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .rev()
+            .filter_map(Weak::upgrade)
+            .find_map(|state| {
+                let line = build(state.borrow().client.as_ref()?)?;
+                Some((state, line))
+            })
+    });
+    match target {
+        Some((state, line)) => state.borrow().send([line]),
+        None => publish_mcp(Err("No session open".to_owned())),
+    }
+}
+
+/// Replaces the view's servers, or shows why the listing failed, and redraws it.
+fn publish_mcp(result: Result<Vec<mcp::McpServer>, String>) {
+    let emitter = MCP.with(|mcp| {
+        mcp.borrow_mut().as_mut().map(|view| {
+            match result {
+                Ok(servers) => {
+                    view.servers = servers;
+                    view.problem = None;
+                }
+                Err(problem) => view.problem = Some(problem),
+            }
+            view.emitter.clone()
+        })
+    });
+    // Fired after the borrow ends: VS Code may call `getChildren` synchronously.
+    if let Some(emitter) = emitter {
+        emitter.fire(&JsValue::UNDEFINED);
+    }
+}
+
+/// Root rows: the problem line, then one checkbox row per server. A server row expands to its tools.
+fn mcp_children(element: &JsValue) -> Array {
+    let id = item_id(element);
+    let server = id.as_deref().and_then(|id| id.strip_prefix(MCP_PREFIX));
+    let nodes: Vec<JsValue> = MCP.with(|mcp| {
+        let mcp = mcp.borrow();
+        let Some(view) = mcp.as_ref() else {
+            return Vec::new();
+        };
+        if let Some(name) = server {
+            return view
+                .servers
+                .iter()
+                .find(|server| server.name == name)
+                .map(|server| {
+                    server
+                        .tools
+                        .iter()
+                        .map(|tool| node(&[("label", JsValue::from_str(tool))]))
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        let mut nodes: Vec<JsValue> = view
+            .problem
+            .iter()
+            .map(|problem| node(&[("label", JsValue::from_str(problem))]))
+            .collect();
+        nodes.extend(view.servers.iter().map(mcp_server_node));
+        nodes
+    });
+    let array = Array::new();
+    for node in &nodes {
+        array.push(node);
+    }
+    array
+}
+
+/// A server as a tree item: its checkbox is the on/off state, and its tools are its children.
+fn mcp_server_node(server: &mcp::McpServer) -> JsValue {
+    let checked = if server.enabled { 1.0 } else { 0.0 };
+    let collapsed = if server.tools.is_empty() { 0.0 } else { 1.0 };
+    node(&[
+        (
+            "id",
+            JsValue::from_str(&format!("{MCP_PREFIX}{}", server.name)),
+        ),
+        ("label", JsValue::from_str(&server.name)),
+        ("description", JsValue::from_str(&server.description())),
+        (
+            "checkboxState",
+            node(&[("state", JsValue::from_f64(checked))]),
+        ),
+        ("collapsibleState", JsValue::from_f64(collapsed)),
+    ])
 }
 
 /// The tree item a click or context-menu command was run on, by its `id`. From the palette the argument is absent.

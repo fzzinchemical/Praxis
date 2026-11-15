@@ -22,7 +22,8 @@
       { "command": "praxis.showPlugin", "title": "Praxis: Show Plugin Details" },
       { "command": "praxis.setPluginOption", "title": "Praxis: Set Plugin Option" },
       { "command": "praxis.installPlugin", "title": "Praxis: Install Plugin", "icon": "$(add)" },
-      { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" }
+      { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" },
+      { "command": "praxis.refreshMcp", "title": "Praxis: Refresh MCP Servers", "icon": "$(refresh)" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "praxis", "title": "Praxis", "icon": "media/praxis.svg" }]
@@ -30,6 +31,7 @@
     "views": {
       "praxis": [
         { "id": "praxis.sessions", "name": "Sessions" },
+        { "id": "praxis.mcp", "name": "MCP Servers" },
         { "id": "praxis.plugins", "name": "Plugins" }
       ]
     },
@@ -37,6 +39,7 @@
       "view/title": [
         { "command": "praxis.newSession", "when": "view == praxis.sessions", "group": "navigation" },
         { "command": "praxis.refreshSessions", "when": "view == praxis.sessions", "group": "navigation" },
+        { "command": "praxis.refreshMcp", "when": "view == praxis.mcp", "group": "navigation" },
         { "command": "praxis.installPlugin", "when": "view == praxis.plugins", "group": "navigation" },
         { "command": "praxis.refreshPlugins", "when": "view == praxis.plugins", "group": "navigation" }
       ],

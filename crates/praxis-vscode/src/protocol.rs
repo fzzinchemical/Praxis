@@ -247,6 +247,10 @@ pub struct Reaction {
     pub modes: Option<Value>,
     /// A changed file and its content before the agent's call, kept by the panel for Open diff.
     pub original: Option<(String, String)>,
+    /// The `_praxis/mcp_servers` answer, for the MCP Servers view.
+    pub mcp: Option<Value>,
+    /// Set when a session was created or loaded, so the MCP Servers view re-lists.
+    pub session_ready: bool,
 }
 
 /// One saved session as the sessions view lists it.
@@ -377,6 +381,9 @@ const SET_MODE: u64 = 5;
 const REWIND: u64 = 3;
 /// The revert answer. Prompt ids count up from `SET_MODE + 1` and never reach this, so it sits far above them.
 const REVERT: u64 = 1 << 40;
+/// The MCP list and toggle answers, above the prompt ids for the same reason as `REVERT`.
+const MCP_LIST: u64 = 1 << 41;
+const MCP_TOGGLE: u64 = (1 << 41) + 1;
 
 /// One ACP connection: `initialize`, then `session/new`, then prompts.
 pub struct Client {
@@ -488,6 +495,23 @@ impl Client {
         Some(request(REVERT, "_praxis/revert_file", params))
     }
 
+    /// The `_praxis/mcp_servers` request for this session, or `None` while no session is open yet.
+    pub fn mcp_servers(&self) -> Option<String> {
+        let session = self.session.as_deref()?;
+        Some(request(
+            MCP_LIST,
+            "_praxis/mcp_servers",
+            json!({"sessionId": session}),
+        ))
+    }
+
+    /// The `_praxis/set_mcp_enabled` request, which turns a server on or off for this session only.
+    pub fn set_mcp_enabled(&self, name: &str, enabled: bool) -> Option<String> {
+        let session = self.session.as_deref()?;
+        let params = json!({"sessionId": session, "name": name, "enabled": enabled});
+        Some(request(MCP_TOGGLE, "_praxis/set_mcp_enabled", params))
+    }
+
     /// The `_praxis/cancel_subagent` notification for a running subagent, or `None` while no session
     /// is open yet. A notification has no id, so the agent sends no answer.
     pub fn stop_subagent(&self, id: &str) -> Option<String> {
@@ -523,6 +547,13 @@ impl Client {
                 },
                 Some(REWIND) => show(notice(&format!("Could not rewind: {text}"))),
                 Some(REVERT) => show(notice(&format!("Could not revert: {text}"))),
+                Some(MCP_LIST) => show(notice(&format!("Could not list MCP servers: {text}"))),
+                // Re-list so the view's checkbox shows what the agent really has.
+                Some(MCP_TOGGLE) => Reaction {
+                    show: Some(notice(&format!("Could not change MCP server: {text}"))),
+                    send: self.mcp_servers(),
+                    ..Reaction::default()
+                },
                 Some(SET_MODE) => Reaction {
                     show: Some(notice(&format!("Could not change permissions: {text}"))),
                     modes: self.modes.clone(),
@@ -628,6 +659,7 @@ impl Client {
                     show: Some(notice("ready")),
                     models: self.picker.clone(),
                     modes: self.modes.clone(),
+                    session_ready: true,
                     ..Reaction::default()
                 }
             }
@@ -639,11 +671,20 @@ impl Client {
                     show: Some(notice("ready")),
                     models: self.picker.clone(),
                     modes: self.modes.clone(),
+                    session_ready: true,
                     ..Reaction::default()
                 }
             }
             Some(REWIND) => show(json!({"type": "rewound", "turn": result["turn"]})),
             Some(REVERT) => show(json!({"type": "reverted", "path": result["path"]})),
+            Some(MCP_LIST) => Reaction {
+                mcp: Some(result.clone()),
+                ..Reaction::default()
+            },
+            Some(MCP_TOGGLE) => Reaction {
+                send: self.mcp_servers(),
+                ..Reaction::default()
+            },
             Some(SET_MODE) => match picker(result, "mode", "modes") {
                 Some(modes) => {
                     self.modes = Some(modes.clone());
@@ -1225,6 +1266,30 @@ mod tests {
         assert_eq!(prompt["method"], "session/prompt");
         assert_eq!(prompt["params"]["sessionId"], "s1");
         assert_eq!(prompt["params"]["prompt"][0]["text"], "hi");
+    }
+
+    #[test]
+    fn mcp_list_and_toggle_round_trip_through_the_session() {
+        let (mut client, _) = Client::start("/work");
+        assert_eq!(client.mcp_servers(), None);
+        client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#);
+        let reaction = client.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}"#);
+        assert!(reaction.session_ready);
+
+        let list: Value = serde_json::from_str(&client.mcp_servers().unwrap()).unwrap();
+        assert_eq!(list["method"], "_praxis/mcp_servers");
+        assert_eq!(list["params"]["sessionId"], "s1");
+        let answer = format!(r#"{{"jsonrpc":"2.0","id":{MCP_LIST},"result":{{"servers":[]}}}}"#);
+        assert_eq!(client.on_line(&answer).mcp, Some(json!({"servers": []})));
+
+        let toggle: Value =
+            serde_json::from_str(&client.set_mcp_enabled("fs", false).unwrap()).unwrap();
+        assert_eq!(toggle["method"], "_praxis/set_mcp_enabled");
+        assert_eq!(toggle["params"]["name"], "fs");
+        assert_eq!(toggle["params"]["enabled"], false);
+        let done = format!(r#"{{"jsonrpc":"2.0","id":{MCP_TOGGLE},"result":{{}}}}"#);
+        let reaction = client.on_line(&done);
+        assert!(sent(&reaction)["method"] == "_praxis/mcp_servers");
     }
 
     #[test]

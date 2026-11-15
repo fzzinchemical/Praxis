@@ -448,6 +448,7 @@ flowchart LR
 
 - [ ] **T4.8 MCP sidebar view** (§12)
   - **Needs:** T4.7.
+  - **Progress (2026-11-15):** the view is in `praxis-vscode` (`mcp.rs` parsing, `praxis.mcp` in package.json, checkbox toggles, refresh on session ready and after a toggle). Parsing and request shapes are unit-tested. Open: not yet run in VS Code, and the server side of T4.7 (`_praxis/mcp_servers` answering `tools` as names or `{name}` objects) is not verified. Left unticked until both are done.
   - **Done when:** VS Code has an "MCP Servers" tree view beside Sessions listing each server with status, source and tool count, with an on/off toggle per server (keyboard reachable) calling `_praxis/set_mcp_enabled`; expanding a server lists its tools. Refreshes when the session changes.
 
 - [x] **T4.9 LM Studio `mcp.json`** (§8, §13)
