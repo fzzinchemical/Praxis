@@ -404,10 +404,12 @@ body.dragging {
   width: 80px;
 }
 
+/* One 2.4s loop: dots pop in one by one, then pac-man sweeps right, eats each dot as it arrives and slides under the word.
+   Pac-man moves 90px in 1.44s, about 18.7px (one dot gap) per 0.3s, so each dot's 0.3s delay keeps appear and eat in step. */
 .working-man {
   --pac-ink: var(--vscode-charts-yellow, #e5c07b);
   /* Mouth: a wedge centred on 90deg (facing right), half-angle --mouth, opened and closed by working-chomp. */
-  animation: working-eat 1.2s linear infinite, working-chomp 0.25s ease-in-out infinite alternate;
+  animation: working-eat 2.4s linear infinite, working-chomp 0.2s ease-in-out infinite alternate;
   background: conic-gradient(
     var(--pac-ink) calc(90deg - var(--mouth)),
     transparent calc(90deg - var(--mouth)) calc(90deg + var(--mouth)),
@@ -419,6 +421,7 @@ body.dragging {
   position: absolute;
   top: 0;
   width: 12px;
+  will-change: transform, opacity;
 }
 
 .working-dots {
@@ -432,25 +435,30 @@ body.dragging {
   align-items: center;
 }
 
+/* Above pac-man, so it disappears behind the word. */
 .working-word {
-  animation: working-dot 1.2s linear infinite;
+  position: relative;
+  z-index: 1;
 }
 
 .working-dots i {
-  animation: working-dot 1.2s linear infinite;
+  animation: working-dot 2.4s ease-out infinite;
   background: currentColor;
   border-radius: 50%;
   height: 4px;
   width: 4px;
+  will-change: transform, opacity;
 }
 
-.working-dots i:nth-child(1) { animation-delay: -0.9s; }
-.working-dots i:nth-child(2) { animation-delay: -0.6s; }
-.working-dots i:nth-child(3) { animation-delay: -0.3s; }
+.working-dots i:nth-child(2) { animation-delay: 0.3s; }
+.working-dots i:nth-child(3) { animation-delay: 0.6s; }
+.working-dots i:nth-child(4) { animation-delay: 0.9s; }
 
 @keyframes working-eat {
-  from { transform: translateX(0); }
-  to { transform: translateX(68px); }
+  0%, 40% { opacity: 0; transform: translateX(0); }
+  43% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(90px); }
 }
 
 @keyframes working-chomp {
@@ -459,8 +467,10 @@ body.dragging {
 }
 
 @keyframes working-dot {
-  from { opacity: 1; }
-  to { opacity: 0; }
+  0%, 4% { opacity: 0; transform: scale(0); }
+  10% { opacity: 1; transform: scale(1.3); }
+  14%, 42% { opacity: 1; transform: scale(1); }
+  44%, 100% { opacity: 0; transform: scale(0); }
 }
 
 /* Reduced motion: no animation, static dots and a static word. */
