@@ -686,7 +686,6 @@ Prompts are a limited resource, because developers' review effort falls over a s
 - Always show the **full parameters**: the exact command, path or MCP arguments. Never only a summary.
 - Allow rules exist to remove routine prompts, so that the prompts left are worth reading.
 - Don't offer "always" for compound commands, or for anything outside the workspace.
-- Rule-based risk labels (T5.8) may direct attention, such as for CI, dependency or auth paths. Never show a "safe" label or any verdict that suggests a change was checked.
 
 ### Workspace confinement
 
@@ -852,7 +851,7 @@ These apply to every front end where they fit. Evidence is in [RESEARCH.md](RESE
 | **Steering** | Stop works at any moment, and the next prompt continues from consistent history, with interrupted calls marked as cancelled | T1.7 |
 | **Plan first** | `/plan` runs a turn in read-only mode and asks for a plan with assumptions. Carrying it out is a separate action by the developer | T5.9 |
 | **Turn summary** | Built from the tool log, never the model's claims: files changed, commands run, exit codes, and a plain statement if no tests ran | T5.7 |
-| **Change-set review** | Overview (files, lines, risk labels), then file (native diff), then chunk, with free navigation between them. Each `Edit` call is one chunk, shown with the reasoning that produced it. Revert per file from checkpoints | T5.8 |
+| **Change-set review** | In the chat, each `Write` or `Edit` call has "Open diff" (native diff) and "Revert file" (restores the file from checkpoints to before the change set). The separate review panel and risk labels were removed as noise | T5.8 |
 | **No false assurance** | Never show a score, tick or wording implying that code is correct or secure unless a tool actually verified it | All |
 | **No constant suggestions** | Inference only runs when the developer asks for it | All |
 
