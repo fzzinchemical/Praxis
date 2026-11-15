@@ -952,6 +952,49 @@ async fn a_waiting_server_connects_only_once_approved() {
     assert_eq!(status(&mcp).status, Health::NeedsApproval);
 }
 
+/// The approval text shows the environment, quotes every argument and escapes control characters,
+/// so the approver reads what really runs (SPEC §13).
+async fn approval_text_shows_env_quotes_arguments_and_escapes_control_characters() {
+    let waiting = |server: McpServer| {
+        BTreeMap::from([(
+            "fs".to_owned(),
+            PendingMcp {
+                server,
+                source: McpSource::Project,
+                key: "server:/p#fs".to_owned(),
+                digest: "unused".to_owned(),
+            },
+        )])
+    };
+    let command_of = |pending: &BTreeMap<String, PendingMcp>| {
+        let mcp = Mcp::default().with_unapproved(pending);
+        mcp.server_statuses()[0].command.clone().unwrap()
+    };
+    let stdio = McpServer::Stdio(StdioServer {
+        command: "x".to_owned(),
+        args: vec!["a b".to_owned(), "c\nd\n".to_owned()],
+        env: BTreeMap::from([("NODE_OPTIONS".to_owned(), "--require=evil.js".to_owned())]),
+    });
+    assert_eq!(
+        command_of(&waiting(stdio)),
+        "NODE_OPTIONS=--require=evil.js x 'a b' 'c\\nd\\n'"
+    );
+    // One argument with a space and two arguments must not look the same.
+    let split = McpServer::Stdio(StdioServer {
+        command: "x".to_owned(),
+        args: vec!["a".to_owned(), "b".to_owned()],
+        env: BTreeMap::new(),
+    });
+    assert_eq!(command_of(&waiting(split)), "x a b");
+    let headers = McpServer::Http(HttpServer {
+        url: "https://x/mcp".to_owned(),
+        headers: BTreeMap::from([("Authorization".to_owned(), "Bearer s3cret".to_owned())]),
+    });
+    let text = command_of(&waiting(headers));
+    assert_eq!(text, "https://x/mcp 'Authorization: <value hidden>'");
+    assert!(!text.contains("s3cret"), "{text}");
+}
+
 fn main() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     if std::env::args().nth(1).as_deref() == Some("serve") {
@@ -995,4 +1038,6 @@ fn main() {
     println!("statuses_name_each_servers_source_health_and_tools ... ok");
     runtime.block_on(a_waiting_server_connects_only_once_approved());
     println!("a_waiting_server_connects_only_once_approved ... ok");
+    runtime.block_on(approval_text_shows_env_quotes_arguments_and_escapes_control_characters());
+    println!("approval_text_shows_env_quotes_arguments_and_escapes_control_characters ... ok");
 }

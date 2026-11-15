@@ -576,6 +576,13 @@ fn split_servers(
 ) -> Result<Table, ConfigError> {
     let mut approved = Table::new();
     for (name, value) in servers {
+        // Names reach the approval prompt, where a control character could hide or fake a line.
+        if name.chars().any(char::is_control) {
+            return Err(error(
+                &origin.display().to_string(),
+                format!("MCP server name {name:?} holds a control character"),
+            ));
+        }
         let key = format!("server:{}#{name}", origin.display());
         let digest = hash(&value.to_string());
         let stored = match &sources.trust {

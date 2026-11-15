@@ -375,8 +375,9 @@ impl Agent {
     }
 
     /// Approves MCP server `name` that the user chose in the sidebar: stores its approval, then
-    /// connects it for this session, from the next request (SPEC §8, §13). Returns notices about
-    /// the connection and its tools.
+    /// connects it for this session, from the next request (SPEC §8, §13). The approval is stored
+    /// before the connection is tried, so a failed connect stays approved and its failure comes
+    /// back as a notice. Errors at once when no such server is waiting.
     pub async fn approve_mcp(
         &mut self,
         name: &str,

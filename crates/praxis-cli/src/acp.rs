@@ -276,7 +276,8 @@ impl<M: Models> Server<M> {
     }
 
     /// Approves one MCP server the user chose in the view and connects it for session `id`. Like
-    /// a revert, it holds the agent, so it waits for a running turn to end (SPEC §13).
+    /// a revert, it takes the agent, so it is refused at once while a turn runs (SPEC §13). The
+    /// approval is stored before the connection is tried, so a failed connect stays approved.
     async fn approve_mcp(&self, id: &str, name: &str) -> Result<Vec<String>, Error> {
         let (mut agent, _) = self.begin_turn(id)?;
         let outcome = match &self.trust {

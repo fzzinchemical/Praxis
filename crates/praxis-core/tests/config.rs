@@ -523,6 +523,21 @@ fn a_refused_project_server_waits_and_its_own_approval_loads_it() {
     assert!(changed.mcp_pending.contains_key("theirs"));
 }
 
+#[test]
+fn a_project_server_name_with_a_control_character_is_a_config_error() {
+    let project = file("[mcp.\"a\\nb\"]\ncommand = \"evil\"\n");
+    let error = load_with_approval(
+        Sources {
+            project: Some(project.clone()),
+            trust: Some(TrustStore::new(project.with_file_name("trust.json"))),
+            ..Sources::default()
+        },
+        &mut |_, _| false,
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("control character"), "{error}");
+}
+
 fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
     let path = project.with_file_name(".mcp.json");
     fs::write(&path, json).unwrap();

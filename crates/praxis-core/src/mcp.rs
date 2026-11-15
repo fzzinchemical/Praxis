@@ -121,14 +121,50 @@ impl std::fmt::Debug for Mcp {
     }
 }
 
-/// The command line an approval would run, or the URL it would connect to.
+/// What an approval would run, as the approver reads it: the environment (values shown, since
+/// they can change what runs, as `NODE_OPTIONS` does), then the command and its arguments. For HTTP,
+/// the URL and header names; header values stay hidden because they are often secrets. Every
+/// token is quoted, so argument boundaries can't be faked.
 fn describe(server: &McpServer) -> String {
     match server {
-        McpServer::Stdio(server) => std::iter::once(server.command.as_str())
-            .chain(server.args.iter().map(String::as_str))
+        McpServer::Stdio(server) => server
+            .env
+            .iter()
+            .map(|(name, value)| quote(&format!("{name}={value}")))
+            .chain(std::iter::once(quote(&server.command)))
+            .chain(server.args.iter().map(|arg| quote(arg)))
             .collect::<Vec<_>>()
             .join(" "),
-        McpServer::Http(server) => server.url.clone(),
+        McpServer::Http(server) => std::iter::once(quote(&server.url))
+            .chain(
+                server
+                    .headers
+                    .keys()
+                    .map(|name| quote(&format!("{name}: <value hidden>"))),
+            )
+            .collect::<Vec<_>>()
+            .join(" "),
+    }
+}
+
+/// Shell-style quoting that escapes control characters, so a newline or escape sequence shows
+/// as text and never moves the approver's eye to another line.
+fn quote(text: &str) -> String {
+    let escaped: String = text
+        .chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect();
+    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c);
+    if !escaped.is_empty() && escaped.chars().all(plain) {
+        escaped
+    } else {
+        format!("'{}'", escaped.replace('\'', r"'\''"))
     }
 }
 
