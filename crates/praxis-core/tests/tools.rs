@@ -886,3 +886,35 @@ async fn read_is_never_filtered_even_when_output_filtering_is_on() {
         "     1\tsame\n     2\tsame\n     3\tsame\n     4\t\u{1b}[31mred\u{1b}[0m\n"
     );
 }
+
+#[tokio::test]
+async fn read_opens_only_the_listed_user_files_outside_the_workspace() {
+    let mut f = Fixture::new();
+    let claude = f.root.join("home/.claude");
+    fs::create_dir_all(&claude).unwrap();
+    fs::write(claude.join("CLAUDE.md"), "user rules\n").unwrap();
+    fs::write(claude.join(".credentials.json"), "token\n").unwrap();
+    f.ctx = Arc::new(
+        ToolContext::new(&f.ws())
+            .unwrap()
+            .with_readable([claude.join("CLAUDE.md"), f.root.join("missing.md")]),
+    );
+    let listed = f.read(claude.join("CLAUDE.md").to_str().unwrap()).await;
+    assert!(listed.content.contains("user rules"), "{}", listed.content);
+    for refused in [claude.join(".credentials.json"), f.root.join("outside.txt")] {
+        let output = f.read(refused.to_str().unwrap()).await;
+        assert!(
+            output.content.contains("outside the workspace"),
+            "{}",
+            output.content
+        );
+    }
+    let edit = f
+        .edit(claude.join("CLAUDE.md").to_str().unwrap(), "user", "x")
+        .await;
+    assert!(
+        edit.content.contains("outside the workspace"),
+        "{}",
+        edit.content
+    );
+}

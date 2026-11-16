@@ -689,7 +689,7 @@ Prompts are a limited resource, because developers' review effort falls over a s
 
 ### Workspace confinement
 
-Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `..` can't escape; check containment after resolution. Outside the workspace, reads ask and writes need an explicit per-path approval, except for `extra_read` and `extra_write`. Until the permissions and config tasks add those paths, tools refuse everything outside the workspace. `..` below a missing folder and dangling symlinks are refused too, because they can't be resolved.
+Resolve with `canonicalize` on the deepest existing ancestor, so symlinks and `..` can't escape; check containment after resolution. Outside the workspace, reads ask and writes need an explicit per-path approval, except for `extra_read` and `extra_write`. Until the permissions and config tasks add those paths, tools refuse everything outside the workspace. One exception: `Read` may open the exact user instruction files `~/.claude/CLAUDE.md` and `~/.config/praxis/AGENTS.md`, which are already in the prompt (§12); never their folders, so `~/.claude` credentials stay unreadable (owner, 2026-11-16). `..` below a missing folder and dangling symlinks are refused too, because they can't be resolved.
 
 ### Sandbox
 

@@ -604,7 +604,15 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
 }
 
 fn tool_context(workspace: &Path, config: &Config) -> Result<ToolContext> {
-    let tools = ToolContext::new(workspace)?.with_output_filter(config.context.filter_output);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    // The user instruction files are already in the prompt, so reading them exposes nothing new.
+    let user_files = [
+        home.map(|home| home.join(".claude/CLAUDE.md")),
+        xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("AGENTS.md")),
+    ];
+    let tools = ToolContext::new(workspace)?
+        .with_output_filter(config.context.filter_output)
+        .with_readable(user_files.into_iter().flatten());
     let settings = &config.sandbox;
     if settings.mode == SandboxMode::Off {
         eprintln!("The sandbox is off: commands run with your full access.");

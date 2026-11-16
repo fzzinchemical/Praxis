@@ -138,6 +138,9 @@ pub struct ToolContext {
     checkpoints: Mutex<checkpoint::Checkpoints>,
     /// Characters a `Read` or `Grep` result may take, set from the agent's budget (SPEC §7).
     result_chars: AtomicUsize,
+    /// Files outside the workspace that `Read` may open: the user instruction files already in
+    /// the prompt (SPEC §10). Exact paths only, never their folders.
+    readable: Vec<PathBuf>,
 }
 
 /// Until an agent sets it, a 32k context's share (SPEC §7).
@@ -172,6 +175,7 @@ impl ToolContext {
             tmp_created: Mutex::default(),
             checkpoints: Mutex::default(),
             result_chars: AtomicUsize::new(DEFAULT_RESULT_CHARS),
+            readable: Vec::new(),
         })
     }
 
@@ -236,6 +240,16 @@ impl ToolContext {
     }
 
     /// Filters `Bash` output for the model; the full text goes to the spool when it changes.
+    /// Lets `Read` open these exact files outside the workspace (missing ones are skipped).
+    #[must_use]
+    pub fn with_readable(mut self, files: impl IntoIterator<Item = PathBuf>) -> Self {
+        self.readable = files
+            .into_iter()
+            .filter_map(|file| fs::canonicalize(file).ok())
+            .collect();
+        self
+    }
+
     pub fn with_output_filter(mut self, on: bool) -> Self {
         self.filter_output = on;
         self
@@ -277,10 +291,14 @@ impl ToolContext {
         Ok(path)
     }
 
-    /// Like [`confine::resolve`], but also lets `Read` reach this session's spool.
+    /// Like [`confine::resolve`], but also lets `Read` reach this session's spool and the
+    /// `readable` files.
     fn resolve_read(&self, raw: &str) -> Result<PathBuf, ToolError> {
         match fs::canonicalize(raw) {
-            Ok(path) if Path::new(raw).is_absolute() && path.starts_with(&self.spool_dir) => {
+            Ok(path)
+                if Path::new(raw).is_absolute()
+                    && (path.starts_with(&self.spool_dir) || self.readable.contains(&path)) =>
+            {
                 Ok(path)
             }
             _ => confine::resolve(&self.workspace, raw),
