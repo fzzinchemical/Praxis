@@ -945,3 +945,32 @@ async fn mcp_list_json_names_each_configured_source_without_connecting() {
     assert_eq!(fs_row["status"], "needs_approval", "{listing}");
     assert_eq!(fs_row["command"], "/nonexistent/mcp-fs", "{listing}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_sessions_load_the_users_claude_md() {
+    const MARKER: &str = "MARKER-acp-claude-md";
+    let server = server(Some(32768), Replies(vec![text_reply("hello")])).await;
+    let dir = workspace();
+    let home = dir.join("home");
+    fs::create_dir_all(home.join(".claude")).unwrap();
+    fs::write(home.join(".claude/CLAUDE.md"), MARKER).unwrap();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .env("HOME", &home)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let init = json!({"protocolVersion": 1});
+    assert!(ask(&mut stdin, &mut lines, 0, "initialize", init).await["result"].is_object());
+    let new = json!({"cwd": dir, "mcpServers": []});
+    let session = ask(&mut stdin, &mut lines, 1, "session/new", new).await;
+    let prompt = json!({"sessionId": session["result"]["sessionId"],
+        "prompt": [{"type": "text", "text": "hi"}]});
+    assert_eq!(
+        ask(&mut stdin, &mut lines, 2, "session/prompt", prompt).await["result"]["stopReason"],
+        "end_turn"
+    );
+    let chats = requests_to(&server, CHAT).await;
+    assert!(chats[0].to_string().contains(MARKER), "{}", chats[0]);
+}
