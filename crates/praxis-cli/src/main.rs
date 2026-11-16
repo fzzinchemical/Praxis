@@ -72,6 +72,9 @@ enum Command {
     /// Show or set a model's profile fields (SPEC §5.5).
     #[command(subcommand)]
     Profile(ProfileCommand),
+    /// List the MCP servers this workspace configures. Connects to none, so no server runs.
+    #[command(subcommand)]
+    Mcp(McpCommand),
     /// List this workspace's saved sessions, newest first. Starts no model or MCP server.
     Sessions {
         /// Print a JSON array of `{id, title, started, last_active, folder}`.
@@ -89,6 +92,15 @@ enum Command {
             conflicts_with_all = ["json", "delete"]
         )]
         folder: Option<Vec<String>>,
+    },
+}
+
+#[derive(Subcommand)]
+enum McpCommand {
+    List {
+        /// Print `{"servers": [...]}` with each server's name, source, status and command when it needs approval.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -348,6 +360,47 @@ struct Plugins {
 }
 
 /// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
+/// Lists the servers a session would start, with their source (SPEC §13). Nothing connects, so
+/// the status is `configured` rather than a health check.
+fn mcp_list(json: bool, config: &Config, workspace: &Path) -> Result<u8> {
+    let plugins = load_plugins(workspace, config);
+    let mut sources = config.mcp_sources.clone();
+    sources.extend(
+        plugins
+            .mcp
+            .keys()
+            .map(|name| (name.clone(), praxis_core::mcp::McpSource::Plugin)),
+    );
+    let mut servers = config.mcp.clone();
+    servers.extend(plugins.mcp);
+    let mut rows: Vec<Value> = servers
+        .keys()
+        .map(|name| {
+            let source = sources.get(name).map_or("user", |s| s.as_str());
+            serde_json::json!({"name": name, "source": source, "status": "configured", "tools": [], "enabled": true})
+        })
+        .collect();
+    for (name, pending) in &config.mcp_pending {
+        let mut row = serde_json::json!({"name": name, "source": pending.source.as_str(), "status": "needs_approval", "tools": [], "enabled": true});
+        if let McpServer::Stdio(stdio) = &pending.server {
+            row["command"] = Value::from(stdio.command.as_str());
+        }
+        rows.push(row);
+    }
+    if json {
+        println!("{}", serde_json::json!({"servers": rows}));
+    } else {
+        for row in &rows {
+            println!(
+                "{} ({})",
+                row["name"].as_str().unwrap_or_default(),
+                row["status"].as_str().unwrap_or_default()
+            );
+        }
+    }
+    Ok(0)
+}
+
 fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     let mut out = Plugins::default();
     let found = standalone(&markdown_layers(workspace));
@@ -1164,6 +1217,9 @@ async fn run(
     match cli.command {
         Some(Command::Models) => return list_models(&provider).await,
         Some(Command::Plugin(command)) => return plugin_command(command),
+        Some(Command::Mcp(McpCommand::List { json })) => {
+            return mcp_list(json, &config, &workspace);
+        }
         Some(Command::Profile(command)) => {
             return profile_command(command, cli.model, &config, &provider).await;
         }

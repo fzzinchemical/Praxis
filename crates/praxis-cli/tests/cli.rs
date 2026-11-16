@@ -907,3 +907,41 @@ async fn max_tokens_is_capped_by_the_profiles_max_output() {
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     assert_eq!(requests_to(&server, CHAT).await[0]["max_tokens"], 8192);
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn mcp_list_json_names_each_configured_source_without_connecting() {
+    let dir = workspace();
+    fs::create_dir_all(dir.join("xdg/praxis")).unwrap();
+    fs::write(
+        dir.join("xdg/praxis/config.toml"),
+        "[mcp.docs]\ncommand = \"/nonexistent/mcp-docs\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join(".mcp.json"),
+        r#"{"mcpServers": {"fs": {"command": "/nonexistent/mcp-fs", "args": ["."]}}}"#,
+    )
+    .unwrap();
+
+    let output = command("http://127.0.0.1:9", &dir, &["mcp", "list", "--json"])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let listing: Value = serde_json::from_str(&out(&output)).unwrap();
+    let servers = listing["servers"].as_array().expect("servers array");
+    let docs = servers
+        .iter()
+        .find(|s| s["name"] == "docs")
+        .expect("user server");
+    assert_eq!(docs["source"], "user", "{listing}");
+    assert_eq!(docs["status"], "configured", "{listing}");
+    let fs_row = servers
+        .iter()
+        .find(|s| s["name"] == "fs")
+        .expect("project server");
+    assert_eq!(fs_row["source"], "project", "{listing}");
+    assert_eq!(fs_row["status"], "needs_approval", "{listing}");
+    assert_eq!(fs_row["command"], "/nonexistent/mcp-fs", "{listing}");
+}

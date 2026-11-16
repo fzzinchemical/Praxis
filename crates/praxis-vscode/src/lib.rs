@@ -315,6 +315,7 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     create_plugins_view(&output);
     refresh_plugins();
     create_mcp_view();
+    refresh_mcp();
     command(&context, "praxis.refreshMcp", |_| refresh_mcp())?;
     command(&context, "praxis.approveMcp", |item| {
         if let Some(name) = item_id(&item)
@@ -1764,8 +1765,22 @@ fn send_mcp(build: impl Fn(&Client) -> Option<String>) {
     });
     match target {
         Some((state, line)) => state.borrow().send([line]),
-        None => publish_mcp(Err("No session open".to_owned())),
+        None => list_mcp_offline(),
     }
+}
+
+/// Lists the workspace's servers through the CLI, for when no session is open. Nothing connects.
+fn list_mcp_offline() {
+    let Some(cwd) = workspace_dir() else {
+        return publish_mcp(Err("Open a folder to list its MCP servers".to_owned()));
+    };
+    let args = vec!["mcp".to_owned(), "list".to_owned(), "--json".to_owned()];
+    run_cli(args, Some(&cwd), |result| {
+        publish_mcp(result.and_then(|text| {
+            let json: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+            mcp::mcp_servers(&json)
+        }));
+    });
 }
 
 /// Replaces the view's servers, or shows why the listing failed, and redraws it.

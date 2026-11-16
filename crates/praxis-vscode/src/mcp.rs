@@ -22,6 +22,8 @@ pub enum Status {
     Connected,
     Failed,
     NeedsApproval,
+    /// Listed from the config without a session, so nothing was connected to check.
+    Configured,
     Unknown(String),
 }
 
@@ -31,6 +33,7 @@ impl Status {
             "connected" => Status::Connected,
             "failed" => Status::Failed,
             "needs_approval" => Status::NeedsApproval,
+            "configured" => Status::Configured,
             other => Status::Unknown(other.to_owned()),
         }
     }
@@ -40,6 +43,7 @@ impl Status {
             Status::Connected => "connected".to_owned(),
             Status::Failed => "failed".to_owned(),
             Status::NeedsApproval => "needs approval".to_owned(),
+            Status::Configured => "configured".to_owned(),
             Status::Unknown(text) => format!("unknown ({text})"),
         }
     }
@@ -146,6 +150,16 @@ mod tests {
         assert_eq!(rows[0].status, Status::NeedsApproval);
         assert_eq!(rows[0].description(), "needs approval · project · 0 tools");
         assert_eq!(rows[0].command.as_deref(), Some("npx -y fs-server ."));
+    }
+
+    #[test]
+    fn a_configured_server_from_the_offline_listing_claims_no_health() {
+        let answer = json!({"servers": [
+            {"name": "docs", "source": "user", "status": "configured", "tools": [], "enabled": true}
+        ]});
+        let rows = mcp_servers(&answer).expect("well-formed answer");
+        assert_eq!(rows[0].status, Status::Configured);
+        assert_eq!(rows[0].description(), "configured · user · 0 tools");
     }
 
     #[test]
