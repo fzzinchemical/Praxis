@@ -163,6 +163,9 @@ const DELEGATION_HINT: &str = "\n\nWhen a task splits into self-contained parts,
      subagent with the Agent tool instead of doing them all yourself. Independent parts go in \
      separate Agent calls in one response, so they run in parallel.";
 
+/// Added to the prefix only in a git workspace (T14.9).
+const GIT_HINT: &str = "\n\nThis workspace is a git repository. Orient with `git status` and `git ls-files`, and review your own changes with `git diff`.";
+
 /// Failures of one tool in a row before the turn stops (SPEC §5.3).
 const MAX_CALL_FAILURES: u32 = 3;
 /// Continuations after a reply cut off at the output limit, before the turn stops (T13.3).
@@ -1013,7 +1016,7 @@ impl Agent {
                     nudged = true;
                     // The marker keeps this out of turn numbering (`Message::starts_turn`).
                     self.record(Message::User {
-                        content: format!("{MEMORY_MARK}You changed files and ran no command after the last change. Run the project's checks, or say why you can't, before you finish."),
+                        content: format!("{MEMORY_MARK}You changed files and ran no command after the last change. {}before you finish.", if self.facts.in_git() { "Review the change with `git diff`, run the project's checks, or say why you can't, " } else { "Run the project's checks, or say why you can't, " }),
                     });
                     continue;
                 }
@@ -1682,8 +1685,10 @@ fn assemble_prefix(
         .iter()
         .any(|t| t.name == "Agent")
         .then_some(DELEGATION_HINT);
+    let git = facts.in_git().then_some(GIT_HINT);
     let base = config.system_prompt.clone()
         + delegation.unwrap_or_default()
+        + git.unwrap_or_default()
         + teaching.as_deref().unwrap_or_default();
     let mut facts = facts.render();
     if !mcp_index.is_empty() {

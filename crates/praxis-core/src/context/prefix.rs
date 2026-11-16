@@ -21,6 +21,8 @@ pub struct SessionFacts {
     cwd: String,
     branch: Option<String>,
     os: &'static str,
+    /// Whether the workspace has `.git`, which turns on the git prompt line (T14.9).
+    git: bool,
 }
 
 impl SessionFacts {
@@ -33,7 +35,12 @@ impl SessionFacts {
             cwd: workspace.display().to_string(),
             branch: read_branch(workspace),
             os: OS,
+            git: workspace.join(".git").exists(),
         }
+    }
+
+    pub fn in_git(&self) -> bool {
+        self.git
     }
 
     /// One line per fact, in a fixed order.
@@ -469,6 +476,7 @@ mod tests {
             cwd: "/w".to_owned(),
             branch: branch.map(str::to_owned),
             os: "linux",
+            git: false,
         }
     }
 

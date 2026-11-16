@@ -107,6 +107,32 @@ fn read_only_segment(segment: &str) -> bool {
     }
 }
 
+/// Whether a `Bash` command is one simple, read-only git command that runs without a prompt in
+/// `ask` mode (T14.9). Compound commands, hard-denied paths and `--output` (a file write) don't count.
+fn read_only_git(input: &Value) -> bool {
+    let command = input
+        .get("command")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if COMPOUND.iter().any(|c| command.contains(c)) || names_hard_denied(command) {
+        return false;
+    }
+    let mut words = command.split_whitespace();
+    if words.next() != Some("git") {
+        return false;
+    }
+    let rest: Vec<&str> = words.collect();
+    match rest.split_first() {
+        // `git branch` alone lists branches; any argument could create or delete one.
+        Some((&"branch", args)) => args.is_empty(),
+        Some((
+            &"status" | &"log" | &"show" | &"diff" | &"blame" | &"ls-files" | &"rev-parse",
+            args,
+        )) => args.iter().all(|w| !w.starts_with("--output")),
+        _ => false,
+    }
+}
+
 /// `Tool` or `Tool(glob)`, as in Claude Code: `Bash(git status*)`, `Edit(src/**)`.
 #[derive(Debug, Clone)]
 pub struct Rule {
@@ -308,6 +334,7 @@ impl Permissions {
                 Decision::Allow
             }
             "Write" | "Edit" => Decision::Ask { can_always: true },
+            "Bash" if self.policy.mode == Mode::Ask && read_only_git(input) => Decision::Allow,
             // A grant would cover every later command, so routine ones need allow rules instead.
             "Bash" => Decision::Ask { can_always: false },
             mcp if mcp.starts_with("mcp__") => Decision::Ask { can_always: true },
@@ -696,6 +723,67 @@ mod tests {
                 None => assert!(denied(&decision), "{call:?}: {decision:?}"),
             }
         }
+    }
+
+    #[test]
+    fn read_only_git_runs_without_a_prompt_in_ask_mode() {
+        let p = permissions(Mode::Ask, &[], &[]);
+        for command in [
+            "git status",
+            "git diff src/lib.rs",
+            "git log --oneline -5",
+            "git show HEAD:README.md",
+            "git ls-files",
+            "git branch",
+            "git rev-parse --show-toplevel",
+            "git blame src/lib.rs",
+        ] {
+            assert_eq!(
+                p.decide("Bash", &bash(command).1),
+                Decision::Allow,
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn writing_or_compound_git_still_asks_in_ask_mode() {
+        let p = permissions(Mode::Ask, &[], &[]);
+        for command in [
+            "git commit -m x",
+            "git push origin main",
+            "git reset --hard",
+            "git rebase main",
+            "git checkout -b x",
+            "git branch new-name",
+            "git branch -D old",
+            "git diff --output=/tmp/x",
+            "git log --output=x",
+            "git -c core.pager=x status",
+            "git status; rm -rf x",
+            "git status && rm -rf x",
+            "git status | sh",
+            "git status $(rm -rf x)",
+            "git status `rm -rf x`",
+            "git status > out.txt",
+        ] {
+            assert_eq!(
+                p.decide("Bash", &bash(command).1),
+                Decision::Ask { can_always: false },
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_only_git_is_not_auto_allowed_outside_ask_mode_or_past_a_deny_rule() {
+        let p = permissions(Mode::AutoEdit, &[], &[]);
+        assert_eq!(
+            p.decide("Bash", &bash("git status").1),
+            Decision::Ask { can_always: false }
+        );
+        let p = permissions(Mode::Ask, &[], &["Bash(git status)"]);
+        assert!(denied(&p.decide("Bash", &bash("git status").1)));
     }
 
     #[test]

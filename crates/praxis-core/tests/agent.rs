@@ -745,6 +745,19 @@ async fn a_change_with_no_command_after_it_gets_one_nudge_before_the_turn_ends()
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_git_prompt_line_and_nudge_appear_only_in_a_git_workspace() {
+    let plain = new_workspace();
+    let git = new_workspace();
+    fs::create_dir_all(git.join(".git")).unwrap();
+    for (workspace, in_git) in [(plain, false), (git, true)] {
+        let mut h = Harness::in_workspace(workspace, vec![text_reply("done")], 50).await;
+        h.turn("go", CancellationToken::new(), never_asked).await;
+        let system = h.request_messages(0).await[0]["content"].to_string();
+        assert_eq!(system.contains("git status"), in_git, "{system}");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_command_after_the_last_change_means_no_nudge() {
     let script = vec![
         tool_reply(&[(

@@ -1302,7 +1302,8 @@ flowchart LR
   - **Needs:** T14.5, so each idea can be checked on a targeted task set.
   - **Done when:** `docs/RESEARCH.md` has a section that compares the published methods with what OpenCode and Claude Code do (prompt wording, nudges like T13.7, tool design, recovery), ranks them by expected gain against prefix and cache cost (SPEC §7) and no helper model, and turns the top 3 into tasks with eval hypotheses. No product code.
 
-- [ ] **T14.9 Git-first workflow** · *Should* · scope confirmed as written (owner, 2026-11-16)
+- [x] **T14.9 Git-first workflow** · *Should*
+  - **Result:** owner confirmed the scope 2026-11-16 as written. The T14.8 dependency was skipped and the targeted eval (T14.5) was not run, so the no-fall-in-success check is open. The git line, nudge text, and read-only git auto-allow in `ask` mode are in place with permission and fake-server tests.
   - **Why:** agents work on the raw file system when git would serve better: listing with `find` rather than `git ls-files`, checking their own changes by rereading files rather than with `git diff`, and no checkpoint before risky edits. Glob and Grep already respect `.gitignore` (`tools/search.rs`).
   - **Needs:** T14.8, which picks prompt wording against tool changes.
   - **Done when:** in a git workspace, the system prompt says to use `git status`, `git diff` and `git ls-files` to orient and review, and the T13.7 nudge points to `git diff`; `git` commands that only read are allowed in `ask` mode with no prompt (permission rule test); commits, pushes and history rewrites still ask. A fake-server test shows the prompt line appears only when `.git` exists. Targeted eval (T14.5) shows no fall in success.
