@@ -497,6 +497,7 @@ pub async fn agent_main(spec: &str) -> Result<()> {
             } else {
                 Vec::new()
             },
+            user_memory: 0,
             scoped_rules: if spec["agents_md"] == true {
                 praxis_core::context::prefix::load_scoped_rules(Path::new(WORK), None, None)
             } else {
