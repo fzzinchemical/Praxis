@@ -714,7 +714,7 @@ sequenceDiagram
 ```
 
 - **Writes:** workspace, a per-session temp directory (the command's `TMPDIR`), `/dev/null` and similar devices, `extra_write`.
-- **Reads:** allowlist of system directories (`/usr`, `/etc`, `/opt`, `/proc`, `/dev` and the `/bin` and `/lib` links), workspace, toolchain directories (`CARGO_HOME`, `RUSTUP_HOME`, `~/.cargo`, `~/.rustup` and the other toolchain variables), `extra_read`. `~/.ssh` and similar stay unreadable, unlike a write-only sandbox. Toolchain directories are never writable, because `~/.cargo/bin` runs later outside the sandbox; Cargo works with a read-only `CARGO_HOME` when nothing needs downloading.
+- **Reads:** allowlist of system directories (`/usr`, `/etc`, `/opt`, `/proc`, `/dev` and the `/bin` and `/lib` links), workspace, toolchain directories (`CARGO_HOME`, `RUSTUP_HOME`, `~/.cargo`, `~/.rustup` and the other toolchain variables), the user's git config read-only (`~/.gitconfig` and `$XDG_CONFIG_HOME/git/config`, default `~/.config/git/config`, only if they exist; credential files are not exposed), `extra_read`. `~/.ssh` and similar stay unreadable, unlike a write-only sandbox. Toolchain directories are never writable, because `~/.cargo/bin` runs later outside the sandbox; Cargo works with a read-only `CARGO_HOME` when nothing needs downloading.
 - **Network:** TCP bind and connect blocked unless `network = true`. The helper requires Landlock ABI 4 (Linux 6.7) or later either way.
 - **Environment:** allowlisted variables only (`PATH`, `HOME`, `LANG`, `TERM`, toolchain variables). `*_TOKEN`, `*_KEY` and `*_SECRET` are always removed.
 - **Fail closed.** If Landlock isn't fully enforced, refuse to run commands and explain how to set `sandbox.mode = "off"` in user config. Never fall back silently.

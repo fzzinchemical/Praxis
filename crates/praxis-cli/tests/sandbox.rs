@@ -113,6 +113,30 @@ fn commands_cannot_read_ssh_keys_in_home() {
 }
 
 #[test]
+fn commands_read_the_git_config_in_home_but_not_credentials() {
+    let f = Fixture::new();
+    fs::write(f.path("home/.gitconfig"), "[user]\nname = Tester\n").unwrap();
+    fs::write(f.path("home/.git-credentials"), "https://user:TOKEN@host\n").unwrap();
+
+    let read = f.run(false, "cat \"$HOME/.gitconfig\"");
+    assert!(read.status.success(), "{}", stderr(&read));
+    assert!(String::from_utf8_lossy(&read.stdout).contains("Tester"));
+
+    let write = f.run(false, "echo x >> \"$HOME/.gitconfig\"");
+    assert!(!write.status.success());
+    assert!(
+        fs::read_to_string(f.path("home/.gitconfig"))
+            .unwrap()
+            .contains("Tester"),
+        "the git config was changed"
+    );
+
+    let credentials = f.run(false, "cat \"$HOME/.git-credentials\"");
+    assert!(!credentials.status.success());
+    assert!(!String::from_utf8_lossy(&credentials.stdout).contains("TOKEN"));
+}
+
+#[test]
 fn tcp_connections_are_blocked_unless_network_is_allowed() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

@@ -75,6 +75,12 @@ impl Policy {
                 .iter()
                 .filter_map(|dir| home.as_ref().map(|home| home.join(dir))),
         );
+        // Git reads these on every call and warns when it can't, so expose only the config files.
+        let xdg = var("XDG_CONFIG_HOME")
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .or_else(|| home.as_ref().map(|home| home.join(".config")));
+        read.extend(home.as_ref().map(|home| home.join(".gitconfig")));
+        read.extend(xdg.map(|dir| dir.join("git/config")));
         read.extend(sandbox.extra_read.iter().cloned());
         let mut write = vec![workspace.to_owned(), tmp.to_owned()];
         write.extend(DEVICES_WRITE.iter().map(PathBuf::from));
@@ -187,6 +193,13 @@ mod tests {
         for path in ["/usr", "/opt/cargo", "/home/u/.cargo", "/data"] {
             assert!(policy.read.contains(&PathBuf::from(path)), "{path}");
         }
+        assert!(policy.read.contains(&PathBuf::from("/home/u/.gitconfig")));
+        assert!(
+            policy
+                .read
+                .contains(&PathBuf::from("/home/u/.config/git/config"))
+        );
+        assert!(!policy.read.iter().any(|p| p.ends_with("git-credentials")));
         assert!(!policy.read.contains(&PathBuf::from("/home/u")));
         assert!(!policy.read.iter().any(|p| p.starts_with("/ws")));
         assert_eq!(
