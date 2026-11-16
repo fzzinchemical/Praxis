@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.5.2-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.6.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -239,6 +239,7 @@ praxis --resume                    # continue the newest session in this workspa
 praxis sessions                    # list saved sessions
 praxis plugin install <git-url>    # plugins start disabled; enable them after review
 praxis plugin list
+praxis mcp list [--json]           # configured MCP servers and their approval state, without connecting
 praxis acp                         # Agent Client Protocol over stdio, for editors
 ```
 
@@ -289,6 +290,13 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 1.6.0-beta
+
+- VS Code: project `.mcp.json` and LM Studio MCP servers that need approval show in the MCP view with the exact command they would run (every env variable, header names, shell-quoted), and can be approved there. Approvals share the terminal's trust store.
+- VS Code: the MCP view lists configured servers as soon as the extension starts, even with no chat open, through the new `praxis mcp list --json`.
+- In a git workspace the agent is told to orient and review with `git status`, `git diff` and `git ls-files`, and its review nudge points to `git diff`. In `ask` mode, simple read-only git commands (`status`, `diff`, `log`, `show`, `blame`, `ls-files`, `rev-parse`, bare `branch`) run without a prompt; compound commands, `--output`, `git -c` and anything that writes still ask. Not yet measured by an eval.
+- User instruction files (`~/.claude/CLAUDE.md`, `~/.config/praxis/AGENTS.md`) are kept when the instruction budget is tight; nearer project files are cut first.
 
 ### New in 1.5.2-beta
 
