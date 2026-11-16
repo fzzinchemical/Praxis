@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.6.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v1.6.1-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -290,6 +290,13 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 1.6.1-beta
+
+- VS Code: an MCP server's tools show under it once a session has connected; before, a row first listed without tools never expanded, and a late offline listing could replace the live one.
+- VS Code: the chat follows new output while you are at the bottom, and stays put when you have scrolled up to read.
+- `Bash`: git inside the sandbox can read `~/.gitconfig` and `~/.config/git/config` (read-only), so it no longer warns "unable to access". Credential files stay hidden.
+- Memory is dropped when the loaded context is very small (about 4k tokens): the instruction budget is a quarter of the context, and the base prompt and tools use it first. Load the model with a larger context if `CLAUDE.md` or `AGENTS.md` seem ignored.
 
 ### New in 1.6.0-beta
 
