@@ -725,6 +725,7 @@ flowchart LR
   - **Why:** commits Praxis makes for a user should say so with a `Co-Authored-By:` trailer (owner, 2026-11-14), held until the first full release.
   - **Needs:** none.
   - **Done when:** a commit the agent makes ends with the agreed trailer, a setting turns it off, and a test checks both.
+  - **Decision:** deferred to 1.0; identity picked then (owner, 2026-11-16).
 
 ---
 
@@ -1229,7 +1230,8 @@ flowchart LR
   - **Done when:** each is its own commit: the workspace path is no longer repeated in the system prompt's first line (prefix test); MCP servers connect while the model loads, not after; the dev profile uses `debug = "line-tables-only"`; the 5 s `DIAGNOSTICS_WAIT` in CLI tests is injectable so tests use a short one. Verify passes.
   - **Result (2026-11-14):** the first three are done. The `DIAGNOSTICS_WAIT` change was dropped: no test reaches that wait, and the CLI tests run in under a second, so the 17.5 s in note 05 was stale.
 
-- [ ] **T13.12 Release 1.4.0-beta** `HUMAN` approves
+- [x] **T13.12 Release 1.4.0-beta** `HUMAN` approves
+  - **Result:** superseded by the 1.5.x betas (owner, 2026-11-16).
   - **Needs:** T13.1 to T13.6. Cut *Should* and *Could* tasks that aren't done instead of waiting for them.
   - **Done when:** the README lists the fixes as unmeasured, `./scripts/release v1.4.0-beta` builds the binary and `.vsix` into `target/dist`, the owner installs and checks it, and publishes with `--publish` when they choose.
 
@@ -1273,7 +1275,8 @@ flowchart LR
   - **Needs:** none. Built-in tool names are a compatibility surface, so use Claude Code's `AskUserQuestion` name and input shape (SPEC §6).
   - **Done when:** the tool takes 1–4 questions with 2–4 options, single or multi choice, plus free text; in ACP it reuses the permission-request round trip (spawned, never awaited in the handler, SPEC §11) and the panel shows a floating chooser with the recommended option first; the CLI shows a numbered list; piped runs return "no user available" so the model proceeds. The system prompt gets one line on when to ask. Fake-server tests for each frontend; a targeted eval (T14.5) or the 1.0 board must show no fall in success, since questions end the turn in evals.
 
-- [ ] **T14.4 Agent-written AGENTS file** · *Could* · `HUMAN` decides the §10 question
+- [ ] **T14.4 Agent-written AGENTS file** · *Could* · §10 question decided
+  - **Decision:** diff approval on every agent-proposed edit to the user file; `/remember` appends one confirmed line; project files go through the trust store (owner, 2026-11-16).
   - **Why:** the agent should learn how the owner wants it to work and keep that across sessions, like `~/.claude/CLAUDE.md` does for Claude Code.
   - **Needs:** T14.3 (to confirm a rule before saving it).
   - **Done when:** the agent may propose an edit to the user file `~/.config/praxis/AGENTS.md` (already loaded as `Instructions from:`, SPEC §12) only through an approval prompt that shows the diff, never silently; a project file it writes stays unlabelled until approved by the existing trust store (T13.6). A `/remember` command appends one confirmed line. Tests that an unapproved write is refused and an approved one is labelled next session. Stop and ask before any path that lets model output become trusted instructions without a person.
@@ -1299,7 +1302,7 @@ flowchart LR
   - **Needs:** T14.5, so each idea can be checked on a targeted task set.
   - **Done when:** `docs/RESEARCH.md` has a section that compares the published methods with what OpenCode and Claude Code do (prompt wording, nudges like T13.7, tool design, recovery), ranks them by expected gain against prefix and cache cost (SPEC §7) and no helper model, and turns the top 3 into tasks with eval hypotheses. No product code.
 
-- [ ] **T14.9 Git-first workflow** · *Should* · scope to confirm with the owner
+- [ ] **T14.9 Git-first workflow** · *Should* · scope confirmed as written (owner, 2026-11-16)
   - **Why:** agents work on the raw file system when git would serve better: listing with `find` rather than `git ls-files`, checking their own changes by rereading files rather than with `git diff`, and no checkpoint before risky edits. Glob and Grep already respect `.gitignore` (`tools/search.rs`).
   - **Needs:** T14.8, which picks prompt wording against tool changes.
   - **Done when:** in a git workspace, the system prompt says to use `git status`, `git diff` and `git ls-files` to orient and review, and the T13.7 nudge points to `git diff`; `git` commands that only read are allowed in `ask` mode with no prompt (permission rule test); commits, pushes and history rewrites still ask. A fake-server test shows the prompt line appears only when `.git` exists. Targeted eval (T14.5) shows no fall in success.
