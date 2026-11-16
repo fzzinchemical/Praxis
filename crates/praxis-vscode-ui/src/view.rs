@@ -197,6 +197,12 @@ pub fn cut_at_turn(classes: &[String], turn: usize) -> Option<usize> {
         .nth(turn.checked_sub(1)?)
 }
 
+/// Whether the transcript was close enough to its bottom that new output should keep it there.
+/// shortcut: fixed 40px slack for rounding, so a reader within a line of the bottom still follows.
+pub fn at_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> bool {
+    scroll_height - scroll_top - client_height <= 40.0
+}
+
 /// A profile value as the popover's input shows it: strings as they are, lists and numbers as TOML
 /// (what `profile set` reads back), and nothing for an unset value.
 pub fn profile_text(value: &serde_json::Value) -> String {
@@ -210,6 +216,20 @@ pub fn profile_text(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_transcript_follows_only_when_at_or_near_the_bottom() {
+        // 1000px of content in a 400px view: at the bottom, 40px up, and 41px up.
+        assert!(at_bottom(600.0, 400.0, 1000.0));
+        assert!(at_bottom(560.0, 400.0, 1000.0));
+        assert!(!at_bottom(559.0, 400.0, 1000.0));
+        assert!(!at_bottom(0.0, 400.0, 1000.0));
+    }
+
+    #[test]
+    fn a_transcript_shorter_than_its_view_always_follows() {
+        assert!(at_bottom(0.0, 400.0, 120.0));
+    }
 
     #[test]
     fn profile_values_show_as_text_and_unset_as_empty() {

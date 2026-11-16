@@ -746,25 +746,46 @@ pub fn start() -> Result<(), JsValue> {
     Ok(())
 }
 
+/// Runs a change to the transcript, then scrolls to the bottom only if the reader was already there.
+fn keep_bottom<T>(
+    output: &Element,
+    change: impl FnOnce() -> Result<T, JsValue>,
+) -> Result<T, JsValue> {
+    let follow = view::at_bottom(
+        f64::from(output.scroll_top()),
+        f64::from(output.client_height()),
+        f64::from(output.scroll_height()),
+    );
+    let value = change()?;
+    if follow {
+        output.set_scroll_top(output.scroll_height());
+    }
+    Ok(value)
+}
+
 impl Ui {
     fn append(&self, tag: &str, class: &str, text: &str) -> Result<Element, JsValue> {
-        let element = self.document.create_element(tag)?;
-        element.set_class_name(class);
-        element.set_text_content(Some(text));
-        self.output.append_child(&element)?;
-        Ok(element)
+        keep_bottom(&self.output, || {
+            let element = self.document.create_element(tag)?;
+            element.set_class_name(class);
+            element.set_text_content(Some(text));
+            self.output.append_child(&element)?;
+            Ok(element)
+        })
     }
 
     /// A user bubble, with the button that rewinds the chat to before it.
     fn user_bubble(&mut self, prompt: &str) -> Result<(), JsValue> {
         self.turns += 1;
-        self.append("p", "user", prompt)?;
-        let button: HtmlElement = self.document.create_element("button")?.dyn_into()?;
-        button.set_attribute("type", "button")?;
-        button.set_attribute("data-turn", &self.turns.to_string())?;
-        button.set_text_content(Some("Rewind to here"));
-        self.output.append_child(&button)?;
-        Ok(())
+        keep_bottom(&self.output, || {
+            self.append("p", "user", prompt)?;
+            let button: HtmlElement = self.document.create_element("button")?.dyn_into()?;
+            button.set_attribute("type", "button")?;
+            button.set_attribute("data-turn", &self.turns.to_string())?;
+            button.set_text_content(Some("Rewind to here"));
+            self.output.append_child(&button)?;
+            Ok(())
+        })
     }
 
     /// Drops the chat from user turn `turn` on, then notes that Bash effects stay.
@@ -836,7 +857,9 @@ impl Ui {
         indicator.set_inner_html(
             r#"<span class="working-pac" aria-hidden="true"><span class="working-man"></span><span class="working-dots"><i></i><i></i><i></i><i></i></span></span><span id="working-word" class="working-word" aria-live="polite"></span>"#,
         );
-        self.output.append_child(&indicator)?;
+        keep_bottom(&self.output, || {
+            self.output.append_child(&indicator).map(drop)
+        })?;
         set_enabled(&self.stop, true)?;
         self.sync_pickers()?;
         self.update_working();
@@ -1021,8 +1044,11 @@ impl Ui {
                 }
                 if let Some((element, markdown)) = &mut self.message {
                     markdown.push_str(text("text"));
-                    // Safe only because `view::markdown` escapes raw HTML and drops unsafe links.
-                    element.set_inner_html(&view::markdown(markdown));
+                    keep_bottom(&self.output, || {
+                        // Safe only because `view::markdown` escapes raw HTML and drops unsafe links.
+                        element.set_inner_html(&view::markdown(markdown));
+                        Ok(())
+                    })?;
                 }
             }
             "active" => {
@@ -1097,20 +1123,20 @@ impl Ui {
             details.append_child(&summary)?;
             details.append_child(&pre)?;
             // A subagent's call nests under the `Agent` call that runs it.
-            match message["parent"]
-                .as_str()
-                .and_then(|parent| self.tools.get_mut(parent))
-            {
-                Some(owner) => {
-                    owner.calls += 1;
-                    owner.children.push(id.clone());
-                    owner.details.append_child(&details)?;
-                    show_summary(owner)?;
+            keep_bottom(&self.output, || {
+                match message["parent"]
+                    .as_str()
+                    .and_then(|parent| self.tools.get_mut(parent))
+                {
+                    Some(owner) => {
+                        owner.calls += 1;
+                        owner.children.push(id.clone());
+                        owner.details.append_child(&details)?;
+                        show_summary(owner)
+                    }
+                    None => self.output.append_child(&details).map(drop),
                 }
-                None => {
-                    self.output.append_child(&details)?;
-                }
-            }
+            })?;
             let tool = Tool {
                 details,
                 summary,
