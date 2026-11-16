@@ -318,10 +318,7 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
     refresh_mcp();
     command(&context, "praxis.refreshMcp", |_| refresh_mcp())?;
     command(&context, "praxis.approveMcp", |item| {
-        if let Some(name) = item_id(&item)
-            .as_deref()
-            .and_then(|id| id.strip_prefix(MCP_PREFIX))
-        {
+        if let Some(name) = item_id(&item).as_deref().and_then(mcp_name) {
             approve_mcp(name.to_owned());
         }
     })?;
@@ -1699,6 +1696,15 @@ thread_local! {
 
 /// Prefixes a server row's id, so the checkbox handler can tell a server from anything else.
 const MCP_PREFIX: &str = "mcp:";
+/// A server row with no tools gets another id: VS Code keeps a row's first collapsible state per id,
+/// so a row first drawn without tools would never expand once its tools arrive.
+const MCP_BARE_PREFIX: &str = "mcp-bare:";
+
+/// The server name in a server row's id.
+fn mcp_name(id: &str) -> Option<&str> {
+    id.strip_prefix(MCP_PREFIX)
+        .or_else(|| id.strip_prefix(MCP_BARE_PREFIX))
+}
 
 /// Registers the MCP Servers view. Each server row has a checkbox; VS Code reports its changes to `toggle_checkboxes`.
 fn create_mcp_view() {
@@ -1736,7 +1742,7 @@ fn toggle_checkboxes(event: &JsValue) {
     for pair in pairs.unchecked_into::<Array>().iter() {
         let pair = pair.unchecked_into::<Array>();
         let id = item_id(&pair.get(0));
-        let Some(name) = id.as_deref().and_then(|id| id.strip_prefix(MCP_PREFIX)) else {
+        let Some(name) = id.as_deref().and_then(mcp_name) else {
             continue;
         };
         let enabled = pair.get(1).as_f64() == Some(1.0);
@@ -1769,6 +1775,23 @@ fn send_mcp(build: impl Fn(&Client) -> Option<String>) {
     }
 }
 
+/// Whether an open session can list MCP servers itself.
+fn has_mcp_session() -> bool {
+    PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .any(|state| {
+                state
+                    .borrow()
+                    .client
+                    .as_ref()
+                    .is_some_and(|client| client.mcp_servers().is_some())
+            })
+    })
+}
+
 /// Lists the workspace's servers through the CLI, for when no session is open. Nothing connects.
 fn list_mcp_offline() {
     let Some(cwd) = workspace_dir() else {
@@ -1776,6 +1799,10 @@ fn list_mcp_offline() {
     };
     let args = vec!["mcp".to_owned(), "list".to_owned(), "--json".to_owned()];
     run_cli(args, Some(&cwd), |result| {
+        // A session opened meanwhile answers with live tools; this listing must not overwrite it.
+        if has_mcp_session() {
+            return;
+        }
         publish_mcp(result.and_then(|text| {
             let json: Value = serde_json::from_str(&text).map_err(|error| error.to_string())?;
             mcp::mcp_servers(&json)
@@ -1806,7 +1833,7 @@ fn publish_mcp(result: Result<Vec<mcp::McpServer>, String>) {
 /// Root rows: the problem line, then one checkbox row per server. A server row expands to its tools.
 fn mcp_children(element: &JsValue) -> Array {
     let id = item_id(element);
-    let server = id.as_deref().and_then(|id| id.strip_prefix(MCP_PREFIX));
+    let server = id.as_deref().and_then(mcp_name);
     let nodes: Vec<JsValue> = MCP.with(|mcp| {
         let mcp = mcp.borrow();
         let Some(view) = mcp.as_ref() else {
@@ -1848,7 +1875,15 @@ fn mcp_server_node(server: &mcp::McpServer) -> JsValue {
     node(&[
         (
             "id",
-            JsValue::from_str(&format!("{MCP_PREFIX}{}", server.name)),
+            JsValue::from_str(&format!(
+                "{}{}",
+                if server.tools.is_empty() {
+                    MCP_BARE_PREFIX
+                } else {
+                    MCP_PREFIX
+                },
+                server.name
+            )),
         ),
         ("label", JsValue::from_str(&server.name)),
         ("description", JsValue::from_str(&server.description())),
