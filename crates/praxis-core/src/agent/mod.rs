@@ -131,6 +131,8 @@ pub struct AgentConfig {
     pub system_prompt: String,
     /// Memory files, broadest first. Part of the prefix and the first thing trimmed to fit it.
     pub memory: Vec<String>,
+    /// How many leading `memory` files are the user's own; they are kept ahead of project files.
+    pub user_memory: usize,
     /// Path-scoped rules, appended once when a matching file is first touched (SPEC §12).
     pub scoped_rules: Vec<ScopedRule>,
     /// How many recent turns keep their tool output when history is masked (SPEC §7).
@@ -1721,7 +1723,7 @@ fn assemble_prefix(
         response_format: None,
     }
     .chars();
-    let (memory, trimmed) = budget.fit_memory(&config.memory, other_chars);
+    let (memory, trimmed) = budget.fit_memory(&config.memory, config.user_memory, other_chars);
     let mut parts = vec![base];
     parts.extend(memory);
     parts.push(facts);

@@ -1320,17 +1320,19 @@ async fn run(
     let claude_dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude"));
     let praxis_dir = xdg_dir("XDG_CONFIG_HOME", ".config");
     let trust = xdg_path("XDG_DATA_HOME", ".local/share", "trust.json").map(TrustStore::new);
+    let (memory, user_memory) = praxis_core::context::prefix::load_memory_with_user_count(
+        &workspace,
+        &workspace,
+        claude_dir.as_deref(),
+        praxis_dir.as_deref(),
+        &mut |path, text| approve_memory(trust.as_ref(), path, text, terminal.as_mut()),
+    );
     let agent_config = AgentConfig {
         model: ready.instance_id,
         context_size: ready.context_length,
         system_prompt: system_prompt(),
-        memory: praxis_core::context::prefix::load_memory(
-            &workspace,
-            &workspace,
-            claude_dir.as_deref(),
-            praxis_dir.as_deref(),
-            &mut |path, text| approve_memory(trust.as_ref(), path, text, terminal.as_mut()),
-        ),
+        memory,
+        user_memory,
         scoped_rules: praxis_core::context::prefix::load_scoped_rules(
             &workspace,
             claude_dir.as_deref(),

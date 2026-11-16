@@ -125,31 +125,48 @@ impl Budget {
         format!("{head}{notice}{tail}")
     }
 
-    /// Fits memory files, broadest first, into what the prefix limit leaves after `other_chars`.
-    /// The nearest files are kept first. The first one that doesn't fit is cut from its end, and
-    /// every broader one is dropped. Returns the kept files in order and whether anything was cut.
-    pub fn fit_memory(&self, memory: &[String], other_chars: usize) -> (Vec<String>, bool) {
-        let mut room = self
+    /// Fits memory files into what the prefix limit leaves after `other_chars`. The first `user`
+    /// files are the user's own and are fitted first, so a project file never pushes them out
+    /// (SPEC §12). Each group keeps its nearest files first: the first one that doesn't fit is cut
+    /// from its end, and every broader one in its group is dropped. Returns the kept files in
+    /// order and whether anything was cut.
+    pub fn fit_memory(
+        &self,
+        memory: &[String],
+        user: usize,
+        other_chars: usize,
+    ) -> (Vec<String>, bool) {
+        let room = self
             .chars_for(self.prefix_limit())
             .saturating_sub(other_chars);
-        let mut kept = Vec::new();
-        for file in memory.iter().rev() {
-            let len = file.chars().count();
-            if len <= room {
-                room -= len;
-                kept.push(file.clone());
-                continue;
-            }
-            let piece: String = file.chars().take(room).collect();
-            if !piece.is_empty() {
-                kept.push(piece);
-            }
-            kept.reverse();
-            return (kept, true);
+        let (mut kept, user_cut) = fit_nearest_first(&memory[..user], room);
+        let used: usize = kept.iter().map(|file| file.chars().count()).sum();
+        let (project, project_cut) = fit_nearest_first(&memory[user..], room.saturating_sub(used));
+        kept.extend(project);
+        (kept, user_cut || project_cut)
+    }
+}
+
+/// Keeps files from the nearest end of `memory` until `room` characters run out. The first file
+/// that doesn't fit is cut to what is left, and every broader file is dropped.
+fn fit_nearest_first(memory: &[String], mut room: usize) -> (Vec<String>, bool) {
+    let mut kept = Vec::new();
+    for file in memory.iter().rev() {
+        let len = file.chars().count();
+        if len <= room {
+            room -= len;
+            kept.push(file.clone());
+            continue;
+        }
+        let piece: String = file.chars().take(room).collect();
+        if !piece.is_empty() {
+            kept.push(piece);
         }
         kept.reverse();
-        (kept, false)
+        return (kept, true);
     }
+    kept.reverse();
+    (kept, false)
 }
 
 #[cfg(test)]
@@ -266,21 +283,38 @@ mod tests {
     fn memory_is_cut_only_when_over_what_is_left() {
         let budget = Budget::new(1000);
         assert_eq!(
-            budget.fit_memory(&["short".to_owned()], 0),
+            budget.fit_memory(&["short".to_owned()], 0, 0),
             (vec!["short".to_owned()], false)
         );
-        let (kept, cut) = budget.fit_memory(&["é".repeat(2000)], 500);
+        let (kept, cut) = budget.fit_memory(&["é".repeat(2000)], 0, 500);
         assert_eq!((kept[0].chars().count(), cut), (375, true));
     }
 
     #[test]
     fn the_broadest_memory_is_trimmed_first() {
         let budget = Budget::new(1000);
-        let (kept, cut) = budget.fit_memory(&["B".repeat(700), "N".repeat(300)], 0);
+        let (kept, cut) = budget.fit_memory(&["B".repeat(700), "N".repeat(300)], 0, 0);
         assert_eq!(kept, ["B".repeat(575), "N".repeat(300)]);
         assert!(cut);
-        let (kept, cut) = budget.fit_memory(&["B".repeat(100), "N".repeat(900)], 0);
+        let (kept, cut) = budget.fit_memory(&["B".repeat(100), "N".repeat(900)], 0, 0);
         assert_eq!(kept, ["N".repeat(875)]);
+        assert!(cut);
+    }
+
+    #[test]
+    fn a_user_file_survives_a_tight_budget_while_a_project_file_is_cut() {
+        let budget = Budget::new(1000);
+        let user = "U".repeat(100);
+        let (kept, cut) = budget.fit_memory(&[user.clone(), "P".repeat(900)], 1, 0);
+        assert_eq!(kept, [user, "P".repeat(775)]);
+        assert!(cut);
+    }
+
+    #[test]
+    fn a_user_file_too_long_for_the_budget_is_still_cut_from_its_end() {
+        let budget = Budget::new(1000);
+        let (kept, cut) = budget.fit_memory(&["U".repeat(900), "P".repeat(100)], 1, 0);
+        assert_eq!(kept, ["U".repeat(875)]);
         assert!(cut);
     }
 }

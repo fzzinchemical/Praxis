@@ -73,6 +73,7 @@ fn config(context_size: u32) -> AgentConfig {
         context_size,
         system_prompt: "sys".into(),
         memory: Vec::new(),
+        user_memory: 0,
         scoped_rules: Vec::new(),
         mask_keep_turns: DEFAULT_MASK_KEEP_TURNS,
         max_turn_requests: 50,

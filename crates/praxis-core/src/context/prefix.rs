@@ -78,9 +78,22 @@ pub fn load_memory(
     praxis_dir: Option<&Path>,
     trusted: &mut dyn FnMut(&Path, &str) -> bool,
 ) -> Vec<String> {
+    load_memory_with_user_count(root, cwd, claude_dir, praxis_dir, trusted).0
+}
+
+/// `load_memory`, also returning how many leading files are the user's own, so the budget can
+/// keep them ahead of project files (SPEC §7).
+pub fn load_memory_with_user_count(
+    root: &Path,
+    cwd: &Path,
+    claude_dir: Option<&Path>,
+    praxis_dir: Option<&Path>,
+    trusted: &mut dyn FnMut(&Path, &str) -> bool,
+) -> (Vec<String>, usize) {
     let mut memory: Vec<String> = Vec::new();
     memory.extend(claude_dir.and_then(|dir| user_instructions(dir, "CLAUDE.md")));
     memory.extend(praxis_dir.and_then(|dir| user_instructions(dir, "AGENTS.md")));
+    let user = memory.len();
     memory.extend(project_memory(root, cwd, trusted));
     for (base, dir) in rule_dirs(root, claude_dir, praxis_dir) {
         memory.extend(
@@ -89,7 +102,7 @@ pub fn load_memory(
                 .filter_map(|(text, paths)| paths.is_none().then_some(text)),
         );
     }
-    memory
+    (memory, user)
 }
 
 /// A user's own file, labelled as instructions. Project files are untrusted repository content

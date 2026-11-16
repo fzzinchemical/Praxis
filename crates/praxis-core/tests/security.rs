@@ -122,6 +122,7 @@ async fn run_under(
             context_size: 100_000,
             system_prompt: "sys".into(),
             memory: Vec::new(),
+            user_memory: 0,
             scoped_rules: Vec::new(),
             mask_keep_turns: 10,
             max_turn_requests: 5,

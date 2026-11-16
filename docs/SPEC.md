@@ -441,7 +441,7 @@ Default allocation of the context window `C`:
 | Category | Limit |
 |---|---|
 | Reserved for output | `max_tokens` is the room left after the prompt, at least 15% of `C` and at most the profile's `max_output`. A reply cut off at the output limit is continued up to twice with a note, then the turn stops with `max_tokens` |
-| System prompt, tools, memory files, skill index | 25% of `C`; warn and trim memory files, broadest first, when over |
+| System prompt, tools, memory files, skill index | 25% of `C`; warn and trim memory files when over. User files (`~/.claude/CLAUDE.md`, `~/.config/praxis/AGENTS.md`) are kept first; project files are cut first, nearest kept (owner decision, 2026-11-16) |
 | One tool result | 10% of `C` |
 | History | Whatever remains; compact when the whole prompt passes 80% of `C` |
 
