@@ -60,4 +60,8 @@ Passing: `mcp`, `us64_mcp_failures` tests and the real-server check (`mcp_real -
 - [x] subagents can communicate with the agent that started them
 - [x] the agent reports more to the user (currently little to none) this makes decissions clear
 - [ ] models still are not using the tools from the mcp server, the sidebar still shows no tools for all mcp servers.
-  - **Cause (2026-11-17):** all servers (Wikipedia, docs, fetch) come from `~/.lmstudio/mcp.json` and are `needs_approval`; unapproved servers are never connected, so they have 0 tools and the model never sees them (`praxis mcp list`). Approve was only in the right-click menu; now also an inline ✓ button. Approve each server once.
+  - **Cause (2026-11-17):** all servers (Wikipedia, docs, fetch) come from `~/.lmstudio/mcp.json` and are `needs_approval`; unapproved servers are never connected, so they have 0 tools and the model never sees them (`praxis mcp list`). Approve was only in the right-click menu; now also an inline ✓ button. Approve each server once.## Audit findings (2026-11-17)
+- [x] Subagent report takes the first `[exit code N]` in Bash output, not the last; output text can fake it (`agent/report.rs:143`). Fix: `rsplit_once`, plus a test with a fake note before the real one.
+- [x] Subagent report marks `blocked` on any trailing `?`, so "Want me to also add tests?" stalls finished work (`agent/report.rs:68`). Fix: only the `BLOCKED:` prefix.
+- [x] With `agent.auto_load`, the model can load any LM Studio model for a subagent and evict or OOM the GPU (`agent/mod.rs:628`). Fix: auto-load only models in `[models]`; others ask first.
+- [x] Fallback summary is shown but not recorded in history, so later turns and resume lose it (`agent/mod.rs:~909`).

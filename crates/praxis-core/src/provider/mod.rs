@@ -31,7 +31,7 @@ pub enum ProviderError {
     #[error("LM Studio doesn't know this model: {message}. Check the model name.")]
     ModelNotFound { message: String },
     #[error(
-        "`{model}` needs loading with {context} context, which disrupts anything else using LM Studio. Approve the load, set `auto_load = true`, or load it yourself."
+        "`{model}` needs loading with {context} context, which disrupts anything else using LM Studio. Approve the load, list it in `[models]` with `auto_load = true`, or load it yourself."
     )]
     LoadNeedsConsent { model: String, context: u32 },
     #[error(
