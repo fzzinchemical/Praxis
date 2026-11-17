@@ -589,6 +589,135 @@ async fn a_delegated_agent_with_a_model_runs_on_it_and_the_parent_keeps_its_own(
     assert_eq!(parent[3]["content"], "found it in a.rs");
 }
 
+/// A plugin agent with no `model:`, so the model comes from the `Agent` call alone.
+fn unpinned_scout() -> praxis_core::plugin::AgentDef {
+    praxis_core::plugin::AgentDef {
+        skill: praxis_core::plugin::Skill {
+            name: "kit:scout".into(),
+            description: "Finds things".into(),
+            body: "You scout.".into(),
+            model_invocable: true,
+            user_invocable: true,
+            dir: Default::default(),
+        },
+        tools: None,
+        disallowed_tools: vec![],
+        max_turns: Some(5),
+        model: None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_call_can_name_a_loaded_model_for_its_subagent() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it", "model": "worker"}),
+        )]),
+        text_reply("found it"),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    serve_worker_model(&h.server).await;
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![unpinned_scout()]));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let models: Vec<Value> = requests
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST)
+        .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
+        .collect();
+    assert_eq!(models, ["m", "worker-1", "m"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_call_loads_an_unloaded_model_when_auto_load_allows_it() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it", "model": "worker"}),
+        )]),
+        text_reply("found it"),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [{
+            "key": "worker",
+            "loaded_instances": []
+        }]})))
+        .mount(&h.server)
+        .await;
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/api/v1/models/load"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "instance_id": "worker-1",
+            "load_config": {"context_length": 100_000}
+        })))
+        .with_priority(1)
+        .mount(&h.server)
+        .await;
+    h.agent = Some(
+        h.agent
+            .take()
+            .unwrap()
+            .with_auto_load(true)
+            .with_agents(vec![unpinned_scout()]),
+    );
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let chats: Vec<Value> = requests
+        .iter()
+        .filter(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
+        .collect();
+    assert_eq!(chats, ["m", "worker-1", "m"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_call_naming_an_unknown_model_fails_before_the_subagent_runs() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it", "model": "ghost"}),
+        )]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    serve_worker_model(&h.server).await;
+    h.agent = Some(h.agent.take().unwrap().with_agents(vec![unpinned_scout()]));
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    // Index 1 is the model list; the parent's next request carries the error as its tool result.
+    let parent = h.request_messages(2).await;
+    let result = parent[3]["content"].as_str().unwrap_or_default();
+    assert!(
+        result.contains("Agent model `ghost` isn't ready"),
+        "{result}"
+    );
+    let posts = h
+        .server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.method == wiremock::http::Method::POST)
+        .count();
+    assert_eq!(
+        posts, 2,
+        "only the parent's two requests, no subagent request"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_delegated_agent_on_anthropic_fails_before_sending_a_request() {
     let script = vec![

@@ -1376,6 +1376,7 @@ async fn run(
     let new_agent = move || {
         let tools = Arc::new(tool_context(&workspace, &config)?);
         let agent = Agent::new(provider.clone(), tools, agent_config.clone())
+            .with_auto_load(config.agent.auto_load)
             .with_skills(plugins.skills.clone())
             .with_agents(plugins.agents.clone())
             .with_hooks(plugins.hooks.clone());
