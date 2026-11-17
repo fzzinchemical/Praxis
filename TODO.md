@@ -1,0 +1,63 @@
+- [x] Pacman animation: make pacman dissapear before reaching the text. Also change Pacman color to match theme highlight color
+- [x] when in input window and adding a command using '/' remove the command documentation text, only show it when the command is hovered (in a nother floating window)
+- [x] I was able to start subagents with a larger model but smaller models should always also create subagents. Investigate why they don't.
+- [x] Bash requests were here again when giving full access. we don't want the harness to ask anything when in full access
+- [ ] (T14.2) Queueable Requests
+- [ ] (T14.4) Local agent writes his own AGENT file in which it details how the user wants it to work. The AGENT file should resemble yours so that we achieve a similar behaviour.
+- [x] (T14.1) Name Subagents after the colors of Pacman-Ghosts or general Colors instead of general
+- [ ] (T14.3) More talkative Agent, asks if it understood requests correctly, like you adds a floating window with multiple choice or single choice responses and recommendations
+- [x] (T14.5) eval run only for mcp
+- [x] (T14.6) full eval run only before first full release
+- [x] (T14.7) adds more random words to the waiting animation
+- [x] (T14.8) research on optimal agentic behaviour and how to push small models towards it
+  - **Result (2026-11-16, web research only, no eval run yet):** the papers agree that for small models the harness matters as much as the weights.
+    - Small-model failures are mostly mechanical: action loops, lost artifacts after compaction, malformed calls. SWE-Protégé ([2602.22124](https://arxiv.org/html/2602.22124v1)) names "pervasive action looping"; FrogNano ([2609.07925](https://www.emergentmind.com/papers/2609.07925)) calls the harness "particularly consequential" for a 4B agent; [2604.00362](https://arxiv.org/pdf/2604.00362) shows models fall well short of published scores inside an unoptimised harness. This matches our M13 finding.
+    - "Three Roles, One Model" ([2604.11465](https://arxiv.org/abs/2604.11465)): one frozen Qwen3-8B on a 24 GB GPU acting as summariser, main agent and an *isolated corrector* (reviews the code with no history). AppWorld 5.4% → 8.9% (FP16), 3.0% → 5.9% (AWQ). No helper model, so it fits our one-GPU rule, but the corrector's extra call has no shared prefix, so it costs a full prompt reprocess. No per-role ablation.
+    - Scaffold over interface: [2608.08654](https://arxiv.org/pdf/2608.08654) (MCP vs CLI, 7 scaffolds, 5 models) finds the scaffold matters more than the tool interface. [2604.03515](https://arxiv.org/pdf/2604.03515) and [2607.03691](https://huggingface.co/papers/2607.03691.md) cover how scaffolds are built and how they change over time. Read these before the Claude Code / OpenCode comparison table.
+  - **Ranked by expected gain against prefix/cache cost (my judgement, unverified):**
+    1. **Loop breaking in code** (we have `RunawayDetector`): on a repeat, inject a short fixed nudge ("this Edit failed twice; Read the file again") at the end of the history instead of stopping. Cost: tail only, cache kept. Hypothesis: the seeded-bug-duration "loop stop, repeated Edit" failure becomes a pass; 4b loop stops fall ≥50%.
+    2. **Artifact-preserving compaction:** the summary or mask keeps exact paths, error lines and IDs verbatim. Cost: only when compaction runs. Hypothesis: fewer re-fetches after compaction on large-file-catalog.
+    3. **Isolated self-check pass** before the turn ends: the same model gets only the diff and the task, and replies OK or with a fix. Cost: one uncached call per edited turn. Hypothesis: +success on seeded-bug-* at <30% extra wall time. Gate it behind evals.
+  - **Still open for the full T14.8 "Done when":** the Claude Code / OpenCode prompt comparison, moving this into `docs/RESEARCH.md`, and turning it into tasks.
+- [x] (T14.9) issues with git usage, the agents should use git instead of the raw file system by default.
+- [x] (T14.10) research on how agents can communicate with each other and enhance output (mainly between aggregator and worker)
+  - **Result (2026-11-16, web research only):**
+    - Anthropic's multi-agent research system ([post](https://www.anthropic.com/engineering/multi-agent-research-system)): every brief needs an **objective, output format, tool/source guidance and task boundaries**. Vague briefs led to duplicated and off-target work. Multi-agent used ~15× the tokens of chat (single agents ~4×), and token use explained 80% of performance variance. Observed failures: spawning too many workers (50 for simple queries), working past "enough", and noisy cross-talk. Suggested fix for large outputs: **workers write artifacts to files and return references**, not full text.
+    - MAST (Cemri et al., NeurIPS 2025; via [summary](https://tianpan.co/blog/2025-10-14-why-multi-agent-llm-systems-fail)): 14 failure modes across 1,600+ traces, with failure rates of 41–86.7%; inter-agent misalignment is about a third (sources give 32–37%, so check the paper). AgentAsk sorts hand-off failures into Data Gap, Referential Drift, Signal Corruption and Capability Gap ([survey](https://arxiv.org/pdf/2605.14892)). A [failure-localisation taxonomy](https://arxiv.org/pdf/2607.28802) and write-ups ([1](https://www.alexgoryachev.com/alex-posts/agentic-ai-multi-agent-handoff-failures), [2](https://makmel.pages.dev/blog/2026-04-27-multi-agent-orchestration-failure)) flag **silent worker failure**: an empty result looks the same as a failed one.
+  - **Comparison of hand-off formats for us (one GPU, so each model swap costs a full load):**
+    - Structured brief (goal, files, done-check, out of scope): cheap and directly addresses the failures above. **Best.**
+    - Report schema `{status: done|blocked|failed, changed_files, checks_run, notes}`, filled from the **tool log by the harness**, not by the model (as T5.7 does). This fixes silent failure, and the orchestrator's context stays small.
+    - Worker asks the orchestrator: on one GPU each question can swap the model twice. Avoid; return `blocked` with the question instead.
+    - Shared scratch files: good for big outputs; the report carries the path only. The worktree already provides this.
+  - **Proposed task:** brief template + harness-built report envelope. Eval hypothesis: on a delegated version of rename-type and seeded-bug-*, worker success ≥ the free-text baseline, orchestrator tokens per delegation ↓ ≥30%, and zero silent failures (every failed worker reports `failed`/`blocked`).
+  - **Still open:** move into `docs/RESEARCH.md` and check MAST numbers in the paper itself.
+- [x] (T14.11) look at the following issue: 2026-11-15 12:51:14 [ERROR]
+ [qwen3.5-4b] Engine protocol predict stream returned an error: {"code":500,"message":"Context size has been exceeded.","type":"server_error"}. Error Data: n/a, Additional Data: n/a
+## MCP eval findings (2026-11-15, qwen3.5-4b, `--mcp ~/mcp-servers`)
+Passing: `mcp`, `us64_mcp_failures` tests and the real-server check (`mcp_real --ignored`).
+- [x] MCP `git` server never starts in eval: "couldn't start `/mcp-servers/venv/bin/mcp-server-git`: No such file or directory". The venv script's shebang is `#!/home/fzzin/mcp-servers/venv/bin/python3`, but bwrap mounts the install at `/mcp-servers`. Fix: mount at the host path, or launch `venv/bin/python3 -m mcp_server_git` (xtask/src/eval.rs `mcp_servers`).
+- [x] Eval swallows the agent child's stderr on success (xtask/src/eval.rs ~L682), so MCP connect failures and the `mcp: N tools` line are invisible. Forward it or record notices in the board.
+- [x] The scoreboard has no MCP data: no `mcp` flag, no count of MCP tool calls, no connect notices. A `--mcp` board can't be told apart from a plain one.
+- [x] No eval task needs MCP: with 16 filesystem tools offered, the model used only built-ins (Grep/Read/Edit/Bash) on rename-type. MCP is offered, never exercised. Add MCP-tagged tasks (e.g. git history question for the git server) so `--tasks tag:mcp` (T14.5) tests something.
+- Results (1 run): large-file-catalog ✓, rename-type ✓, seeded-bug-duration ✗ (loop stop, repeated Edit). Not MCP-related as far as seen.
+- [x] Sidebar does not load the currently available MCP Servers
+- [ ] Plugin installation fails for https://github.com/morluto/rea.git, other plugin installation might be concerned as well.
+- [x] MCP Servers are still not shown in sidebar
+- [x] Agents have no access to the .claude home folder, also don't see the CLAUDE config.
+- [x] Agents look for the AGENT config but not the base claude config.
+- [x] auto scroll down feature
+- [x] MCP Servers now show up but do not have tools.
+- [x] the agent has no access to git `warning: unable to access '/home/fzzin/.gitconfig': Permission denied`
+- [x] Read /home/fzzin/.claude/CLAUDE.md (failed) home/fzzin/.claude/CLAUDE.md is outside the workspace, so it can't be accessed.
+- [x] most recent message is not shown anymore because of the autoscroll feature. (it is hidden behind the chatbox)
+- [x] research how to sandbox vscode and test features before manual testing by the developers
+  - **Result (2026-11-16):**
+    - **Isolation** is all CLI flags, with no npm needed: `env -i HOME=$tmp PATH=$PATH DISPLAY=… code --user-data-dir $tmp/data --extensions-dir $tmp/ext --extensionDevelopmentPath=<built ext> --disable-extensions <fixture workspace>`. `--disable-extensions` keeps other extensions out while the dev extension still loads; `env -i` drops `ELECTRON_RUN_AS_NODE`/`VSCODE_*` (existing gotcha). `@vscode/test-electron` does the same thing under the hood: it adds `--user-data-dir`/`--extensions-dir` unless given ([vscode-test runTest.ts](https://github-redirect.dependabot.com/microsoft/vscode-test/blob/25eafb9e3e001ddc3803e90eb5537eaa75dade84/lib/runTest.ts), [testing docs](https://code.visualstudio.com/api/working-with-extensions/testing-extension)). Its Mocha-in-extension-host runner needs TypeScript/npm, which ADR 0001 forbids, so we don't use it.
+    - **Headless:** CI uses `xvfb-run -a` ([CI docs](https://code.visualstudio.com/api/working-with-extensions/continuous-integration)). None of `xvfb-run`, `Xvfb`, `weston` or `cage` is installed here (checked); `xorg-server-xvfb` from pacman is the smallest option and would need owner approval.
+    - **Driving the UI:** VS Code is Electron, so `--remote-debugging-port=9222` exposes CDP. The playwright MCP we already use can attach (`connectOverCDP`), list targets and pick the webview iframe ([launch skill](https://skillsmp.com/skills/microsoft-vscode-extensions-copilot-agents-skills-launch-skill-md), [Playwright WebView2 doc](https://playwright.dev/docs/webview2)). Caveat: VS Code DOM selectors (`.monaco-editor`…) change between versions, so assert on our own webview DOM only. Unverified alternative: `code serve-web` serves the UI in a browser with no X server, so playwright can drive it headless; whether a dev extension loads there is untested.
+    - **Proposed:** `cargo xtask vscode-smoke` builds the vsix, starts the isolated `code` with the fake model server (SPEC §14) on a fixture workspace, attaches over CDP, sends one prompt and checks that the reply and the MCP/sidebar list render (would catch the "empty panel" and "message hidden behind chatbox" bugs above). It is slow and needs a display, so keep it out of verify like evals. Needs owner OK for the Xvfb package and a CDP client crate (SPEC §3).
+- [x] when tasked the model should be able to start other models to run subagents in parallel (example: on request a 9b model should be able to start an instance of 4b models)
+- [x] subagents can communicate with the agent that started them
+- [x] the agent reports more to the user (currently little to none) this makes decissions clear
+- [ ] models still are not using the tools from the mcp server, the sidebar still shows no tools for all mcp servers.
+  - **Cause (2026-11-17):** all servers (Wikipedia, docs, fetch) come from `~/.lmstudio/mcp.json` and are `needs_approval`; unapproved servers are never connected, so they have 0 tools and the model never sees them (`praxis mcp list`). Approve was only in the right-click menu; now also an inline ✓ button. Approve each server once.

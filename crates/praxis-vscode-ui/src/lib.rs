@@ -443,6 +443,27 @@ pub fn start() -> Result<(), JsValue> {
     input.add_event_listener_with_callback("input", on_input.as_ref().unchecked_ref())?;
     on_input.forget();
 
+    // The composer can grow (queue, chips, textarea) and shrink the transcript; keep the reader at the bottom if they were there.
+    let follow = Rc::new(std::cell::Cell::new(true));
+    let (log, flag) = (output.clone(), follow.clone());
+    let on_scroll = Closure::<dyn FnMut()>::new(move || {
+        flag.set(view::at_bottom(
+            f64::from(log.scroll_top()),
+            f64::from(log.client_height()),
+            f64::from(log.scroll_height()),
+        ));
+    });
+    output.add_event_listener_with_callback("scroll", on_scroll.as_ref().unchecked_ref())?;
+    on_scroll.forget();
+    let log = output.clone();
+    let on_resize = Closure::<dyn FnMut()>::new(move || {
+        if follow.get() {
+            log.set_scroll_top(log.scroll_height());
+        }
+    });
+    web_sys::ResizeObserver::new(on_resize.as_ref().unchecked_ref())?.observe(&output);
+    on_resize.forget();
+
     let state = ui.clone();
     let on_pick = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
         let Some(target) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
