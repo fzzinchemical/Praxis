@@ -1989,6 +1989,8 @@ mod tests {
                 "permission allow_once,allow_always,reject_once,reject_always",
                 "tool_call_update completed",
                 "agent_message_chunk",
+                // The fallback summary: the recorded reply ends without text after its tool call.
+                "agent_message_chunk",
                 "EndTurn",
             ]
         );

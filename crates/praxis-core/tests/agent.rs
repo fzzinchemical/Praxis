@@ -1209,8 +1209,9 @@ fn system_prompt_covers_the_contract_within_budget() {
     for point in ["assumptions", "unsure", "disagree", "small", "verified"] {
         assert!(prompt.contains(point), "missing {point:?}: {prompt}");
     }
-    // About 150 tokens at the §7 estimate of chars / 3.5; growth has to argue for itself.
-    assert!(prompt.len() <= 520, "{} chars", prompt.len());
+    // About 200 tokens at the §7 estimate of chars / 3.5; growth has to argue for itself.
+    // Raised from 520 for the reporting rules (plan, choice, summary), a requirement change.
+    assert!(prompt.len() <= 760, "{} chars", prompt.len());
 }
 
 #[tokio::test(flavor = "multi_thread")]
