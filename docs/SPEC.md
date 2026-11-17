@@ -248,7 +248,7 @@ flowchart TD
     exists -->|"No"| missing(["ProviderError: model not found"])
     exists -->|"Yes"| loaded{{"Loaded instance with<br/>enough context?"}}
     loaded -->|"Yes"| ready(["Use that instance"])
-    loaded -->|"No"| auto{{"auto_load = true?"}}
+    loaded -->|"No"| auto{{"auto_load = true, and for a subagent the model is in [models]?"}}
     auto -->|"Yes"| load["POST /api/v1/models/load<br/>with context_length"]
     auto -->|"No"| ask{{"Notice: ask the user"}}
     ask -->|"Approved"| load
@@ -261,7 +261,7 @@ flowchart TD
     class missing,stop bad
 ```
 
-`agent.auto_load` defaults to `true`, so a missing model loads without asking. Set `auto_load = false` to be asked first. The provider never prompts. `LoadPolicy::Allowed` means `auto_load = true` or approval already given. `LoadPolicy::AskFirst` fails with `ProviderError::LoadNeedsConsent` instead of loading, so the front end can ask and retry with `Allowed`, or stop and show the error's explanation. A load adds an instance and leaves existing ones in place. If a load applies less context than requested, that is an error.
+`agent.auto_load` defaults to `true`, so a missing model loads without asking. Set `auto_load = false` to be asked first. For a subagent, auto-load covers only the LM Studio models named in `[models]` (`Config::auto_loadable_models`); any other model is asked for, so a model the agent picks can't evict the GPU. The provider never prompts. `LoadPolicy::Allowed` means the model is auto-loadable or approval already given. `LoadPolicy::AskFirst` fails with `ProviderError::LoadNeedsConsent` instead of loading, so the front end can ask and retry with `Allowed`, or stop and show the error's explanation. A load adds an instance and leaves existing ones in place. If a load applies less context than requested, that is an error.
 
 ### 5.3 Tool-call recovery
 

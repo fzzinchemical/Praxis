@@ -269,6 +269,20 @@ impl Config {
         })
     }
 
+    /// LM Studio models a subagent may load without asking: the targets of `[models]` aliases,
+    /// and none at all unless `agent.auto_load` is on. Any other model needs approval (SPEC §5.2).
+    pub fn auto_loadable_models(&self) -> Vec<String> {
+        if !self.agent.auto_load {
+            return Vec::new();
+        }
+        self.models
+            .values()
+            .filter_map(|alias| with_backend(&alias.model))
+            .filter(|m| m.backend == Backend::LmStudio)
+            .map(|m| m.model)
+            .collect()
+    }
+
     /// [`Self::resolve_model`], but a reference to a backend the user hasn't enabled is an
     /// error, never a switch to another backend (SPEC §10, invariant 12).
     pub fn resolve_enabled_model(&self, reference: &str) -> Result<ModelRef, ConfigError> {

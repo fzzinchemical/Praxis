@@ -245,8 +245,8 @@ pub struct Agent {
     subagents: SubagentStops,
     /// `Agent` calls approved this round, run together once the round's other calls are done.
     deferred_agents: Vec<(ToolCallId, Value)>,
-    /// Whether a subagent's model may be loaded without asking (`agent.auto_load`, SPEC §5.2).
-    auto_load: bool,
+    /// LM Studio models a subagent may load without asking (`Config::auto_loadable_models`, SPEC §5.2).
+    auto_load: Vec<String>,
 }
 
 /// The stop token of each subagent running under an `Agent` call. The ACP server keeps a clone,
@@ -356,13 +356,14 @@ impl Agent {
             swaps: Arc::default(),
             subagents: SubagentStops::default(),
             deferred_agents: Vec::new(),
-            auto_load: false,
+            auto_load: Vec::new(),
         }
     }
 
-    /// Lets a subagent's model load without asking, as `agent.auto_load` does for the session.
-    pub fn with_auto_load(mut self, auto_load: bool) -> Self {
-        self.auto_load = auto_load;
+    /// Lets a subagent load these models without asking. Any other model asks, as it does with
+    /// `agent.auto_load` off.
+    pub fn with_auto_load(mut self, models: Vec<String>) -> Self {
+        self.auto_load = models;
         self
     }
 
@@ -621,7 +622,7 @@ impl Agent {
         })
     }
 
-    /// Finds a loaded instance for a subagent's model, loading it only when `auto_load` allows.
+    /// Finds a loaded instance for a subagent's model, loading it only when `auto_load` lists it.
     /// Otherwise an unloaded model is an error the model can see, since this turn can't ask.
     // shortcut: the Anthropic client is missing until T8.3, so such agents fail here.
     // shortcut: parallel subagents on the same unloaded model may each load it; serialise loads if LM Studio mishandles that.
@@ -632,7 +633,7 @@ impl Agent {
                 model.model
             ));
         }
-        let policy = if self.auto_load {
+        let policy = if self.auto_load.contains(&model.model) {
             LoadPolicy::Allowed
         } else {
             LoadPolicy::AskFirst

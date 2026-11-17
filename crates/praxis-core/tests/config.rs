@@ -429,6 +429,25 @@ fn a_bare_name_means_lm_studio_even_with_a_publisher_slash() {
 }
 
 #[test]
+fn auto_load_covers_only_lm_studio_models_named_in_the_models_table() {
+    let models = "[models.sonnet]\nmodel = \"anthropic/claude-sonnet-5-5\"\n[models.local]\nmodel = \"lmstudio/google/gemma-4-12b-qat\"\n";
+    let Loaded { config, .. } = load(Sources {
+        user: Some(file(models)),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert_eq!(config.auto_loadable_models(), ["google/gemma-4-12b-qat"]);
+
+    let off = format!("{models}[agent]\nauto_load = false\n");
+    let Loaded { config, .. } = load(Sources {
+        user: Some(file(&off)),
+        ..Sources::default()
+    })
+    .unwrap();
+    assert!(config.auto_loadable_models().is_empty());
+}
+
+#[test]
 fn aliases_resolve_through_the_models_table() {
     let config = "[models.sonnet]\nmodel = \"anthropic/claude-sonnet-5-5\"\n[models.local]\nmodel = \"lmstudio/google/gemma-4-12b-qat\"\n";
     assert_eq!(

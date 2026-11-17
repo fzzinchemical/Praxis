@@ -257,7 +257,7 @@ base_url = "http://localhost:1234"
 context = 32768               # context size to load models with
 
 [agent]
-auto_load = true              # load the model without asking (default)
+auto_load = true              # load without asking (default); subagents only for models in [models]
 
 [permissions]
 mode = "ask"                  # read-only | ask | auto-edit | full-access (user config only)

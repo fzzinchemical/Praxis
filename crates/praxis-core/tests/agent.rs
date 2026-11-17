@@ -679,7 +679,7 @@ async fn an_agent_call_loads_an_unloaded_model_when_auto_load_allows_it() {
         h.agent
             .take()
             .unwrap()
-            .with_auto_load(true)
+            .with_auto_load(vec!["worker".into()])
             .with_agents(vec![unpinned_scout()]),
     );
 
@@ -692,6 +692,63 @@ async fn an_agent_call_loads_an_unloaded_model_when_auto_load_allows_it() {
         .map(|r| serde_json::from_slice::<Value>(&r.body).unwrap()["model"].clone())
         .collect();
     assert_eq!(chats, ["m", "worker-1", "m"]);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_agent_call_does_not_auto_load_a_model_missing_from_the_models_table() {
+    let script = vec![
+        tool_reply(&[(
+            "p1",
+            "Agent",
+            json!({"subagent_type": "kit:scout", "prompt": "find it", "model": "worker"}),
+        )]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::new(script, 50).await;
+    Mock::given(matchers::method("GET"))
+        .and(matchers::path("/api/v1/models"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [{
+            "key": "worker",
+            "loaded_instances": []
+        }]})))
+        .mount(&h.server)
+        .await;
+    Mock::given(matchers::method("POST"))
+        .and(matchers::path("/api/v1/models/load"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "instance_id": "worker-1",
+            "load_config": {"context_length": 100_000}
+        })))
+        .mount(&h.server)
+        .await;
+    // Only `other` is listed, so `worker` must ask instead of loading.
+    h.agent = Some(
+        h.agent
+            .take()
+            .unwrap()
+            .with_auto_load(vec!["other".into()])
+            .with_agents(vec![unpinned_scout()]),
+    );
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    let loads = requests
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/models/load")
+        .count();
+    assert_eq!(loads, 0, "the model must not be loaded");
+    let last_chat: Value = requests
+        .iter()
+        .rev()
+        .find(|r| r.url.path() == "/v1/chat/completions")
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .unwrap();
+    let result = last_chat["messages"].to_string();
+    assert!(
+        result.contains("Agent model `worker` isn't ready"),
+        "{result}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
