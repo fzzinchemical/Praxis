@@ -1829,3 +1829,36 @@ async fn a_small_text_model_is_offered_and_told_about_the_agent_tool() {
     );
     fs::remove_dir_all(&workspace).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fallback_summary_stays_in_history_for_the_next_turn() {
+    // The second turn's request must carry the summary shown to the user, as an assistant message.
+    let script = vec![
+        tool_reply(&[(
+            "w",
+            "Write",
+            json!({"file_path": "out.txt", "content": "x"}),
+        )]),
+        tool_reply(&[("b", "Bash", json!({"command": "true"}))]),
+        text_reply(""),
+        text_reply("next"),
+    ];
+    let mut h = Harness::in_workspace(new_workspace(), script, 50).await;
+    let allow = |_: &str| Some(PermissionReply::AllowOnce);
+
+    let first = h.turn("go", CancellationToken::new(), allow).await;
+    let shown = first
+        .iter()
+        .find_map(|e| e.strip_prefix("text:"))
+        .expect("the fallback summary is shown")
+        .to_owned();
+    h.turn("again", CancellationToken::new(), allow).await;
+
+    let messages = h.request_messages(3).await;
+    assert!(
+        messages
+            .iter()
+            .any(|m| m["role"] == "assistant" && m["content"] == shown.as_str()),
+        "summary {shown:?} missing from {messages:?}"
+    );
+}

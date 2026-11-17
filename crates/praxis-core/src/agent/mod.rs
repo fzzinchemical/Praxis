@@ -247,6 +247,8 @@ pub struct Agent {
     deferred_agents: Vec<(ToolCallId, Value)>,
     /// LM Studio models a subagent may load without asking (`Config::auto_loadable_models`, SPEC §5.2).
     auto_load: Vec<String>,
+    /// History index of the last turn's fallback summary, so a subagent's report skips it.
+    fallback_at: Option<usize>,
 }
 
 /// The stop token of each subagent running under an `Agent` call. The ACP server keeps a clone,
@@ -357,6 +359,7 @@ impl Agent {
             subagents: SubagentStops::default(),
             deferred_agents: Vec::new(),
             auto_load: Vec::new(),
+            fallback_at: None,
         }
     }
 
@@ -569,13 +572,19 @@ impl Agent {
             let cancel = stop.clone();
             let run = async move {
                 child.run_turn(prompt, &tx, cancel).await;
-                // Skips an empty last reply, such as one answering T13.7's check note.
-                let reply = child.history.iter().rev().find_map(|m| match m {
-                    Message::Assistant {
-                        content: Some(c), ..
-                    } if !c.is_empty() => Some(c.clone()),
-                    _ => None,
-                });
+                // Skips an empty last reply, such as one answering T13.7's check note, and the
+                // harness's fallback summary, so the report keeps the model's own words.
+                let reply = child
+                    .history
+                    .iter()
+                    .enumerate()
+                    .rev()
+                    .find_map(|(i, m)| match m {
+                        Message::Assistant {
+                            content: Some(c), ..
+                        } if !c.is_empty() && child.fallback_at != Some(i) => Some(c.clone()),
+                        _ => None,
+                    });
                 (reply, child.history)
             };
             // The parent's front end sees the subagent's text, tool calls and permission prompts,
@@ -885,6 +894,7 @@ impl Agent {
         cancel: CancellationToken,
     ) {
         self.turns += 1;
+        self.fallback_at = None;
         self.tools.begin_turn(self.turns);
         let content = match self.note_changed_facts() {
             Some(note) => format!("{note}\n\n{prompt}"),
@@ -926,6 +936,11 @@ impl Agent {
         if reason == StopReason::EndTurn
             && let Some(summary) = summary::fallback_summary(&self.history[start..])
         {
+            self.fallback_at = Some(self.history.len());
+            self.record(Message::Assistant {
+                content: Some(summary.clone()),
+                tool_calls: Vec::new(),
+            });
             turn.emit(AgentEvent::TextDelta(summary)).await;
         }
         turn.emit(AgentEvent::TurnEnded(reason)).await;
