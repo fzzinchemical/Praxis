@@ -1527,7 +1527,13 @@ mod tests {
             .filter(|u| u["toolCallId"] == "c0")
             .filter_map(|u| u["content"][0]["content"]["text"].as_str())
             .collect();
-        assert_eq!(agent_text.last(), Some(&"found it\n"), "{updates:?}");
+        // The Agent call's result is the harness report (T14.10), so its last text ends with the reply.
+        assert!(
+            agent_text
+                .last()
+                .is_some_and(|t| t.starts_with("status: done") && t.ends_with("notes: found it")),
+            "{updates:?}"
+        );
         assert!(
             !updates
                 .iter()

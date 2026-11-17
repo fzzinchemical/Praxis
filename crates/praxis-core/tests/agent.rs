@@ -287,7 +287,10 @@ async fn a_delegated_agent_runs_with_its_own_history_and_tools_and_returns_a_sum
     assert_eq!(tools, ["Read"]);
     let parent = h.request_messages(3).await;
     assert_eq!(parent.len(), 4);
-    assert_eq!(parent[3]["content"], "found it in a.rs");
+    assert_eq!(
+        parent[3]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: found it in a.rs"
+    );
 }
 
 /// Answers two subagents by their prompts, delaying each, and records when each request arrives.
@@ -379,9 +382,15 @@ async fn two_agent_calls_in_one_response_run_in_parallel_and_keep_their_order() 
         .collect();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0]["tool_call_id"], "p1");
-    assert_eq!(results[0]["content"], "find alpha done");
+    assert_eq!(
+        results[0]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: find alpha done"
+    );
     assert_eq!(results[1]["tool_call_id"], "p2");
-    assert_eq!(results[1]["content"], "find beta done");
+    assert_eq!(
+        results[1]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: find beta done"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -510,8 +519,9 @@ async fn stopping_one_subagent_ends_it_and_the_parent_turn_still_ends() {
         })
         .await;
 
+    // A cancelled subagent is a failed report, so its Agent call ends as an error (T14.10).
     assert!(
-        events.contains(&"finished:p1".to_owned()),
+        events.contains(&"error:p1".to_owned()),
         "the Agent call completes: {events:?}"
     );
     assert_eq!(events.last().map(String::as_str), Some("ended:EndTurn"));
@@ -524,9 +534,9 @@ async fn stopping_one_subagent_ends_it_and_the_parent_turn_still_ends() {
     assert!(!h.workspace.join("x").exists());
     let parent = h.request_messages(2).await;
     assert!(
-        parent
-            .iter()
-            .any(|m| m["content"] == "The user stopped this subagent."),
+        parent.iter().any(|m| m["content"]
+            .as_str()
+            .is_some_and(|c| c.starts_with("status: failed") && c.contains("Cancelled"))),
         "{parent:?}"
     );
     assert!(
@@ -586,7 +596,10 @@ async fn a_delegated_agent_with_a_model_runs_on_it_and_the_parent_keeps_its_own(
     // Index 1 is the model list; the parent resumes at index 3 with the subagent's summary.
     let parent = h.request_messages(3).await;
     assert_eq!(parent.len(), 4);
-    assert_eq!(parent[3]["content"], "found it in a.rs");
+    assert_eq!(
+        parent[3]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: found it in a.rs"
+    );
 }
 
 /// A plugin agent with no `model:`, so the model comes from the `Agent` call alone.
@@ -1396,7 +1409,10 @@ async fn the_general_agent_runs_fresh_without_the_agent_tool_and_returns_its_rep
     assert!(tools.contains(&"Read"), "{tools:?}");
     assert!(!tools.contains(&"Agent"), "{tools:?}");
     let parent = h.request_messages(2).await;
-    assert_eq!(parent.last().unwrap()["content"], "found it");
+    assert_eq!(
+        parent.last().unwrap()["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: found it"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1502,8 +1518,14 @@ async fn an_orchestrator_delegates_two_steps_and_keeps_only_the_reports() {
     let parent = h.request_messages(6).await;
     let contents: Vec<&Value> = parent.iter().map(|m| &m["content"]).collect();
     assert_eq!(parent.len(), 6, "{contents:?}");
-    assert_eq!(parent[3]["content"], "report one");
-    assert_eq!(parent[5]["content"], "report two");
+    assert_eq!(
+        parent[3]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: report one"
+    );
+    assert_eq!(
+        parent[5]["content"],
+        "status: done\nchanged_files: none\nchecks_run: none\nnotes: report two"
+    );
     assert!(
         !contents
             .iter()

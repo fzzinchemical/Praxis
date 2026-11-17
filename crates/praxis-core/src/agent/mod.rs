@@ -2,10 +2,12 @@
 
 mod compact;
 mod loop_detection;
+mod report;
 mod runaway;
 mod summary;
 
 use self::loop_detection::LoopDetector;
+use self::report::{Report, ToolLog};
 use self::runaway::RunawayDetector;
 pub mod profile;
 pub mod recovery;
@@ -168,6 +170,9 @@ pub fn system_prompt() -> String {
 const DELEGATION_HINT: &str = "\n\nWhen a task splits into self-contained parts, hand each part to a \
      subagent with the Agent tool instead of doing them all yourself. Independent parts go in \
      separate Agent calls in one response, so they run in parallel.";
+
+/// Added to a subagent's prompt. Its parent reads only the report, so a question must come as BLOCKED (T14.10).
+const SUBAGENT_HINT: &str = "\n\nYour parent agent reads only your final report. If you need a decision from it, end with \"BLOCKED: <question>\".";
 
 /// Added to the prefix only in a git workspace (T14.9).
 const GIT_HINT: &str = "\n\nThis workspace is a git repository. Orient with `git status` and `git ls-files`, and review your own changes with `git diff`.";
@@ -502,7 +507,10 @@ impl Agent {
                 );
             };
             let mut config = self.config.clone();
-            config.system_prompt = format!("{}\n\n{}", config.system_prompt, def.skill.body);
+            config.system_prompt = format!(
+                "{}{SUBAGENT_HINT}\n\n{}",
+                config.system_prompt, def.skill.body
+            );
             config.max_turn_requests = def.max_turns.unwrap_or(config.max_turn_requests);
             config.profile.warning = None;
             // The call's `model` picks a model for this run; otherwise the agent's own `model:`.
@@ -571,9 +579,11 @@ impl Agent {
             };
             // The parent's front end sees the subagent's text, tool calls and permission prompts,
             // tagged with the `Agent` call. Its token counts are tagged too, so they never read as the parent's.
+            let mut log = ToolLog::default();
             let forward = async {
                 let mut ended = StopReason::EndTurn;
                 while let Some(event) = rx.recv().await {
+                    log.observe(&event);
                     match event {
                         AgentEvent::TurnEnded(reason) => ended = reason,
                         AgentEvent::Notice { .. } => turn.emit(event).await,
@@ -596,32 +606,17 @@ impl Agent {
             };
             let ((reply, history), ended) = tokio::join!(run, forward);
             self.subagents.finish(&parent);
+            let report = Report::new(&ended, reply.as_deref(), &log);
+            let output = ToolOutput {
+                content: report.render(),
+                is_error: report.status == report::Status::Failed,
+                structured: Value::Null,
+            };
             // Returned for the caller to log: the parent's own history must not gain the child's messages.
             let logged = history
                 .into_iter()
                 .filter(|m| matches!(m, Message::Assistant { .. } | Message::Tool { .. }))
                 .collect();
-            let output = match (reply, ended) {
-                (Some(reply), StopReason::EndTurn) => ToolOutput {
-                    content: reply,
-                    is_error: false,
-                    structured: Value::Null,
-                },
-                // Stopped alone: a normal result, so the parent turn carries on.
-                (_, StopReason::Cancelled)
-                    if stop.is_cancelled() && !turn.cancel.is_cancelled() =>
-                {
-                    ToolOutput {
-                        content: "The user stopped this subagent.".to_owned(),
-                        is_error: false,
-                        structured: Value::Null,
-                    }
-                }
-                (reply, ended) => ToolOutput::error(format!(
-                    "The agent stopped early ({ended:?}). Its last reply: {}",
-                    reply.as_deref().unwrap_or("(none)")
-                )),
-            };
             (output, logged)
         })
     }
