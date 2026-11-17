@@ -240,6 +240,8 @@ pub struct Agent {
     subagents: SubagentStops,
     /// `Agent` calls approved this round, run together once the round's other calls are done.
     deferred_agents: Vec<(ToolCallId, Value)>,
+    /// Whether a subagent's model may be loaded without asking (`agent.auto_load`, SPEC §5.2).
+    auto_load: bool,
 }
 
 /// The stop token of each subagent running under an `Agent` call. The ACP server keeps a clone,
@@ -349,7 +351,14 @@ impl Agent {
             swaps: Arc::default(),
             subagents: SubagentStops::default(),
             deferred_agents: Vec::new(),
+            auto_load: false,
         }
+    }
+
+    /// Lets a subagent's model load without asking, as `agent.auto_load` does for the session.
+    pub fn with_auto_load(mut self, auto_load: bool) -> Self {
+        self.auto_load = auto_load;
+        self
     }
 
     /// Runs `hooks` (from approved plugins only) before each tool call; others are ignored.
@@ -496,7 +505,14 @@ impl Agent {
             config.system_prompt = format!("{}\n\n{}", config.system_prompt, def.skill.body);
             config.max_turn_requests = def.max_turns.unwrap_or(config.max_turn_requests);
             config.profile.warning = None;
-            if let Some(model) = &def.model {
+            // The call's `model` picks a model for this run; otherwise the agent's own `model:`.
+            let requested = Some(field("model"))
+                .filter(|key| !key.is_empty())
+                .map(|key| ModelRef {
+                    backend: Backend::LmStudio,
+                    model: key.to_owned(),
+                });
+            if let Some(model) = requested.as_ref().or(def.model.as_ref()) {
                 match self.load_for(model).await {
                     Ok(ready) => {
                         config.model = ready.instance_id;
@@ -610,9 +626,10 @@ impl Agent {
         })
     }
 
-    /// Finds a loaded instance for a subagent's model. Loading needs consent, which this
-    /// turn can't ask for, so an unloaded model is an error the model can see.
+    /// Finds a loaded instance for a subagent's model, loading it only when `auto_load` allows.
+    /// Otherwise an unloaded model is an error the model can see, since this turn can't ask.
     // shortcut: the Anthropic client is missing until T8.3, so such agents fail here.
+    // shortcut: parallel subagents on the same unloaded model may each load it; serialise loads if LM Studio mishandles that.
     async fn load_for(&self, model: &ModelRef) -> Result<ReadyModel, String> {
         if model.backend == Backend::Anthropic {
             return Err(format!(
@@ -620,8 +637,13 @@ impl Agent {
                 model.model
             ));
         }
+        let policy = if self.auto_load {
+            LoadPolicy::Allowed
+        } else {
+            LoadPolicy::AskFirst
+        };
         self.provider
-            .ensure_ready(&model.model, self.config.context_size, LoadPolicy::AskFirst)
+            .ensure_ready(&model.model, self.config.context_size, policy)
             .await
             .map_err(|e| format!("Agent model `{}` isn't ready: {e}", model.model))
     }
@@ -1849,7 +1871,8 @@ fn agent_schema(agents: &[AgentDef]) -> ToolSchema {
             "type": "object",
             "properties": {
                 "subagent_type": {"type": "string", "description": "The agent's name from the list."},
-                "prompt": {"type": "string", "description": "One task, fully described; the agent sees nothing else."}
+                "prompt": {"type": "string", "description": "One task, fully described; the agent sees nothing else."},
+                "model": {"type": "string", "description": "Optional LM Studio model key to run this task on, such as a smaller model; omit to use the agent's own model."}
             },
             "required": ["subagent_type", "prompt"],
             "additionalProperties": false
