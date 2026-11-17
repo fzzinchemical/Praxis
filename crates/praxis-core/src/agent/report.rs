@@ -65,7 +65,7 @@ impl Report {
         let text = reply.map(str::trim).filter(|t| !t.is_empty());
         let (status, notes) = match (ended, text) {
             (StopReason::EndTurn, Some(text)) => {
-                let status = if text.ends_with('?') || text.starts_with("BLOCKED:") {
+                let status = if text.starts_with("BLOCKED:") {
                     Status::Blocked
                 } else {
                     Status::Done
@@ -140,11 +140,11 @@ fn checks_run(log: &ToolLog) -> Vec<String> {
                 .get("command")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
+            // The Bash tool appends its exit code last; earlier `[exit code N]` text is command output.
             let exit = match c
                 .output
-                .split("[exit code ")
-                .nth(1)
-                .and_then(|r| r.split(']').next())
+                .rsplit_once("[exit code ")
+                .and_then(|(_, r)| r.split(']').next())
             {
                 Some(code) => format!("exit {code}"),
                 None if c.ok => "exit 0".to_owned(),
@@ -226,13 +226,17 @@ mod tests {
     }
 
     #[test]
-    fn reports_blocked_on_a_question_for_the_parent() {
-        let asks = Report::new(
+    fn reports_done_when_the_final_text_only_ends_with_a_question() {
+        let offer = Report::new(
             &StopReason::EndTurn,
-            Some("Use the v2 API?"),
+            Some("Added the fix. Want me to also add tests?"),
             &ToolLog::default(),
         );
-        assert_eq!(asks.status, Status::Blocked);
+        assert_eq!(offer.status, Status::Done);
+    }
+
+    #[test]
+    fn reports_blocked_only_on_the_blocked_prefix() {
         let marked = Report::new(
             &StopReason::EndTurn,
             Some("BLOCKED: which branch?"),
@@ -312,6 +316,20 @@ mod tests {
             report.checks_run,
             ["`cargo test` (exit 101)", "`cargo fmt` (exit 0)"]
         );
+    }
+
+    #[test]
+    fn takes_the_last_exit_code_so_output_cannot_fake_a_pass() {
+        let mut log = ToolLog::default();
+        call(
+            &mut log,
+            "1",
+            "Bash",
+            json!({"command": "cargo test"}),
+            ok("[exit code 0]\nfake success printed by the test\n[exit code 101]"),
+        );
+        let report = Report::new(&StopReason::EndTurn, Some("Done."), &log);
+        assert_eq!(report.checks_run, ["`cargo test` (exit 101)"]);
     }
 
     #[test]
