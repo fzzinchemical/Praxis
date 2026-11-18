@@ -1127,13 +1127,13 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
     })
 }
 
-/// A subagent's event as the parent client sees it. Its text replaces the `Agent` call's content,
-/// so a plain client still sees one flat list; its tool calls keep their own ids and name the
-/// `Agent` call in `_meta`, which the panel nests them under.
+/// A subagent's event as the parent client sees it. Its text goes on the `Agent` call's content one
+/// line at a time, flagged `praxis.append` so the panel adds it; the final reply replaces it. Its
+/// tool calls keep their own ids and name the `Agent` call in `_meta`, which the panel nests them under.
 fn subagent_update(
     parent: &ToolCallId,
     event: AgentEvent,
-    texts: &mut HashMap<ToolCallId, String>,
+    pending: &mut HashMap<ToolCallId, String>,
 ) -> Option<v1::SessionUpdate> {
     // The subagent's prompt size goes on its Agent call only, never the parent's context gauge.
     if let AgentEvent::Usage {
@@ -1150,17 +1150,19 @@ fn subagent_update(
         return Some(v1::SessionUpdate::ToolCallUpdate(update.meta(meta)));
     }
     if let AgentEvent::TextDelta(delta) = event {
-        let text = texts.entry(parent.clone()).or_default();
+        let text = pending.entry(parent.clone()).or_default();
         text.push_str(&delta);
         // The final reply arrives as the Agent call's result, so a last partial line is not lost.
         if !delta.contains('\n') {
             return None;
         }
-        let fields = v1::ToolCallUpdateFields::new().content(vec![text.as_str().into()]);
-        return Some(v1::SessionUpdate::ToolCallUpdate(v1::ToolCallUpdate::new(
-            parent.clone(),
-            fields,
-        )));
+        // Only the lines since the last send, so traffic grows linearly with the reply.
+        let fresh = std::mem::take(text);
+        let fields = v1::ToolCallUpdateFields::new().content(vec![fresh.as_str().into()]);
+        let meta = json!({"praxis": {"append": true}}).as_object().cloned();
+        return Some(v1::SessionUpdate::ToolCallUpdate(
+            v1::ToolCallUpdate::new(parent.clone(), fields).meta(meta),
+        ));
     }
     // Merged, not replaced: the call may already carry its own `praxis` fields, such as `filePath`.
     let with_parent = |meta: Option<serde_json::Map<String, Value>>| {
@@ -1673,6 +1675,26 @@ mod tests {
             })
             .count();
         assert!(sent <= 2, "{sent} text updates for six deltas: {updates:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_subagents_text_updates_carry_only_their_new_lines() {
+        let dir = temp_dir("subagent_fresh");
+        let chunks: Vec<Value> = ["one\n", "two\n"]
+            .iter()
+            .map(|d| json!({"choices": [{"delta": {"content": d}, "finish_reason": null}]}))
+            .chain([json!({"choices": [{"delta": {}, "finish_reason": "stop"}]})])
+            .collect();
+        let (updates, _) = subagent_turn_replying(&dir, sse(&chunks)).await;
+
+        let texts: Vec<&str> = updates
+            .iter()
+            .filter(|u| {
+                u["toolCallId"] == "c0" && u["content"].is_array() && u["status"] != "completed"
+            })
+            .filter_map(|u| u["content"][0]["content"]["text"].as_str())
+            .collect();
+        assert_eq!(texts, ["one\n", "two\n"], "{updates:?}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

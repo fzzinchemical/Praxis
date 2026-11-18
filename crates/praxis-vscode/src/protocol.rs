@@ -853,6 +853,10 @@ fn update(update: &Value) -> Reaction {
             if let Some(kind) = meta["subagent"].as_str() {
                 message["subagent"] = kind.into();
             }
+            // Set on a subagent's text update: its output is the new lines to add, not the whole text.
+            if meta["append"].as_bool() == Some(true) {
+                message["append"] = true.into();
+            }
             // Set by the agent on a Write or Edit call only: the file it changes.
             if let Some(file) = meta["filePath"].as_str() {
                 message["file"] = file.into();
@@ -1428,6 +1432,23 @@ mod tests {
             client.on_line(&line.to_string()).show,
             Some(
                 json!({"type": "subagent_usage", "id": "c0", "promptTokens": 12000, "contextLength": 32000})
+            )
+        );
+    }
+
+    #[test]
+    fn a_subagents_text_update_reaches_the_panel_as_lines_to_append() {
+        let (mut client, _) = Client::start("/work");
+        let text = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c0",
+            "content": [{"type": "content", "content": {"type": "text", "text": "one\n"}}],
+            "_meta": {"praxis": {"append": true}}});
+        let line = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s1", "update": text}});
+        assert_eq!(
+            client.on_line(&line.to_string()).show,
+            Some(
+                json!({"type": "tool", "id": "c0", "title": null, "status": null,
+                "output": "one\n", "append": true})
             )
         );
     }

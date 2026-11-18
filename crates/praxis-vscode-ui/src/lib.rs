@@ -63,7 +63,17 @@ struct Tool {
 /// so the stylesheet can colour it; the lines themselves stay plain text.
 fn set_output(document: &Document, pre: &Element, output: &str, diff: bool) -> Result<(), JsValue> {
     pre.set_text_content(Some(""));
-    // Each line is a block span, so the stylesheet lays lines out without newline text nodes.
+    append_lines(document, pre, output, diff)
+}
+
+/// Adds lines to a call's output. Each line is a block span, so the stylesheet lays lines out
+/// without newline text nodes.
+fn append_lines(
+    document: &Document,
+    pre: &Element,
+    output: &str,
+    diff: bool,
+) -> Result<(), JsValue> {
     for line in output.split('\n') {
         let span = document.create_element("span")?;
         let kind = if diff { view::diff_kind(line) } else { "" };
@@ -1370,7 +1380,13 @@ impl Ui {
         }
         show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
-            set_output(&self.document, &tool.pre, output, tool.file.is_some())?;
+            if message["append"].as_bool() == Some(true) {
+                // A subagent's lines arrive whole, each ending in a newline that the span split must not add to.
+                let lines = output.strip_suffix('\n').unwrap_or(output);
+                append_lines(&self.document, &tool.pre, lines, false)?;
+            } else {
+                set_output(&self.document, &tool.pre, output, tool.file.is_some())?;
+            }
         }
         let parent = tool.parent.clone();
         match parent {
