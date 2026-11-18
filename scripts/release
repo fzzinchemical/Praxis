@@ -34,4 +34,4 @@ pre=()
 [[ "$tag" == *-* ]] && pre=(--prerelease)
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag "$tag"
 git push origin "$tag"
-gh release create "$tag" target/dist/* --verify-tag --notes "$notes" "${pre[@]}"
+gh release create "$tag" target/dist/* --verify-tag --title "${tag/-/ }" --notes "$notes" "${pre[@]}"
