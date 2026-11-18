@@ -1034,10 +1034,18 @@ async fn every_request_in_a_session_extends_the_previous_one_byte_for_byte() {
         .collect();
     for pair in bodies.windows(2) {
         let (old, new) = (&pair[0], &pair[1]);
-        let old_messages = old["messages"].as_array().unwrap();
-        let new_messages = new["messages"].as_array().unwrap();
-        assert!(new_messages.len() > old_messages.len());
-        assert_eq!(&new_messages[..old_messages.len()], &old_messages[..]);
+        assert!(
+            new["messages"].as_array().unwrap().len() > old["messages"].as_array().unwrap().len()
+        );
+        // Serialized text, not parsed values: the server caches by bytes. Dropping the closing
+        // `]` leaves the old array open, so the new one must continue it.
+        let old_text = old["messages"].to_string();
+        let new_text = new["messages"].to_string();
+        let open = &old_text[..old_text.len() - 1];
+        assert!(
+            new_text.starts_with(open),
+            "messages were rewritten:\n{old_text}\n---\n{new_text}"
+        );
         assert_eq!(old["tools"].to_string(), new["tools"].to_string());
     }
 }
