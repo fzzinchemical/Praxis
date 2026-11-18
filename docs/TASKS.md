@@ -1255,6 +1255,7 @@ flowchart LR
     T14_5 --> T14_8
     T14_10["T14.10<br/>Orchestrator-worker research"]
     T14_11["T14.11<br/>500 context overflow"]
+    T14_12["T14.12<br/>VS Code keybindings"]
     T14_8 --> T14_9
     T14_8 --> T14_10
 ```
@@ -1318,3 +1319,8 @@ flowchart LR
   - **Needs:** none.
   - **Done when:** a fixture with this body (status 500, `{"error":{"code":500,"message":"Context size has been exceeded.","type":"server_error"}}`, exact shape to be recorded) is classified as `ContextOverflow` with unknown sizes, is not retried, and leads to compaction on the next request (fake-server test). Also find out why the budget let the prompt grow past the context: the history at that point, `max_tokens` from T13.3 and the loaded `context_length`. Add a gotcha: LM Studio reports overflow in at least two forms.
   - **Result:** the HTTP 500 wording now classifies as `ContextOverflow` with unknown sizes (`classify_error`), sent once with no retry; the compaction-on-next-request leg is not tested for this wording (the existing compaction test uses the SSE form). The root cause of the over-long prompt was not investigated.
+
+- [ ] **T14.12 VS Code keybindings** · *Could* · later (owner, 2026-11-18)
+  - **Why:** `editors/vscode/package.json` contributes no `keybindings`, so Open Chat and New Session need the command palette, and the only way to cancel a turn is the webview's Stop button.
+  - **Needs:** none.
+  - **Done when:** `package.json` binds `praxis.open` and `praxis.newSession`, and adds a `praxis.cancel` command (with a `when` clause for an active chat) that cancels the running turn like Stop. The chosen keys clash with no default VS Code binding. "Open Chat" keeps opening a new chat each time (owner, 2026-11-18). A manual check is added to `editors/vscode/CHECKLIST.md`.
