@@ -251,6 +251,81 @@ async fn models_lists_keys_and_effective_context() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn models_marks_an_unloaded_model_with_its_maximum_context() {
+    let server = server(None, Replies(vec![])).await;
+
+    let output = run(&server, &workspace(), &["models"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(
+        out(&output).contains("not loaded, up to 99999"),
+        "{}",
+        out(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_without_an_id_needs_an_earlier_session_in_this_workspace() {
+    let dir = workspace();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+
+    let output = run(&server, &dir, &["--model", "m", "say hi", "--resume"]).await;
+
+    assert_eq!(output.status.code(), Some(1), "{}", out(&output));
+    assert!(
+        err(&output).contains("no earlier session in this workspace"),
+        "{}",
+        err(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn resume_with_an_unknown_id_names_the_session_it_could_not_resume() {
+    let dir = workspace();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+
+    let output = run(
+        &server,
+        &dir,
+        &["--model", "m", "say hi", "--resume", "nope"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1), "{}", out(&output));
+    assert!(
+        err(&output).contains("can't resume session `nope`"),
+        "{}",
+        err(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sandbox_switched_off_in_config_says_so_before_the_run() {
+    let dir = workspace();
+    let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
+
+    let output = run(
+        &server,
+        &dir,
+        &[
+            "--config-override",
+            "sandbox.mode=off",
+            "--model",
+            "m",
+            "say hi",
+        ],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(
+        err(&output).contains("The sandbox is off"),
+        "{}",
+        err(&output)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn usage_and_config_errors_exit_2() {
     let dir = workspace();
     for args in [
@@ -850,6 +925,82 @@ async fn profile_needs_a_model_and_a_valid_field() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn mcp_list_prints_each_servers_name_and_status() {
+    let dir = workspace();
+    fs::create_dir_all(dir.join("xdg/praxis")).unwrap();
+    fs::write(
+        dir.join("xdg/praxis/config.toml"),
+        "[mcp.docs]\ncommand = \"/nonexistent/mcp-docs\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dir.join(".mcp.json"),
+        r#"{"mcpServers": {"fs": {"command": "/nonexistent/mcp-fs"}}}"#,
+    )
+    .unwrap();
+
+    let output = command("http://127.0.0.1:9", &dir, &["mcp", "list"])
+        .output()
+        .await
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let listing = out(&output);
+    assert!(listing.contains("docs (configured)"), "{listing}");
+    assert!(listing.contains("fs (needs_approval)"), "{listing}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_set_writes_under_home_config_when_xdg_config_home_is_unset() {
+    let dir = workspace();
+    let output = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["profile", "set", "temperature", "0.3", "--model", "m"],
+    )
+    .env_remove("XDG_CONFIG_HOME")
+    .output()
+    .await
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    assert!(dir.join(".config/praxis/config.toml").is_file());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn profile_set_refuses_without_a_model_or_a_home_to_write_to() {
+    let dir = workspace();
+    let no_model = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["profile", "set", "temperature", "0.3"],
+    )
+    .output()
+    .await
+    .unwrap();
+    assert_eq!(no_model.status.code(), Some(1), "{}", err(&no_model));
+    assert!(
+        err(&no_model).contains("pass a model"),
+        "{}",
+        err(&no_model)
+    );
+    assert!(!dir.join("xdg/praxis/config.toml").exists());
+
+    let no_home = command(
+        "http://127.0.0.1:9",
+        &dir,
+        &["profile", "set", "temperature", "0.3", "--model", "m"],
+    )
+    .env_remove("HOME")
+    .env_remove("XDG_CONFIG_HOME")
+    .output()
+    .await
+    .unwrap();
+    assert_eq!(no_home.status.code(), Some(2), "{}", err(&no_home));
+    assert!(err(&no_home).contains("needs HOME"), "{}", err(&no_home));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn profile_show_json_lists_each_field_with_its_value_and_source() {
     let dir = workspace();
     let server = server(Some(4096), Replies(vec![])).await;
@@ -944,6 +1095,65 @@ async fn mcp_list_json_names_each_configured_source_without_connecting() {
     assert_eq!(fs_row["source"], "project", "{listing}");
     assert_eq!(fs_row["status"], "needs_approval", "{listing}");
     assert_eq!(fs_row["command"], "/nonexistent/mcp-fs", "{listing}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn acp_rejects_praxis_requests_missing_their_params_and_keeps_serving() {
+    let server = server(Some(32768), Replies(vec![text_reply("hello")])).await;
+    let dir = workspace();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    assert!(
+        ask(
+            &mut stdin,
+            &mut lines,
+            0,
+            "initialize",
+            json!({"protocolVersion": 1})
+        )
+        .await["result"]
+            .is_object()
+    );
+    let session = ask(
+        &mut stdin,
+        &mut lines,
+        1,
+        "session/new",
+        json!({"cwd": dir, "mcpServers": []}),
+    )
+    .await;
+    let session_id = session["result"]["sessionId"].clone();
+
+    // A notification gets no answer, so it only has to leave the connection usable.
+    let stop = json!({"jsonrpc": "2.0", "method": "_praxis/cancel_subagent",
+        "params": {"sessionId": session_id, "toolCallId": "none"}});
+    stdin
+        .write_all(format!("{stop}\n").as_bytes())
+        .await
+        .unwrap();
+
+    for (id, method) in [
+        (2, "_praxis/revert_file"),
+        (3, "_praxis/set_mcp_enabled"),
+        (4, "_praxis/rewind"),
+        (5, "_praxis/approve_mcp_server"),
+    ] {
+        let answer = ask(&mut stdin, &mut lines, id, method, json!({})).await;
+        assert_eq!(answer["error"]["code"], -32602, "{method}: {answer}");
+    }
+
+    let prompt = json!({"sessionId": session_id, "prompt": [{"type": "text", "text": "hi"}]});
+    assert_eq!(
+        ask(&mut stdin, &mut lines, 6, "session/prompt", prompt).await["result"]["stopReason"],
+        "end_turn"
+    );
+    // Closing stdin lets the agent exit on its own, so its coverage profile is written.
+    drop(stdin);
+    assert!(child.wait().await.unwrap().success());
 }
 
 #[tokio::test(flavor = "multi_thread")]

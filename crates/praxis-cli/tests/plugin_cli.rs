@@ -176,6 +176,19 @@ fn remove_keeps_data_unless_its_removal_is_confirmed_separately() {
 }
 
 #[test]
+fn remove_without_data_says_only_that_the_plugin_was_removed() {
+    let home = temp("remove-plain");
+    let src = home.join("src");
+    fs::create_dir_all(&src).unwrap();
+    source_repo(&src);
+    stdout(&praxis(&home, &["install", src.to_str().unwrap()]));
+
+    let removed = stdout(&praxis(&home, &["remove", "demo"]));
+    assert!(removed.contains("Removed demo."), "{removed}");
+    assert!(!removed.contains("Kept"), "{removed}");
+}
+
+#[test]
 fn list_json_reports_state_and_what_each_plugin_can_run() {
     let home = temp("list-json");
     let src = home.join("src");
