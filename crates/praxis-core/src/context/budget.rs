@@ -7,6 +7,9 @@ use std::path::PathBuf;
 const DEFAULT_CHARS_PER_TOKEN: f64 = 3.5;
 /// Half the error goes per sample: fast to settle, and one odd prompt can't swing it.
 const CALIBRATION_WEIGHT: f64 = 0.5;
+// shortcut: a fixed plausible range for text and code; widen it if a tokenizer really falls outside.
+const MIN_CHARS_PER_TOKEN: f64 = 1.0;
+const MAX_CHARS_PER_TOKEN: f64 = 8.0;
 /// A judgement, not a measurement: estimates were within 2% in T0.3.
 const SHRUNK_PROMPT_PERCENT: u64 = 50;
 
@@ -85,9 +88,13 @@ impl Budget {
                 estimated,
             };
         }
-        if reported > 0 {
+        // An empty prompt would measure zero chars per token and halve the ratio on every turn.
+        if reported > 0 && sent_chars > 0 {
             let measured = sent_chars as f64 / f64::from(reported);
             self.chars_per_token += (measured - self.chars_per_token) * CALIBRATION_WEIGHT;
+            self.chars_per_token = self
+                .chars_per_token
+                .clamp(MIN_CHARS_PER_TOKEN, MAX_CHARS_PER_TOKEN);
         }
         Observation::Calibrated
     }
@@ -178,6 +185,22 @@ mod tests {
 
     fn no_spool(_: &str) -> io::Result<PathBuf> {
         panic!("nothing should be spooled")
+    }
+
+    #[test]
+    fn an_empty_prompt_teaches_nothing_and_the_ratio_stays_plausible() {
+        let mut budget = Budget::new(32_768);
+        let before = budget.estimate(1000);
+        budget.observe(0, 50);
+        assert_eq!(budget.estimate(1000), before);
+        for _ in 0..10 {
+            budget.observe(1_000_000, 1);
+        }
+        assert!(budget.chars_for(1) <= 8, "{}", budget.chars_for(1));
+        for _ in 0..10 {
+            budget.observe(1, 1_000_000);
+        }
+        assert!(budget.chars_for(1) >= 1, "{}", budget.chars_for(1));
     }
 
     /// `(prompt chars, reported prompt tokens)` from a T0.3 recording, untouched.

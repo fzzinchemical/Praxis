@@ -6,7 +6,7 @@ use crate::tools::confine;
 use globset::{GlobBuilder, GlobMatcher};
 use std::env::consts::OS;
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,6 +14,8 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const MAX_BRANCH_CHARS: usize = 100;
 /// An import may be this many files deep below the memory file that names it (SPEC §12).
 const MAX_IMPORT_HOPS: usize = 4;
+// shortcut: one byte budget per memory file, not a token budget; raise it if real imports need more.
+const MAX_IMPORTED_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionFacts {
@@ -274,13 +276,24 @@ fn read_text(base: &Path, path: &Path) -> Option<String> {
         }
     };
     let origin = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    let expanded = expand(base, &origin, &text, &mut vec![origin.clone()]);
+    let mut state = Expansion {
+        chain: vec![origin.clone()],
+        bytes: 0,
+    };
+    let expanded = expand(base, &origin, &text, &mut state);
     (!expanded.trim().is_empty()).then_some(expanded)
 }
 
-/// Drops block-level HTML comments and expands `@path` imports, skipping fenced blocks. `chain`
-/// holds the files being expanded, outermost first, for the hop limit and cycle check.
-fn expand(base: &Path, file: &Path, text: &str, chain: &mut Vec<PathBuf>) -> String {
+/// The imports of one memory file. `chain` holds the files being expanded, outermost first, for
+/// the hop limit and cycle check. `bytes` counts what imports have added, so a shared import
+/// expanded from many places can't multiply into a huge prompt.
+struct Expansion {
+    chain: Vec<PathBuf>,
+    bytes: usize,
+}
+
+/// Drops block-level HTML comments and expands `@path` imports, skipping fenced blocks.
+fn expand(base: &Path, file: &Path, text: &str, state: &mut Expansion) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut in_fence = false;
     let mut in_comment = false;
@@ -306,13 +319,13 @@ fn expand(base: &Path, file: &Path, text: &str, chain: &mut Vec<PathBuf>) -> Str
                 continue;
             }
         }
-        out.push(expand_line(base, file, rest, chain));
+        out.push(expand_line(base, file, rest, state));
     }
     out.join("\n")
 }
 
 /// `line` with each `@path` that is a whole word outside code replaced by the imported text.
-fn expand_line(base: &Path, file: &Path, line: &str, chain: &mut Vec<PathBuf>) -> String {
+fn expand_line(base: &Path, file: &Path, line: &str, state: &mut Expansion) -> String {
     let mut out = String::new();
     let mut in_code = false;
     let mut after_space = true;
@@ -323,7 +336,7 @@ fn expand_line(base: &Path, file: &Path, line: &str, chain: &mut Vec<PathBuf>) -
         }
         if c == '@' && !in_code && after_space {
             let len = rest.find(char::is_whitespace).unwrap_or(rest.len());
-            if let Some(text) = import(base, file, &rest[1..len], chain) {
+            if let Some(text) = import(base, file, &rest[1..len], state) {
                 out.push_str(&text);
                 rest = &rest[len..];
                 after_space = false;
@@ -339,12 +352,19 @@ fn expand_line(base: &Path, file: &Path, line: &str, chain: &mut Vec<PathBuf>) -
 
 /// The expanded text of `@target`, or `None` when it must stay literal: a cycle (silently), or a
 /// path that is too deep, missing or outside `base` (with a warning).
-fn import(base: &Path, file: &Path, target: &str, chain: &mut Vec<PathBuf>) -> Option<String> {
+fn import(base: &Path, file: &Path, target: &str, state: &mut Expansion) -> Option<String> {
     if target.is_empty() {
         return None;
     }
-    if chain.len() > MAX_IMPORT_HOPS {
+    if state.chain.len() > MAX_IMPORT_HOPS {
         tracing::warn!(import = target, "memory import skipped, too many hops");
+        return None;
+    }
+    if state.bytes >= MAX_IMPORTED_BYTES {
+        tracing::warn!(
+            import = target,
+            "memory import skipped, too many imported bytes"
+        );
         return None;
     }
     let raw = match target.strip_prefix("~/") {
@@ -359,7 +379,7 @@ fn import(base: &Path, file: &Path, target: &str, chain: &mut Vec<PathBuf>) -> O
             return None;
         }
     };
-    if chain.contains(&resolved) {
+    if state.chain.contains(&resolved) {
         return None;
     }
     let text = match fs::read_to_string(&resolved) {
@@ -370,9 +390,10 @@ fn import(base: &Path, file: &Path, target: &str, chain: &mut Vec<PathBuf>) -> O
             return None;
         }
     };
-    chain.push(resolved.clone());
-    let expanded = expand(&base, &resolved, &text, chain);
-    chain.pop();
+    state.chain.push(resolved.clone());
+    let expanded = expand(&base, &resolved, &text, state);
+    state.chain.pop();
+    state.bytes += expanded.len();
     Some(expanded)
 }
 
@@ -444,20 +465,31 @@ fn split_outside_braces(list: &str) -> Vec<&str> {
 /// anything but a plain ref name counts as no branch.
 fn read_branch(workspace: &Path) -> Option<String> {
     let git = workspace.join(".git");
-    let head = match fs::read_to_string(&git) {
+    let head = match read_capped(&git) {
         // In a linked worktree `.git` is a file naming the real directory.
-        Ok(pointer) => workspace
+        Some(pointer) => workspace
             .join(pointer.strip_prefix("gitdir:")?.trim())
             .join("HEAD"),
-        Err(_) => git.join("HEAD"),
+        None => git.join("HEAD"),
     };
-    let head = fs::read_to_string(head).ok()?;
+    let head = read_capped(&head)?;
     let branch = head.trim().strip_prefix("ref: refs/heads/")?;
     let plain = branch.len() <= MAX_BRANCH_CHARS
         && branch
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "/._-".contains(c));
     plain.then(|| branch.to_owned())
+}
+
+/// A git metadata file, read up to 64 KiB because the repository is untrusted. `None` if unreadable.
+fn read_capped(path: &Path) -> Option<String> {
+    let mut text = String::new();
+    fs::File::open(path)
+        .ok()?
+        .take(64 * 1024)
+        .read_to_string(&mut text)
+        .ok()?;
+    Some(text)
 }
 
 /// `YYYY-MM-DD` in UTC, using Howard Hinnant's `civil_from_days`.
@@ -709,6 +741,47 @@ mod tests {
         let memory = load_memory(&root, &root, None, None, &mut |_, _| false);
         assert_eq!(memory, ["L0 L1 L2 L3 L4 @h5.md"]);
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn a_fan_of_shared_imports_stays_within_the_expansion_budget() {
+        let root = scratch("fan").join("w");
+        const FANOUT: usize = 10;
+        let links = |level: usize| {
+            (0..FANOUT)
+                .map(|i| format!("@f{level}_{i}.md"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        write(&root.join("CLAUDE.md"), &links(1));
+        for level in 1..=4 {
+            for i in 0..FANOUT {
+                let body = if level == 4 {
+                    "x".repeat(1000)
+                } else {
+                    links(level + 1)
+                };
+                write(&root.join(format!("f{level}_{i}.md")), &body);
+            }
+        }
+        let memory = load_memory(&root, &root, None, None, &mut |_, _| false);
+        let total: usize = memory.iter().map(String::len).sum();
+        assert!(total < 1024 * 1024, "{total} bytes");
+        fs::remove_dir_all(root.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn a_huge_git_head_is_read_only_up_to_a_cap() {
+        let dir = scratch("huge-head");
+        let git = dir.join(".git");
+        fs::create_dir_all(&git).unwrap();
+        // Valid UTF-8 up to the cap, invalid after it: only a capped read gets the branch.
+        let mut bytes = b"ref: refs/heads/main\n".to_vec();
+        bytes.extend(std::iter::repeat_n(b' ', 64 * 1024));
+        bytes.extend(std::iter::repeat_n(0xFF, 1024 * 1024));
+        fs::write(git.join("HEAD"), bytes).unwrap();
+        assert_eq!(read_branch(&dir).as_deref(), Some("main"));
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
