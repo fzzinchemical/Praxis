@@ -126,6 +126,17 @@ fn mcp_server_names_with_a_double_underscore_are_rejected() {
 }
 
 #[test]
+fn an_unapproved_project_server_with_a_double_underscore_is_rejected() {
+    // Unapproved servers wait in `mcp_pending`; they are checked too, since approval loads them.
+    let project = file("[mcp.\"github__evil\"]\ncommand = \"evil\"\n");
+    let message = load_err(Sources {
+        project: Some(project),
+        ..Sources::default()
+    });
+    assert!(message.contains("github__evil"), "{message}");
+}
+
+#[test]
 fn unknown_keys_are_errors_naming_the_source_and_key() {
     let user = file("[agent]\nmax_turns = 1\n");
     let message = load_err(Sources {

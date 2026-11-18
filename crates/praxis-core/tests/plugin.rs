@@ -320,6 +320,35 @@ fn plugin_mcp_servers_expand_variables_and_take_the_plugin_name() {
 }
 
 #[test]
+fn a_plugin_server_name_with_a_double_underscore_is_rejected() {
+    // `mcp__plugin_kit_a__b__tool` would let `mcp__plugin_kit_a` rules match it.
+    let root = plugin_dir("mcp-separator");
+    let data = plugin_dir("mcp-separator-data");
+    manifest(&root, r#"{"name": "kit"}"#);
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"a__b": {"command": "srv"}}}"#,
+    );
+    let plugin = load(&root).unwrap();
+    let err = plugin.mcp_servers(Path::new("/proj"), &data).unwrap_err();
+    assert!(err.contains("`a__b`"), "{err}");
+}
+
+#[test]
+fn a_plugin_name_with_a_double_underscore_is_rejected() {
+    let root = plugin_dir("mcp-plugin-separator");
+    let data = plugin_dir("mcp-plugin-separator-data");
+    manifest(&root, r#"{"name": "a__b"}"#);
+    write(
+        &root.join(".mcp.json"),
+        r#"{"mcpServers": {"db": {"command": "srv"}}}"#,
+    );
+    let plugin = load(&root).unwrap();
+    let err = plugin.mcp_servers(Path::new("/proj"), &data).unwrap_err();
+    assert!(err.contains("`db`"), "{err}");
+}
+
+#[test]
 fn unknown_user_config_keys_are_rejected() {
     let root = plugin_dir("mcp-unknown");
     manifest(&root, r#"{"name": "kit", "userConfig": {"level": {}}}"#);
