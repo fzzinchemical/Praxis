@@ -398,6 +398,28 @@ fn commands_update(
     ))
 }
 
+/// Sends the panel host RAM and VRAM every two seconds, until the connection closes. The first
+/// send waits one period, so the reply to `initialize` is never followed by a surprise line.
+fn spawn_resources(cx: ConnectionTo<Client>) {
+    tokio::spawn(async move {
+        let start = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut tick = tokio::time::interval_at(start, std::time::Duration::from_secs(2));
+        loop {
+            tick.tick().await;
+            let note = match UntypedMessage::new(
+                "_praxis/resources",
+                praxis_core::resources::snapshot(),
+            ) {
+                Ok(note) => note,
+                Err(_) => break,
+            };
+            if cx.send_notification(note).is_err() {
+                break;
+            }
+        }
+    });
+}
+
 pub fn agent(
     new_agent: NewAgent,
     sessions_dir: PathBuf,
@@ -441,7 +463,8 @@ pub fn agent(
     AcpAgent
         .v1()
         .on_receive_request(
-            async move |req: v1::InitializeRequest, responder, _cx| {
+            async move |req: v1::InitializeRequest, responder, cx| {
+                spawn_resources(cx.clone());
                 let reads = req.client_capabilities.fs.read_text_file;
                 for_init.client_reads.store(reads, Ordering::Relaxed);
                 let diagnostics = req

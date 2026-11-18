@@ -124,6 +124,64 @@ pub fn changed_files<'a>(
     files
 }
 
+/// A tool call's status in the words its card shows.
+pub fn tool_state(status: &str) -> &'static str {
+    match status {
+        "pending" | "in_progress" => "running",
+        "completed" => "ok",
+        "failed" => "error",
+        _ => "unknown",
+    }
+}
+
+/// How long a finished call took: milliseconds under a second, else seconds to one decimal.
+pub fn duration_label(ms: u64) -> String {
+    if ms < 1000 {
+        format!("{ms} ms")
+    } else {
+        format!("{:.1} s", ms as f64 / 1000.0)
+    }
+}
+
+/// A tool card's one-line summary: title, key argument, status, and duration once it has finished.
+pub fn tool_line(title: &str, arg: Option<&str>, status: &str, duration_ms: Option<u64>) -> String {
+    let mut parts = vec![title.to_owned()];
+    parts.extend(arg.filter(|arg| !arg.is_empty()).map(str::to_owned));
+    parts.push(tool_state(status).to_owned());
+    parts.extend(duration_ms.map(duration_label));
+    parts.join(" \u{b7} ")
+}
+
+/// The class of a diff line in a Write or Edit result: `add`, `del`, `hunk`, or empty for context.
+pub fn diff_kind(line: &str) -> &'static str {
+    if line.starts_with("@@") {
+        "hunk"
+    } else if line.starts_with('+') && !line.starts_with("+++") {
+        "add"
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        "del"
+    } else {
+        ""
+    }
+}
+
+/// The resource line: host RAM and GPU VRAM as used / total GiB. A pool the host did not report
+/// (a null in the snapshot) reads "n/a" rather than an error.
+pub fn resources_line(ram: &serde_json::Value, vram: &serde_json::Value) -> String {
+    format!("RAM {} \u{b7} VRAM {}", pool_label(ram), pool_label(vram))
+}
+
+fn pool_label(pool: &serde_json::Value) -> String {
+    match (pool["used"].as_u64(), pool["total"].as_u64()) {
+        (Some(used), Some(total)) => format!("{} / {} GiB", gib(used), gib(total)),
+        _ => "n/a".to_owned(),
+    }
+}
+
+fn gib(bytes: u64) -> String {
+    format!("{:.1}", bytes as f64 / 1_073_741_824.0)
+}
+
 /// Token counts in thousands, rounded to the nearest; counts under 1000 stay exact.
 fn tokens_k(count: u32) -> String {
     if count < 1000 {
@@ -140,6 +198,37 @@ pub enum Phase {
     ProcessingPrompt,
     Generating,
     RunningTool,
+    /// A permission prompt is waiting for the user's answer.
+    Waiting,
+}
+
+/// What the status bar says the agent is doing; `running` names the tool in flight, if any.
+pub fn state_label(phase: &Phase, running: Option<&str>) -> String {
+    match phase {
+        Phase::Idle => "Idle".to_owned(),
+        Phase::ProcessingPrompt => "Thinking".to_owned(),
+        Phase::Generating => "Writing".to_owned(),
+        Phase::RunningTool => {
+            running.map_or_else(|| "Running a tool".to_owned(), |r| format!("Running {r}"))
+        }
+        Phase::Waiting => "Waiting for your answer".to_owned(),
+    }
+}
+
+/// The status bar's line: model, state, and the context in use once the agent has reported it.
+/// The caller sets it as text, since the model name and tool names come from the agent.
+pub fn status_line(model: &str, state: &str, usage: Option<(u32, u32)>) -> String {
+    let model = if model.is_empty() { "no model" } else { model };
+    match usage {
+        Some((used, size)) if size > 0 => {
+            format!(
+                "{model} \u{b7} {state} \u{b7} {} / {} tokens",
+                tokens_k(used),
+                tokens_k(size)
+            )
+        }
+        _ => format!("{model} \u{b7} {state}"),
+    }
 }
 
 /// The playful words the busy indicator cycles through, one every two seconds: Pac-Man words mixed
@@ -451,6 +540,76 @@ mod tests {
     fn reduced_motion_keeps_one_static_word() {
         assert_eq!(working_word(0, 0, true), "Working");
         assert_eq!(working_word(7, 3, true), "Working");
+    }
+
+    #[test]
+    fn a_tool_card_names_its_argument_status_and_duration() {
+        assert_eq!(
+            tool_line("Edit", Some("/w/a.rs"), "in_progress", None),
+            "Edit \u{b7} /w/a.rs \u{b7} running"
+        );
+        assert_eq!(
+            tool_line("Bash", Some("cargo test"), "completed", Some(1_250)),
+            "Bash \u{b7} cargo test \u{b7} ok \u{b7} 1.2 s"
+        );
+        assert_eq!(
+            tool_line("Glob", None, "failed", Some(40)),
+            "Glob \u{b7} error \u{b7} 40 ms"
+        );
+        assert_eq!(
+            tool_line("Read", Some(""), "weird", None),
+            "Read \u{b7} unknown"
+        );
+    }
+
+    #[test]
+    fn the_status_line_shows_model_state_and_context_when_known() {
+        assert_eq!(
+            status_line("qwen3.5-4b", &state_label(&Phase::Idle, None), None),
+            "qwen3.5-4b \u{b7} Idle"
+        );
+        assert_eq!(
+            status_line(
+                "qwen3.5-4b",
+                &state_label(&Phase::RunningTool, Some("Edit /w/a.rs")),
+                Some((12_400, 32_000))
+            ),
+            "qwen3.5-4b \u{b7} Running Edit /w/a.rs \u{b7} 12k / 32k tokens"
+        );
+        assert_eq!(
+            status_line("", "Waiting for your answer", Some((5, 0))),
+            "no model \u{b7} Waiting for your answer"
+        );
+        assert_eq!(
+            state_label(&Phase::Waiting, None),
+            "Waiting for your answer"
+        );
+        assert_eq!(state_label(&Phase::RunningTool, None), "Running a tool");
+    }
+
+    #[test]
+    fn the_resource_line_shows_used_and_total_gib_and_n_a_when_unknown() {
+        let gib = 1_073_741_824_u64;
+        let ram = serde_json::json!({"used": 12 * gib + gib / 2, "total": 62 * gib});
+        let vram = serde_json::json!({"used": 6 * gib, "total": 16 * gib});
+        assert_eq!(
+            resources_line(&ram, &vram),
+            "RAM 12.5 / 62.0 GiB \u{b7} VRAM 6.0 / 16.0 GiB"
+        );
+        assert_eq!(
+            resources_line(&ram, &serde_json::Value::Null),
+            "RAM 12.5 / 62.0 GiB \u{b7} VRAM n/a"
+        );
+    }
+
+    #[test]
+    fn diff_lines_are_added_removed_or_hunk_headers_but_not_file_headers() {
+        assert_eq!(diff_kind("@@ -1,2 +1,2 @@"), "hunk");
+        assert_eq!(diff_kind("+let x = 1;"), "add");
+        assert_eq!(diff_kind("-let x = 0;"), "del");
+        assert_eq!(diff_kind("+++ b/a.rs"), "");
+        assert_eq!(diff_kind("--- a/a.rs"), "");
+        assert_eq!(diff_kind(" unchanged"), "");
     }
 
     #[test]

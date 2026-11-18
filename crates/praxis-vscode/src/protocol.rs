@@ -598,6 +598,8 @@ impl Client {
         }
         match (message["method"].as_str(), &message["id"]) {
             (Some("session/update"), _) => update(&message["params"]["update"]),
+            (Some("_praxis/resources"), _) => show(json!({"type": "resources",
+                "ram": message["params"]["ram"], "vram": message["params"]["vram"]})),
             (Some("session/request_permission"), id) => self.permission(id, &message["params"]),
             (Some("fs/read_text_file"), id) => self.read_file(id, &message["params"], false),
             (Some("_praxis/diagnostics"), id) => self.read_file(id, &message["params"], true),
@@ -855,6 +857,9 @@ fn update(update: &Value) -> Reaction {
             if let Some(file) = meta["filePath"].as_str() {
                 message["file"] = file.into();
             }
+            if let Some(arg) = key_argument(&update["rawInput"]) {
+                message["arg"] = arg.into();
+            }
             let mut reaction = show(message);
             if let (Some(file), Some(before)) = (meta["filePath"].as_str(), meta["before"].as_str())
             {
@@ -884,6 +889,13 @@ fn update(update: &Value) -> Reaction {
         }
         _ => Reaction::default(),
     }
+}
+
+/// The argument a tool card shows beside its title: the file, command or pattern the call works on.
+fn key_argument(input: &Value) -> Option<&str> {
+    ["file_path", "path", "command", "pattern", "url"]
+        .iter()
+        .find_map(|key| input[*key].as_str())
 }
 
 fn show(message: Value) -> Reaction {
@@ -1766,6 +1778,19 @@ mod tests {
         };
         assert_eq!(prompt_blocks("hi", &outside, "/work").len(), 1);
         assert_eq!(severity(9), "hint");
+    }
+
+    #[test]
+    fn a_tool_card_carries_its_key_argument_when_the_agent_sent_input() {
+        let call = json!({"sessionUpdate": "tool_call", "toolCallId": "c1", "title": "Edit a.rs",
+            "status": "in_progress", "rawInput": {"file_path": "/w/a.rs", "old_string": "x"}});
+        assert_eq!(update(&call).show.unwrap()["arg"], "/w/a.rs");
+        let shell = json!({"sessionUpdate": "tool_call", "toolCallId": "c2", "title": "Bash",
+            "status": "pending", "rawInput": {"command": "cargo test"}});
+        assert_eq!(update(&shell).show.unwrap()["arg"], "cargo test");
+        let bare = json!({"sessionUpdate": "tool_call", "toolCallId": "c3", "title": "Glob",
+            "status": "pending", "rawInput": {"limit": 3}});
+        assert!(update(&bare).show.unwrap().get("arg").is_none());
     }
 
     #[test]

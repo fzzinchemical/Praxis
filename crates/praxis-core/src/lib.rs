@@ -9,6 +9,7 @@ pub mod mcp;
 pub mod permissions;
 pub mod plugin;
 pub mod provider;
+pub mod resources;
 pub mod sandbox;
 pub mod session;
 pub mod summary;

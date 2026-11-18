@@ -6,6 +6,11 @@ body {
   margin: 0;
 }
 
+/* One accent for the whole panel: the same theme colour the busy indicator's pac-man uses. */
+:root {
+  --praxis-accent: var(--vscode-textLink-foreground, #3794ff);
+}
+
 body {
   background: var(--vscode-editor-background);
   color: var(--vscode-foreground);
@@ -51,18 +56,27 @@ main {
   margin: 0;
 }
 
+/* Your prompts sit right in a bubble; the agent's replies sit left under an accent rule. */
 .user {
+  align-self: flex-end;
   background: var(--vscode-input-background);
   border: 1px solid var(--vscode-input-border, var(--vscode-panel-border));
-  border-radius: 6px;
+  border-radius: 10px 10px 2px 10px;
+  max-width: 85%;
   overflow-wrap: anywhere;
   padding: 8px 12px;
   white-space: pre-wrap;
 }
 
+/* The rewind button under a prompt belongs to that bubble, so it hugs the right edge too. */
+#output > button[data-turn] {
+  align-self: flex-end;
+}
+
 .message {
+  border-left: 2px solid var(--praxis-accent);
   overflow-wrap: anywhere;
-  padding: 0 4px;
+  padding: 2px 0 2px 12px;
 }
 
 .message a {
@@ -152,6 +166,29 @@ main {
 .tool pre {
   margin: 4px 0 0 14px;
   max-height: 240px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Lines are block spans (set_output); an empty one still takes a line's height. */
+.tool pre > span {
+  display: block;
+  min-height: 1lh;
+}
+
+/* Edit and Write output: added and removed lines take the theme's diff colours. */
+.tool .diff-add {
+  background: var(--vscode-diffEditor-insertedLineBackground, transparent);
+  color: var(--vscode-gitDecoration-addedResourceForeground, inherit);
+}
+
+.tool .diff-del {
+  background: var(--vscode-diffEditor-removedLineBackground, transparent);
+  color: var(--vscode-gitDecoration-deletedResourceForeground, inherit);
+}
+
+.tool .diff-hunk {
+  color: var(--vscode-descriptionForeground);
 }
 
 /* Permission request: an inline card with the first option as the primary action. */
@@ -167,6 +204,27 @@ main {
 .permission legend {
   font-weight: 600;
   padding: 0 4px;
+}
+
+/* Quiet lines above the composer: model and state, then host RAM and VRAM. */
+.status-bar,
+.resources {
+  color: var(--vscode-descriptionForeground);
+  font-size: 0.9em;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-bar {
+  border-top: 1px solid var(--vscode-panel-border);
+  margin: 8px 0 0;
+  padding-top: 4px;
+}
+
+.resources {
+  margin-bottom: 6px;
 }
 
 /* Composer: textarea and actions in one bordered box. */
@@ -423,7 +481,7 @@ body.dragging {
    Dot centres sit at 16, 34.7, 53.3 and 72px and vanish at 44%, 56.5%, 69% and 81.5% (0.3s = 12.5% apart), so
    pac-man's centre (left + 6px) moves one 18.7px gap per 12.5%, and it fades out just after the last dot. */
 .working-man {
-  --pac-ink: var(--vscode-textLink-foreground, #3794ff);
+  --pac-ink: var(--praxis-accent);
   /* Mouth: a wedge centred on 90deg (facing right), half-angle --mouth, opened and closed by working-chomp. */
   animation: working-eat 2.4s linear infinite, working-chomp 0.2s ease-in-out infinite alternate;
   background: conic-gradient(

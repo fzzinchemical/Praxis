@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use view::{Phase, subagent_summary};
+use view::{Phase, subagent_summary, tool_line};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{
@@ -45,6 +45,11 @@ struct Tool {
     usage: Option<(u32, u32)>,
     /// The file a `Write` or `Edit` call changes.
     file: Option<String>,
+    /// The call's key argument (its file or command), shown on the card.
+    arg: Option<String>,
+    /// When the call began and first finished, in ms since the epoch, for its duration.
+    started: f64,
+    finished: Option<f64>,
     /// The `Agent` call this one runs under, and the calls nested under this one in arrival order.
     parent: Option<String>,
     children: Vec<String>,
@@ -52,6 +57,23 @@ struct Tool {
     files: Option<Element>,
     /// The Stop button an `Agent` call shows while its subagent runs.
     stop: Option<Element>,
+}
+
+/// Sets a call's output as text, never HTML. For a Write or Edit call each diff line gets a class
+/// so the stylesheet can colour it; the lines themselves stay plain text.
+fn set_output(document: &Document, pre: &Element, output: &str, diff: bool) -> Result<(), JsValue> {
+    pre.set_text_content(Some(""));
+    // Each line is a block span, so the stylesheet lays lines out without newline text nodes.
+    for line in output.split('\n') {
+        let span = document.create_element("span")?;
+        let kind = if diff { view::diff_kind(line) } else { "" };
+        if !kind.is_empty() {
+            span.set_class_name(&format!("diff-{kind}"));
+        }
+        span.set_text_content(Some(line));
+        pre.append_child(&span)?;
+    }
+    Ok(())
 }
 
 /// Sets a block's summary as text, never HTML: titles and types come from the model.
@@ -64,7 +86,12 @@ fn show_summary(tool: &Tool) -> Result<(), JsValue> {
             &tool.status,
             tool.usage,
         ),
-        None => format!("{} ({})", tool.title, tool.status),
+        None => {
+            let duration = tool
+                .finished
+                .map(|end| ((end - tool.started).max(0.0)) as u64);
+            tool_line(&tool.title, tool.arg.as_deref(), &tool.status, duration)
+        }
     };
     tool.summary.set_text_content(Some(&line));
     tool.summary.set_attribute("data-title", &tool.title)?;
@@ -127,6 +154,9 @@ struct Ui {
     /// Whether the list is open (closed by Escape, reopened by typing) and its highlighted row.
     menu_open: bool,
     selected: usize,
+    /// The context the agent last reported (tokens used, window size), and the tool now running.
+    usage: Option<(u32, u32)>,
+    running: Option<String>,
 }
 
 fn parse_commands(message: &Value) -> Vec<view::Command> {
@@ -406,6 +436,8 @@ pub fn start() -> Result<(), JsValue> {
         selected: 0,
         turns: 0,
         subagents: 0,
+        usage: None,
+        running: None,
     }));
 
     let state = ui.clone();
@@ -1002,6 +1034,18 @@ impl Ui {
         self.sync_pickers()
     }
 
+    /// Redraws the status bar: model, what the agent is doing, and the context it has used.
+    fn render_status(&self) {
+        let Some(bar) = self.document.get_element_by_id("status-bar") else {
+            return;
+        };
+        let state = view::state_label(&self.phase, self.running.as_deref());
+        let line = view::status_line(&self.model.value(), &state, self.usage);
+        if bar.text_content().as_deref() != Some(line.as_str()) {
+            bar.set_text_content(Some(&line));
+        }
+    }
+
     fn update_working(&self) {
         let end = self.ended.unwrap_or_else(js_sys::Date::now);
         let elapsed = ((end - self.started) / 1000.0).max(0.0) as u64;
@@ -1124,9 +1168,20 @@ impl Ui {
                 }
                 self.render_queue()?;
             }
+            "resources" => {
+                let line = view::resources_line(&message["ram"], &message["vram"]);
+                if let Some(element) = self.document.get_element_by_id("resources") {
+                    element.set_text_content(Some(&line));
+                }
+            }
+            "usage" => {
+                let count = |key: &str| message[key].as_u64().and_then(|n| u32::try_from(n).ok());
+                self.usage = count("used").zip(count("size"));
+            }
             _ => return Ok(()),
         }
         self.update_working();
+        self.render_status();
         Ok(())
     }
 
@@ -1172,6 +1227,9 @@ impl Ui {
                 calls: 0,
                 usage: None,
                 file: None,
+                arg: message["arg"].as_str().map(str::to_owned),
+                started: js_sys::Date::now(),
+                finished: None,
                 parent: message["parent"].as_str().map(str::to_owned),
                 children: Vec::new(),
                 files: None,
@@ -1229,9 +1287,19 @@ impl Ui {
             tool.file = Some(file.to_owned());
         }
         status.clone_into(&mut tool.status);
+        self.running = match self.phase {
+            Phase::RunningTool => Some(match &tool.arg {
+                Some(arg) => format!("{} {arg}", tool.title),
+                None => tool.title.clone(),
+            }),
+            _ => None,
+        };
+        if tool.finished.is_none() && matches!(status, "completed" | "failed") {
+            tool.finished = Some(js_sys::Date::now());
+        }
         show_summary(tool)?;
         if let Some(output) = message["output"].as_str() {
-            tool.pre.set_text_content(Some(output));
+            set_output(&self.document, &tool.pre, output, tool.file.is_some())?;
         }
         let parent = tool.parent.clone();
         match parent {
@@ -1316,6 +1384,7 @@ impl Ui {
 
     fn permission(&mut self, message: &Value) -> Result<(), JsValue> {
         self.message = None;
+        self.phase = Phase::Waiting;
         let id = message["id"].to_string();
         let title = message["title"].as_str().unwrap_or("a tool");
         let prompt = self.append("fieldset", "permission", "")?;
