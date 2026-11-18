@@ -5,7 +5,7 @@
 Praxis runs an agent loop against models served by [LM Studio](https://lmstudio.ai) on your own machine. It reads and edits files, runs commands in a sandbox, talks to MCP servers, loads Claude Code-style plugins, skills and `AGENTS.md`/`CLAUDE.md` memory, and works from the terminal or inside VS Code.
 
 > [!NOTE]
-> **Beta (`v1.7.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
+> **Beta (`v2.0.0-beta`).** Linux x86_64 only. Expect rough edges and breaking changes. Upgrading from a build named `harness`: rename `~/.config/harness`, `~/.local/share/harness` and each project's `.harness` to `praxis` (`.praxis`), and `HARNESS_*` variables to `PRAXIS_*`.
 
 **Contents:** [What makes it different](#what-makes-it-different) · [Proof: tests and coverage](#proof-tests-coverage-and-evals) · [Why local models](#why-local-models-first) · [What it does](#what-it-does) · [Install](#install) · [Quick start](#quick-start) · [Configuration](#configuration) · [VS Code](#vs-code) · [Status](#status-and-limits) · [Development](#development) · [Docs](#further-reading)
 
@@ -292,6 +292,14 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 2.0.0-beta
+
+- Consecutive `Read`, `Grep` and `Glob` calls run concurrently; results keep their order.
+- Real VS Code smoke test (`cargo xtask vscode-smoke`), refreshed chat layout, tool cards and status bar; each Edit/Write diffs against its own before state.
+- Security: deny rules see through extra spaces and quotes, glob spellings of `.git` are hard-denied, `.git/hooks` and `.git/config` are read-only under bwrap, and plugin, MCP and hook input is validated.
+- Robustness: editor reads time out, SIGTERM exits cleanly in ACP and REPL mode, Glob caps at 10,000 matches, plugin installs never wait for a git password, and long sessions no longer grow spool files, diffs or subagent traffic without bound.
+- Breaking for custom ACP clients: subagent progress is sent as appended lines (`_meta.praxis.append`), not the whole text each time.
 
 ### New in 1.7.0-beta
 
