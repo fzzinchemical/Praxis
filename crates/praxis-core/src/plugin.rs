@@ -1032,6 +1032,8 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_INDEX_FILE")
+        // Without this, a private HTTPS URL blocks on a credential prompt that nobody can answer.
+        .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("git: {e}"))?;

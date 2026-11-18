@@ -165,10 +165,22 @@ pub fn grep(
     Ok(finish(lines, full))
 }
 
+/// Most paths a glob collects before it stops walking, so a huge tree cannot exhaust memory.
+const GLOB_MAX_MATCHES: usize = 10_000;
+
 pub fn glob(
     input: GlobInput,
     ctx: &ToolContext,
     cancel: &CancellationToken,
+) -> Result<ToolOutput, ToolError> {
+    glob_capped(input, ctx, cancel, GLOB_MAX_MATCHES)
+}
+
+fn glob_capped(
+    input: GlobInput,
+    ctx: &ToolContext,
+    cancel: &CancellationToken,
+    max_matches: usize,
 ) -> Result<ToolOutput, ToolError> {
     let root = search_root(input.path.as_deref(), ctx)?;
     let matcher = GlobBuilder::new(&input.pattern)
@@ -177,6 +189,8 @@ pub fn glob(
         .map_err(|e| ToolError::Refused(format!("Invalid pattern: {e}")))?
         .compile_matcher();
     let mut lines = Vec::new();
+    // shortcut: past the cap the walk stops, so the sort orders only the first matches found, not all of them; upgrade to a bounded top-N if the order matters on huge trees.
+    let mut walk_capped = false;
     for entry in walker(&root).build() {
         if cancel.is_cancelled() {
             return Err(ToolError::Cancelled);
@@ -187,13 +201,17 @@ pub fn glob(
             && matcher.is_match(path.strip_prefix(&root).unwrap_or(path))
         {
             lines.push(relative(path, ctx).to_string());
+            if lines.len() >= max_matches {
+                walk_capped = true;
+                break;
+            }
         }
     }
     lines.sort();
     let room = ctx.result_room();
     let mut kept = Vec::new();
     let mut used = 0;
-    let mut full = false;
+    let mut full = walk_capped;
     for line in lines {
         if !push_within(&mut kept, &mut used, line, room) {
             full = true;
@@ -217,6 +235,20 @@ mod tests {
             fs::write(dir.join(format!("f{n:03}.txt")), "needle here\n").unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn glob_stops_at_the_match_cap_and_reports_truncation() {
+        let dir = crowded_workspace("glob-cap");
+        let ctx = ToolContext::new(&dir).unwrap();
+        let input = GlobInput {
+            pattern: "*.txt".to_owned(),
+            path: None,
+        };
+        let out = glob_capped(input, &ctx, &CancellationToken::new(), 50).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(out.structured["truncated"], true);
+        assert_eq!(out.structured["numResults"], 50);
     }
 
     #[test]
