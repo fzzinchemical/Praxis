@@ -1041,6 +1041,14 @@ fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
                 .content(content);
             v1::SessionUpdate::ToolCallUpdate(v1::ToolCallUpdate::new(id, fields))
         }
+        // Carries the file after the call; the editor keeps it for the call's diff, not the status.
+        AgentEvent::ToolChanged { id, after } => {
+            let praxis = json!({"after": after});
+            let meta = serde_json::Map::from_iter([("praxis".to_owned(), praxis)]);
+            v1::SessionUpdate::ToolCallUpdate(
+                v1::ToolCallUpdate::new(id, v1::ToolCallUpdateFields::new()).meta(meta),
+            )
+        }
         AgentEvent::Usage {
             used_tokens,
             context_size,
@@ -1994,6 +2002,8 @@ mod tests {
                 "tool_call",
                 "permission allow_once,allow_always,reject_once,reject_always",
                 "tool_call_update completed",
+                // The file after the Write or Edit, which the editor keeps for its diff.
+                "tool_call_update",
                 "agent_message_chunk",
                 // The fallback summary: the recorded reply ends without text after its tool call.
                 "agent_message_chunk",
@@ -3044,6 +3054,16 @@ mod tests {
         assert_eq!(finished["sessionUpdate"], "tool_call_update");
         assert_eq!(finished["status"], "failed");
         assert_eq!(finished["content"][0]["content"]["text"], "boom");
+        let changed = json(AgentEvent::ToolChanged {
+            id: "c1".into(),
+            after: "new\n".into(),
+        });
+        assert_eq!(changed["sessionUpdate"], "tool_call_update");
+        assert_eq!(changed["_meta"]["praxis"]["after"], "new\n");
+        assert!(
+            changed.get("status").is_none(),
+            "the change leaves the status alone: {changed}"
+        );
         let usage = json(AgentEvent::Usage {
             prompt_tokens: 1,
             used_tokens: 5,

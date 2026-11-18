@@ -30,8 +30,12 @@ pub enum FromPanel {
     Model(String),
     /// The permission mode picker's choice: `read-only`, `ask` or `auto-edit`.
     PermissionMode(String),
-    /// A changed file the subagent panel asked to open; checked against the workspace before use.
-    OpenChange(String),
+    /// A changed file the panel asked to open, with the `Write` or `Edit` call that changed it when
+    /// the panel knows it. The path is checked against the workspace before use.
+    OpenChange {
+        path: String,
+        call: Option<String>,
+    },
     /// The tool call id of a running subagent the panel asked to stop.
     StopSubagent(String),
     /// The user turn the panel asked to rewind to ("Rewind to here"), as the agent numbers it.
@@ -66,7 +70,10 @@ impl FromPanel {
             }
             "model" => Some(Self::Model(value["key"].as_str()?.to_owned())),
             "mode" => Some(Self::PermissionMode(value["key"].as_str()?.to_owned())),
-            "open_change" => Some(Self::OpenChange(value["path"].as_str()?.to_owned())),
+            "open_change" => Some(Self::OpenChange {
+                path: value["path"].as_str()?.to_owned(),
+                call: value["call"].as_str().map(str::to_owned),
+            }),
             "stop_subagent" => Some(Self::StopSubagent(value["id"].as_str()?.to_owned())),
             "rewind" => Some(Self::Rewind(value["turn"].as_u64()?)),
             "revert_file" => Some(Self::RevertFile(value["path"].as_str()?.to_owned())),
@@ -228,6 +235,20 @@ fn string_array(items: &[Value]) -> Option<Vec<String>> {
         .collect()
 }
 
+/// One call's side of a file change: the content before it starts, then after it succeeds.
+#[derive(Debug, PartialEq)]
+pub enum Change {
+    Before {
+        id: String,
+        file: String,
+        before: String,
+    },
+    After {
+        id: String,
+        after: String,
+    },
+}
+
 /// What one line from `praxis acp` asks the extension to do.
 #[derive(Debug, Default, PartialEq)]
 pub struct Reaction {
@@ -245,8 +266,8 @@ pub struct Reaction {
     pub models: Option<Value>,
     /// The permission mode picker's state, sent after `show`.
     pub modes: Option<Value>,
-    /// A changed file and its content before the agent's call, kept by the panel for Open diff.
-    pub original: Option<(String, String)>,
+    /// One `Write` or `Edit` call's file content before and after it, kept by the panel for Open diff.
+    pub change: Option<Change>,
     /// The `_praxis/mcp_servers` answer, for the MCP Servers view.
     pub mcp: Option<Value>,
     /// Set when a session was created or loaded, so the MCP Servers view re-lists.
@@ -802,6 +823,16 @@ fn update(update: &Value) -> Reaction {
                 "promptTokens": usage["promptTokens"], "contextLength": usage["contextLength"]}))
         }
         Some("tool_call" | "tool_call_update") => {
+            // Sent once a Write or Edit succeeds, with no status or content: it only records the file.
+            if let Some(after) = update["_meta"]["praxis"]["after"].as_str() {
+                return Reaction {
+                    change: Some(Change::After {
+                        id: update["toolCallId"].as_str().unwrap_or_default().to_owned(),
+                        after: after.to_owned(),
+                    }),
+                    ..Reaction::default()
+                };
+            }
             let texts: Vec<&str> = update["content"]
                 .as_array()
                 .map(Vec::as_slice)
@@ -827,7 +858,11 @@ fn update(update: &Value) -> Reaction {
             let mut reaction = show(message);
             if let (Some(file), Some(before)) = (meta["filePath"].as_str(), meta["before"].as_str())
             {
-                reaction.original = Some((file.to_owned(), before.to_owned()));
+                reaction.change = Some(Change::Before {
+                    id: update["toolCallId"].as_str().unwrap_or_default().to_owned(),
+                    file: file.to_owned(),
+                    before: before.to_owned(),
+                });
             }
             reaction
         }
@@ -1057,12 +1092,37 @@ mod tests {
             "params": {"sessionId": "s1", "update": edit}});
         let reaction = client.on_line(&line.to_string());
         assert_eq!(
-            reaction.original,
-            Some(("/work/a.rs".to_owned(), "old\n".to_owned()))
+            reaction.change,
+            Some(Change::Before {
+                id: "c1".to_owned(),
+                file: "/work/a.rs".to_owned(),
+                before: "old\n".to_owned(),
+            })
         );
         assert!(
             reaction.show.expect("shown")["before"].is_null(),
             "the webview never gets the content"
+        );
+    }
+
+    #[test]
+    fn a_finished_write_carries_the_file_as_it_is_after_the_call() {
+        let (mut client, _) = Client::start("/work");
+        let after = json!({"sessionUpdate": "tool_call_update", "toolCallId": "c1",
+            "_meta": {"praxis": {"after": "new\n"}}});
+        let line = json!({"jsonrpc": "2.0", "method": "session/update",
+            "params": {"sessionId": "s1", "update": after}});
+        let reaction = client.on_line(&line.to_string());
+        assert_eq!(
+            reaction.change,
+            Some(Change::After {
+                id: "c1".to_owned(),
+                after: "new\n".to_owned(),
+            })
+        );
+        assert_eq!(
+            reaction.show, None,
+            "the change must not touch the call's status"
         );
     }
 
@@ -1109,8 +1169,11 @@ mod tests {
     #[test]
     fn open_change_requests_carry_their_path_and_need_one() {
         assert_eq!(
-            FromPanel::parse(r#"{"type":"open_change","path":"/work/a.rs"}"#),
-            Some(FromPanel::OpenChange("/work/a.rs".to_owned()))
+            FromPanel::parse(r#"{"type":"open_change","path":"/work/a.rs","call":"c1"}"#),
+            Some(FromPanel::OpenChange {
+                path: "/work/a.rs".to_owned(),
+                call: Some("c1".to_owned()),
+            })
         );
         assert_eq!(FromPanel::parse(r#"{"type":"open_change"}"#), None);
     }

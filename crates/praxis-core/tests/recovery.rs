@@ -83,6 +83,7 @@ fn label(event: &AgentEvent) -> String {
         AgentEvent::ThinkingDelta(text) => format!("thinking:{text}"),
         AgentEvent::ToolStarted { name, .. } => format!("started:{name}"),
         AgentEvent::ToolFinished { outcome, .. } => format!("finished:{outcome:?}"),
+        AgentEvent::ToolChanged { .. } => "changed".to_owned(),
         AgentEvent::PermissionRequest { name, .. } => format!("ask:{name}"),
         AgentEvent::Usage { .. } => "usage".to_owned(),
         AgentEvent::Compaction(state) => format!("compaction:{state:?}"),

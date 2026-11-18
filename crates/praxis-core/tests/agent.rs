@@ -185,6 +185,7 @@ fn label(event: &AgentEvent) -> String {
             input,
             ..
         } => format!("ask:{id}:{can_always}:{input}"),
+        AgentEvent::ToolChanged { id, .. } => format!("changed:{id}"),
         AgentEvent::Usage { used_tokens, .. } => format!("usage:{used_tokens}"),
         AgentEvent::Compaction(state) => format!("compaction:{state:?}"),
         AgentEvent::Notice { .. } => "notice".to_owned(),

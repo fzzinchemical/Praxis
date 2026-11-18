@@ -91,6 +91,11 @@ pub enum AgentEvent {
         id: ToolCallId,
         outcome: ToolOutcome,
     },
+    /// A `Write` or `Edit` call's file content right after it succeeded, the pair of `before`.
+    ToolChanged {
+        id: ToolCallId,
+        after: String,
+    },
     /// Show the full `input`. Offer "always" only when `can_always`. Dropping `respond` denies.
     /// `diff` is the change a `Write` or `Edit` would make, for review.
     PermissionRequest {
@@ -600,6 +605,7 @@ impl Agent {
                         event @ (AgentEvent::TextDelta(_)
                         | AgentEvent::ToolStarted { .. }
                         | AgentEvent::ToolFinished { .. }
+                        | AgentEvent::ToolChanged { .. }
                         | AgentEvent::PermissionRequest { .. }
                         | AgentEvent::Usage { .. }) => {
                             let event = AgentEvent::Subagent {
@@ -1493,9 +1499,12 @@ impl Agent {
         let call = inner.as_ref().unwrap_or(call);
         let checked = self.check_call(call);
         let input = checked.as_ref().ok();
-        let before = input
-            .and_then(|input| tools::proposed_diff(&call.name, input, self.tools.workspace()))
-            .map(|diff| diff.old.unwrap_or_default());
+        let diff =
+            input.and_then(|input| tools::proposed_diff(&call.name, input, self.tools.workspace()));
+        let before = diff
+            .as_ref()
+            .map(|diff| diff.old.clone().unwrap_or_default());
+        let changed_file = diff.map(|diff| diff.path);
         turn.emit(AgentEvent::ToolStarted {
             id: call.id.clone(),
             name: call.name.clone(),
@@ -1554,6 +1563,15 @@ impl Agent {
             outcome,
         })
         .await;
+        if let (true, Some(path)) = (succeeded, changed_file)
+            && let Some(after) = tools::current_text(&path)
+        {
+            turn.emit(AgentEvent::ToolChanged {
+                id: call.id.clone(),
+                after,
+            })
+            .await;
+        }
         let result = self
             .budget
             .fit_result(content, |text| self.tools.spool(text));

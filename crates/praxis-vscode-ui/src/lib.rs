@@ -638,7 +638,10 @@ pub fn start() -> Result<(), JsValue> {
             return;
         };
         if let Some(path) = button.get_attribute("data-open-change") {
-            api.post_message(&json!({"type": "open_change", "path": path}).to_string());
+            let call = button.get_attribute("data-open-call");
+            api.post_message(
+                &json!({"type": "open_change", "path": path, "call": call}).to_string(),
+            );
             return;
         }
         if let Some(path) = button.get_attribute("data-revert-file") {
@@ -1211,6 +1214,7 @@ impl Ui {
                 let open_diff = self.document.create_element("button")?;
                 open_diff.set_attribute("type", "button")?;
                 open_diff.set_attribute("data-open-change", file)?;
+                open_diff.set_attribute("data-open-call", &id)?;
                 open_diff.set_text_content(Some("Open diff"));
                 let revert = self.document.create_element("button")?;
                 revert.set_attribute("type", "button")?;
@@ -1264,22 +1268,30 @@ impl Ui {
         let Some(container) = &tool.files else {
             return Ok(());
         };
-        let calls: Vec<(Option<String>, String)> = tool
+        let calls: Vec<(&String, Option<String>, String)> = tool
             .children
             .iter()
-            .filter_map(|id| self.tools.get(id))
-            .map(|call| (call.file.clone(), call.status.clone()))
+            .filter_map(|id| Some((id, self.tools.get(id)?)))
+            .map(|(id, call)| (id, call.file.clone(), call.status.clone()))
             .collect();
         let files = view::changed_files(
             calls
                 .iter()
-                .map(|(file, status)| (file.as_deref(), status.as_str())),
+                .map(|(_, file, status)| (file.as_deref(), status.as_str())),
         );
         container.set_text_content(None);
         for file in files {
+            // The file's last call, so its diff is that change's, as the call's own button shows.
+            let last = calls
+                .iter()
+                .rev()
+                .find(|(_, call_file, _)| call_file.as_deref() == Some(file));
             let button = self.document.create_element("button")?;
             button.set_attribute("type", "button")?;
             button.set_attribute("data-open-change", file)?;
+            if let Some((id, _, _)) = last {
+                button.set_attribute("data-open-call", id)?;
+            }
             button.set_text_content(Some(file));
             container.append_child(&button)?;
         }

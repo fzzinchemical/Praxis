@@ -860,8 +860,9 @@ async fn run_turn(
                 stdout.write_all(text.as_bytes())?;
                 stdout.flush()?;
             }
-            // Reasoning stays out of the main view (SPEC §11).
-            AgentEvent::ThinkingDelta(_) => {}
+            // Reasoning stays out of the main view (SPEC §11). The terminal shows no diffs, so a
+            // call's after content is dropped here too.
+            AgentEvent::ThinkingDelta(_) | AgentEvent::ToolChanged { .. } => {}
             AgentEvent::ToolStarted { title, .. } => {
                 let title = sanitize(&title).replace('\n', " ");
                 eprintln!("\n> {title}");

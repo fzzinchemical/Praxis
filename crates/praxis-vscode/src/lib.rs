@@ -12,8 +12,8 @@ mod protocol;
 use js_sys::{Array, Function, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, config_args, install_args, list_args, plugin_items, verb_args};
 use protocol::{
-    Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review, Selection,
-    SessionItem, folder_args, folder_names, session_items,
+    Change, Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review,
+    Selection, SessionItem, folder_args, folder_names, session_items,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -254,8 +254,35 @@ struct Panel {
     disposables: Vec<Disposable>,
     /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
     closures: Vec<Closure<dyn FnMut(JsValue)>>,
-    /// Each changed file's content before the agent first changed it this session, for Open diff.
-    originals: HashMap<String, String>,
+    /// Each `Write` or `Edit` call's file before and after that call, keyed by call id, for Open diff.
+    changes: HashMap<String, CallChange>,
+}
+
+/// One call's change to a file. `after` arrives when the call succeeds.
+struct CallChange {
+    before: String,
+    after: Option<String>,
+}
+
+impl Panel {
+    fn record_change(&mut self, change: Change) {
+        match change {
+            Change::Before { id, before, .. } => {
+                self.changes.insert(
+                    id,
+                    CallChange {
+                        before,
+                        after: None,
+                    },
+                );
+            }
+            Change::After { id, after } => {
+                if let Some(change) = self.changes.get_mut(&id) {
+                    change.after = Some(after);
+                }
+            }
+        }
+    }
 }
 
 /// The child's listeners. `close` is a once-closure, so it frees itself when it runs.
@@ -441,7 +468,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         profile: ProfileJobs::default(),
         disposables: Vec::new(),
         closures: Vec::new(),
-        originals: HashMap::new(),
+        changes: HashMap::new(),
         resume,
     }));
 
@@ -461,7 +488,9 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
             }) => send_prompt(&state, &text, file, files, problems),
             Some(FromPanel::AddFile) => add_files(&state),
             Some(FromPanel::Dropped(uris)) => drop_files(&state, &uris),
-            Some(FromPanel::OpenChange(path)) => open_change(&state, &path),
+            Some(FromPanel::OpenChange { path, call }) => {
+                open_change(&state, &path, call.as_deref());
+            }
             Some(FromPanel::StopSubagent(id)) => {
                 let panel = state.borrow();
                 let line = panel
@@ -842,10 +871,11 @@ fn drop_files(state: &Shared, uris: &[String]) {
     attach(&webview, &cwd, protocol::dropped_paths(uris));
 }
 
-/// Opens a changed file beside the chat: a diff from its content before the agent's first change
-/// when the panel saw it, else VS Code's Git diff, or the file when git can't show it. Paths
-/// outside the workspace are refused.
-fn open_change(state: &Shared, path: &str) {
+/// Opens a changed file beside the chat. With the `Write` or `Edit` call that changed it, the diff
+/// is that call's: the content before it against the content after it. Otherwise, or before the
+/// call's result arrived, VS Code's Git diff, or the file when git can't show it. Paths outside
+/// the workspace are refused.
+fn open_change(state: &Shared, path: &str, call: Option<&str>) {
     let Some(cwd) = workspace_dir() else {
         return;
     };
@@ -856,12 +886,20 @@ fn open_change(state: &Shared, path: &str) {
             .notify(&format!("Not opened, outside the workspace: {path}"));
         return;
     };
-    let (before, output) = {
+    let (recorded, output) = {
         let panel = state.borrow();
-        (panel.originals.get(&path).cloned(), panel.output.clone())
+        let recorded = call
+            .and_then(|id| panel.changes.get(id))
+            .and_then(|change| Some((change.before.clone(), change.after.clone()?)));
+        (recorded, panel.output.clone())
     };
-    if let Some(before) = before {
-        if let Err(error) = open_before_diff(&path, &before, &output) {
+    if let Some((old_text, new_text)) = recorded {
+        let review = Review {
+            title: format!("{path} (this change)"),
+            old_text,
+            new_text,
+        };
+        if let Err(error) = open_review(&review, &output) {
             output.append(&format!("could not open the diff: {error:?}\n"));
         }
         return;
@@ -876,27 +914,6 @@ fn open_change(state: &Shared, path: &str) {
     let _ = execute_uri_command("git.openChange", &uri)
         .unchecked_into::<Thenable>()
         .catch_once(&fallback);
-}
-
-/// Opens `path` beside the chat, diffed against `before`, the content it had before the agent's
-/// first change. The `before` side is an untitled document, as in `open_review`.
-fn open_before_diff(path: &str, before: &str, output: &OutputChannel) -> Result<(), JsValue> {
-    let right = Uri::file_uri(path);
-    let title = format!("{path} (before and after the agent's changes)");
-    let (failed_open, failed_diff) = (failure_logger(output), failure_logger(output));
-    let on_left = Closure::once_into_js(move |left: JsValue| {
-        let left = left.unchecked_into::<TextDocument>().uri();
-        let options = Object::new();
-        let _ = Reflect::set(&options, &"viewColumn".into(), &VIEW_COLUMN_BESIDE.into());
-        let _ = execute_command("vscode.diff", &left, &right, &title, &options)
-            .unchecked_into::<Thenable>()
-            .catch_once(&failed_diff);
-    });
-    untitled(before)?
-        .unchecked_into::<Thenable>()
-        .then_once(&on_left)
-        .catch_once(&failed_open);
-    Ok(())
 }
 
 /// Posts the paths inside the workspace as picked files and says which ones were refused.
@@ -1001,8 +1018,8 @@ fn react(state: &Shared, mut reaction: Reaction) {
             notify_turn_end(state.borrow().handle.clone(), &text);
         }
     }
-    if let Some((file, before)) = reaction.original {
-        state.borrow_mut().originals.entry(file).or_insert(before);
+    if let Some(change) = reaction.change {
+        state.borrow_mut().record_change(change);
     }
     let panel = state.borrow();
     if let Some(message) = reaction.show {

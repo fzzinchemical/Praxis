@@ -460,7 +460,8 @@ pub fn proposed_diff(name: &str, input: &Value, workspace: &Path) -> Option<File
     }
 }
 
-fn current_text(path: &Path) -> Option<String> {
+/// The file's text as it is now, or `None` when it can't be read as text.
+pub fn current_text(path: &Path) -> Option<String> {
     let bytes = read_bytes(path).ok()?;
     text_of(&bytes, path).ok().map(str::to_owned)
 }
