@@ -46,6 +46,23 @@ async fn an_unknown_slash_command_is_reported_and_not_sent_to_the_model() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_prompt_starting_with_a_path_is_sent_to_the_model() {
+    let dir = workspace();
+    let server = server(None, Replies(vec![text_reply("ok")])).await;
+
+    let typed = "y\n/tmp/x.rs fails to build\n/exit\n";
+    let output = in_terminal(&server.uri(), &dir, NO_LOAD_ARGS, typed).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", out(&output));
+    assert!(
+        !out(&output).contains("Unknown command"),
+        "{}",
+        out(&output)
+    );
+    assert_eq!(requests_to(&server, CHAT).await.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn plan_without_a_task_prints_usage_and_sends_nothing_to_the_model() {
     let dir = workspace();
     let server = server(None, Replies(vec![text_reply("should not be used")])).await;

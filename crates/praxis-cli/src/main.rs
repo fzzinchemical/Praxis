@@ -1090,7 +1090,13 @@ async fn repl(
                     );
                     let prompt = match expanded {
                         Some(prompt) => prompt,
-                        None if line.trim().starts_with('/') => {
+                        // A path such as `/home/me/x.rs fails` is a prompt, not a command.
+                        None if line
+                            .trim()
+                            .strip_prefix('/')
+                            .and_then(|rest| rest.split_whitespace().next())
+                            .is_some_and(|word| !word.contains('/')) =>
+                        {
                             eprintln!("Unknown command: {}", sanitize(line.trim()));
                             continue;
                         }
