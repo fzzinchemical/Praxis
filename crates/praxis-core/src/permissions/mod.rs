@@ -71,7 +71,13 @@ fn names_hard_denied(command: &str) -> bool {
     // A `.git` path component: `cd .git`, `--git-dir=.git`, `GIT_DIR=.git`, `x/.git/y`.
     let git_component = plain
         .split(|c: char| !(c.is_alphanumeric() || matches!(c, '.' | '-' | '_')))
-        .any(|word| word == ".git");
+        .any(|word| word == ".git")
+        // A glob that the shell expands to `.git`: `.g?t/config`, `.gi[t]/hooks/x`.
+        // shortcut: any `.g*` component with a glob char counts as git, which over-asks; add real glob matching if that costs too much.
+        || plain
+            .split(|c: char| c.is_whitespace() || ";&|<>()`${}".contains(c))
+            .flat_map(|word| word.split('/'))
+            .any(|part| part.starts_with(".g") && part.contains(['*', '?', '[']));
     // A substitution that mentions git can compute the git dir: `$(git rev-parse --git-dir)`.
     git_component || (plain.contains("git") && plain.contains(['$', '`']))
 }
@@ -388,8 +394,9 @@ impl Permissions {
         if tool == "Bash" {
             let command = text("command").unwrap_or_default();
             let simple = !COMPOUND.iter().any(|c| command.contains(c)) && !hard_denied_bash(input);
-            let mut deny = vec![command.trim().to_owned()];
-            deny.extend(segments(command));
+            // The shell ignores extra spaces and quotes, so deny rules match the normalised text.
+            let mut deny = vec![normalise_spacing(command)];
+            deny.extend(segments(command).map(|s| normalise_spacing(&s)));
             return Subjects {
                 deny,
                 allow: simple.then(|| vec![command.trim().to_owned()]),
@@ -447,6 +454,17 @@ fn segments(command: &str) -> impl Iterator<Item = String> + '_ {
         .split([';', '&', '|', '\n', '`', '(', ')', '{', '}'])
         .map(|s| s.trim().trim_start_matches('$').trim().to_owned())
         .filter(|s| !s.is_empty())
+}
+
+/// Command text as the shell sees it for matching: quotes and backslashes dropped, runs of
+/// whitespace collapsed to one space.
+fn normalise_spacing(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn rejected(tool: &str) -> String {
@@ -640,6 +658,9 @@ mod tests {
             "GIT_DIR=.git git config core.fsmonitor x",
             "cd \"$(git rev-parse --git-dir)\" && echo x > hooks/pre-commit",
             "echo x > .g''it/hooks/pre-commit",
+            "printf x > .g?t/config",
+            "touch .gi[t]/hooks/x",
+            "touch src/../.g?t/hooks/x",
         ] {
             assert_eq!(p.decide("Bash", &bash(command).1), ASK_ONCE, "{command}");
         }
@@ -877,6 +898,22 @@ mod tests {
             assert!(denied(&p.decide("Bash", &bash(command).1)), "{command}");
         }
         assert_eq!(p.decide("Bash", &bash("ls").1), ASK_ONCE);
+    }
+
+    /// Reported bypass: the shell ignores extra spaces, tabs and quotes, so deny rules must too.
+    #[test]
+    fn deny_rules_see_through_spacing_and_quoting() {
+        let p = permissions(Mode::Ask, &[], &["Bash(rm -rf*)"]);
+        for command in [
+            "rm  -rf x",
+            "rm\t-rf x",
+            "\"rm\" -rf x",
+            "'rm' -rf x",
+            "ls; rm  -rf x",
+        ] {
+            assert!(denied(&p.decide("Bash", &bash(command).1)), "{command}");
+        }
+        assert_eq!(p.decide("Bash", &bash("rm -r x").1), ASK_ONCE);
     }
 
     #[test]
