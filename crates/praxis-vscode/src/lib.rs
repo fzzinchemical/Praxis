@@ -17,7 +17,7 @@ use protocol::{
 };
 use serde_json::Value;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::rc::{Rc, Weak};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -258,9 +258,12 @@ struct Panel {
     disposables: Vec<Disposable>,
     /// The closures behind `disposables`; they hold `Shared`, so they drop with the panel.
     closures: Vec<Closure<dyn FnMut(JsValue)>>,
-    /// Each `Write` or `Edit` call's file before and after that call, keyed by call id, for Open diff.
-    changes: HashMap<String, CallChange>,
+    /// The newest `MAX_CHANGES` `Write` or `Edit` calls' files before and after each call, by call id, for Open diff.
+    changes: VecDeque<(String, CallChange)>,
 }
+
+/// Caps `Panel.changes`: each entry holds two full file texts, so a days-long session must not keep them all.
+const MAX_CHANGES: usize = 64;
 
 /// One call's change to a file. `after` arrives when the call succeeds.
 struct CallChange {
@@ -272,16 +275,19 @@ impl Panel {
     fn record_change(&mut self, change: Change) {
         match change {
             Change::Before { id, before, .. } => {
-                self.changes.insert(
+                self.changes.push_back((
                     id,
                     CallChange {
                         before,
                         after: None,
                     },
-                );
+                ));
+                if self.changes.len() > MAX_CHANGES {
+                    self.changes.pop_front();
+                }
             }
             Change::After { id, after } => {
-                if let Some(change) = self.changes.get_mut(&id) {
+                if let Some((_, change)) = self.changes.iter_mut().find(|(key, _)| *key == id) {
                     change.after = Some(after);
                 }
             }
@@ -485,7 +491,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         profile: ProfileJobs::default(),
         disposables: Vec::new(),
         closures: Vec::new(),
-        changes: HashMap::new(),
+        changes: VecDeque::new(),
         resume,
     }));
 
@@ -916,7 +922,8 @@ fn open_change(state: &Shared, path: &str, call: Option<&str>) {
     let (recorded, output) = {
         let panel = state.borrow();
         let recorded = call
-            .and_then(|id| panel.changes.get(id))
+            .and_then(|id| panel.changes.iter().find(|(key, _)| key == id))
+            .map(|(_, change)| change)
             .and_then(|change| Some((change.before.clone(), change.after.clone()?)));
         (recorded, panel.output.clone())
     };
