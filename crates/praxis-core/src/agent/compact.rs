@@ -55,18 +55,13 @@ impl Agent {
         let excess = self.budget.chars_for(before.saturating_sub(target));
         let tools = std::sync::Arc::clone(&self.tools);
         let unmasked = self.history.clone();
-        let spooled = std::cell::RefCell::new(Vec::new());
-        mask_oldest_results(
+        let (_, spooled) = mask_oldest_results(
             &mut self.history,
             self.config.mask_keep_turns,
             excess,
-            |text| {
-                let path = tools.spool(text)?;
-                spooled.borrow_mut().push(path.clone());
-                Ok(path)
-            },
+            |text| tools.spool(text),
         );
-        self.remember_masked(&unmasked, spooled.into_inner());
+        self.remember_masked(&unmasked, spooled);
         self.finish(stage, before, turn).await;
     }
 

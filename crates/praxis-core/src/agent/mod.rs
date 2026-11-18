@@ -1562,17 +1562,11 @@ impl Agent {
         {
             self.queue_nested_memory(&path);
         }
-        let content = output.content.clone();
         let succeeded = !output.is_error;
-        // A tool that succeeded despite the cancel keeps its result: the work happened.
-        let outcome = if turn.cancel.is_cancelled() && output.is_error {
-            ToolOutcome::Cancelled
-        } else {
-            ToolOutcome::Completed(output)
-        };
+        let content = output.content.clone();
         turn.emit(AgentEvent::ToolFinished {
             id: call.id.clone(),
-            outcome,
+            outcome: tool_outcome(turn, output),
         })
         .await;
         if let (true, Some(path)) = (succeeded, changed_file)
@@ -1584,10 +1578,7 @@ impl Agent {
             })
             .await;
         }
-        let result = self
-            .budget
-            .fit_result(content, |text| self.tools.spool(text));
-        (result, succeeded)
+        (self.fit(content), succeeded)
     }
 
     /// Runs the round's deferred `Agent` calls together and fills in their results. Each one only
@@ -1608,23 +1599,21 @@ impl Agent {
                 self.log_subagent(id, message);
             }
             let content = output.content.clone();
-            let outcome = if turn.cancel.is_cancelled() && output.is_error {
-                ToolOutcome::Cancelled
-            } else {
-                ToolOutcome::Completed(output)
-            };
             turn.emit(AgentEvent::ToolFinished {
                 id: id.clone(),
-                outcome,
+                outcome: tool_outcome(turn, output),
             })
             .await;
-            let result = self
-                .budget
-                .fit_result(content, |text| self.tools.spool(text));
             if let Some(slot) = results.iter_mut().find(|(call, _)| call == id) {
-                slot.1 = result;
+                slot.1 = self.fit(content);
             }
         }
+    }
+
+    /// Keeps a result within its limit, spooling the full text when it is cut.
+    fn fit(&self, content: String) -> String {
+        self.budget
+            .fit_result(content, |text| self.tools.spool(text))
     }
 
     /// Runs matching `PreToolUse` hooks in order; the first block wins and each later hook
@@ -1633,6 +1622,14 @@ impl Agent {
         let mut merged = Outcome::default();
         let workspace = self.tools.workspace();
         // shortcut: no `transcript_path` or `permission_mode` yet; add them if plugins need them.
+        let hooks = self
+            .hooks
+            .iter()
+            .filter(|(h, _)| h.matcher.matches(&call.name))
+            .collect::<Vec<_>>();
+        if hooks.is_empty() {
+            return merged;
+        }
         let mut stdin = json!({
             "session_id": self.session_id(),
             "cwd": workspace,
@@ -1641,11 +1638,7 @@ impl Agent {
             "tool_input": input,
             "tool_use_id": call.id,
         });
-        for (hook, root) in self
-            .hooks
-            .iter()
-            .filter(|(h, _)| h.matcher.matches(&call.name))
-        {
+        for (hook, root) in hooks {
             let outcome = crate::hooks::run(hook, &stdin, root, workspace).await;
             if let Some(error) = &outcome.error {
                 turn.warn(format!("Plugin hook: {error}")).await;
@@ -1931,5 +1924,15 @@ fn skill_schema() -> ToolSchema {
             "required": ["skill"],
             "additionalProperties": false
         }),
+    }
+}
+
+/// A tool that fails after a cancel is reported as cancelled; one that succeeded keeps its result,
+/// because the work happened.
+fn tool_outcome(turn: &Turn<'_>, output: ToolOutput) -> ToolOutcome {
+    if turn.cancel.is_cancelled() && output.is_error {
+        ToolOutcome::Cancelled
+    } else {
+        ToolOutcome::Completed(output)
     }
 }

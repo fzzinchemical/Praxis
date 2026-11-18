@@ -12,6 +12,7 @@ pub const SUMMARY_PROMPT: &str = "The conversation is being compacted. Summarise
 pub(crate) const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "Skill", "ToolSearch"];
 const MAX_ARGUMENT_CHARS: usize = 200;
 const STUB: &str = "[Output removed.]";
+const MASKED_PREFIX: &str = "[Output removed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompactionStage {
@@ -53,15 +54,16 @@ fn keep_window(history: &[Message], keep: u32) -> usize {
 }
 
 /// Replaces whole tool results oldest first until `excess` chars are gone or `end` is reached.
-/// A replacement that wouldn't be shorter is skipped, so repeat passes change nothing.
+/// A replacement that wouldn't be shorter is skipped, so repeat passes change nothing. Returns
+/// the chars freed and the spooled paths of the replacements that were applied.
 fn replace_results(
     history: &mut [Message],
     start: usize,
     end: usize,
     excess: usize,
-    mut replacement: impl FnMut(&str, &str) -> String,
-) -> usize {
-    let mut freed = 0;
+    mut replacement: impl FnMut(&str, &str) -> Option<(String, Option<PathBuf>)>,
+) -> (usize, Vec<PathBuf>) {
+    let (mut freed, mut spooled) = (0, Vec::new());
     for message in &mut history[start..end] {
         if freed >= excess {
             break;
@@ -73,14 +75,17 @@ fn replace_results(
         else {
             continue;
         };
-        let new = replacement(tool_call_id, content);
+        let Some((new, path)) = replacement(tool_call_id, content) else {
+            continue;
+        };
         let (old_len, new_len) = (content.chars().count(), new.chars().count());
         if new_len < old_len {
             freed += old_len - new_len;
             *content = new;
+            spooled.extend(path);
         }
     }
-    freed
+    (freed, spooled)
 }
 
 fn calls_by_id(history: &[Message]) -> HashMap<String, (String, String)> {
@@ -97,59 +102,77 @@ fn calls_by_id(history: &[Message]) -> HashMap<String, (String, String)> {
 }
 
 /// Stage 1: masks results outside the keep window first, then, as `mask_keep_turns` is "or as
-/// many as fit", older turns inside it, but never the newest turn. Returns the chars freed.
+/// many as fit", older turns inside it, but never the newest turn. Returns the chars freed and
+/// the spooled paths that now stand in the history.
 pub fn mask_oldest_results(
     history: &mut [Message],
     keep_turns: u32,
     excess: usize,
     spool: impl Fn(&str) -> io::Result<PathBuf>,
-) -> usize {
+) -> (usize, Vec<PathBuf>) {
     let calls = calls_by_id(history);
     let newest = newest_turn(history);
     let window = keep_window(history, keep_turns).min(newest);
-    let mut mask = |id: &str, content: &str| placeholder(calls.get(id), content, &spool);
-    let freed = replace_results(history, 1.min(window), window, excess, &mut mask);
-    freed
-        + replace_results(
-            history,
-            window,
-            newest,
-            excess.saturating_sub(freed),
-            &mut mask,
-        )
+    let mut mask = |id: &str, content: &str| {
+        // shortcut: a real tool result that starts with this text is left unmasked; mark masked messages explicitly if that happens.
+        if content.starts_with(MASKED_PREFIX) {
+            return None;
+        }
+        placeholder(calls.get(id), content, &spool)
+    };
+    let (freed, mut spooled) = replace_results(history, 1.min(window), window, excess, &mut mask);
+    let (more, rest) = replace_results(
+        history,
+        window,
+        newest,
+        excess.saturating_sub(freed),
+        &mut mask,
+    );
+    spooled.extend(rest);
+    (freed + more, spooled)
 }
 
 /// Names the call and how to get the output again. Repeating a call that may have side effects
-/// isn't a safe way to re-fetch, so its output moves to the spool first.
+/// isn't a safe way to re-fetch, so its output moves to the spool first. Returns `None` when
+/// the result is too short to shrink, so it is not spooled for nothing.
 fn placeholder(
     call: Option<&(String, String)>,
     content: &str,
     spool: impl Fn(&str) -> io::Result<PathBuf>,
-) -> String {
+) -> Option<(String, Option<PathBuf>)> {
     let Some((name, arguments)) = call else {
-        return STUB.to_owned();
+        return Some((STUB.to_owned(), None));
     };
     let arguments: String = arguments.chars().take(MAX_ARGUMENT_CHARS).collect();
-    let refetch = if READ_ONLY_TOOLS.contains(&name.as_str()) {
-        "Call it again if needed.".to_owned()
+    let head = format!("[Output removed to save space: {name} {arguments}. ");
+    // Every note is longer than the head, so a result this short can't shrink.
+    if content.chars().count() <= head.chars().count() {
+        return None;
+    }
+    let (refetch, path) = if READ_ONLY_TOOLS.contains(&name.as_str()) {
+        ("Call it again if needed.".to_owned(), None)
     } else {
         match spool(content) {
-            Ok(path) => format!("Read {} if needed; don't repeat the call.", path.display()),
+            Ok(path) => (
+                format!("Read {} if needed; don't repeat the call.", path.display()),
+                Some(path),
+            ),
             Err(error) => {
                 tracing::warn!(%error, "couldn't spool a masked tool result");
-                "It already ran, and its output is gone.".to_owned()
+                ("It already ran, and its output is gone.".to_owned(), None)
             }
         }
     };
-    format!("[Output removed to save space: {name} {arguments}. {refetch}]")
+    Some((format!("{head}{refetch}]"), path))
 }
 
 /// Stage 3: reduces the oldest results to bare stubs. Returns the chars freed.
 pub fn stub_oldest_results(history: &mut [Message], excess: usize) -> usize {
     let newest = newest_turn(history);
     replace_results(history, 1.min(newest), newest, excess, |_, _| {
-        STUB.to_owned()
+        Some((STUB.to_owned(), None))
     })
+    .0
 }
 
 /// Where kept history starts for a summary: the newest turns that fit `max_chars`, at most
@@ -248,7 +271,7 @@ mod tests {
     #[test]
     fn masks_whole_results_oldest_first_and_stops_at_the_target() {
         let mut h = history(6);
-        let freed = mask_oldest_results(&mut h, 2, 1500, no_spool);
+        let (freed, _) = mask_oldest_results(&mut h, 2, 1500, no_spool);
         assert!(freed >= 1500);
         let full: Vec<bool> = results(&h).into_iter().map(is_full).collect();
         assert_eq!(full, [false, false, true, true, true, true]);
@@ -316,11 +339,49 @@ mod tests {
     }
 
     #[test]
+    fn a_result_too_short_to_shrink_is_not_spooled() {
+        let mut h = history(0);
+        h.extend(turn("b", "Bash", "ok"));
+        h.extend(turn("c", "Read", "newest"));
+        let (freed, spooled) =
+            mask_oldest_results(&mut h, 1, 1, |_: &str| -> io::Result<PathBuf> {
+                panic!("a result that can't shrink needs no spool")
+            });
+        assert_eq!((freed, spooled.len()), (0, 0));
+        assert_eq!(results(&h)[0], "ok");
+    }
+
+    #[test]
+    fn a_spool_whose_placeholder_would_not_shrink_is_not_reported() {
+        let mut h = history(0);
+        let output = "z".repeat(120);
+        h.extend(turn("b", "Bash", &output));
+        h.extend(turn("c", "Read", "newest"));
+        let long_path = format!("/spool/{}/result.txt", "p".repeat(200));
+        let (freed, spooled) = mask_oldest_results(&mut h, 1, 1, |_| Ok(PathBuf::from(&long_path)));
+        assert_eq!((freed, spooled), (0, Vec::new()));
+        assert_eq!(results(&h)[0], output);
+    }
+
+    #[test]
+    fn masking_again_does_not_spool_an_already_masked_result_again() {
+        let mut h = history(0);
+        h.extend(turn("b", "Bash", &"y".repeat(1000)));
+        h.extend(turn("c", "Read", "newest"));
+        let (_, first) = mask_oldest_results(&mut h, 1, 1, |_| Ok(PathBuf::from("/spool/a.txt")));
+        assert_eq!(first, vec![PathBuf::from("/spool/a.txt")]);
+        let (freed, second) = mask_oldest_results(&mut h, 1, 100_000, |_| -> io::Result<PathBuf> {
+            panic!("an already masked result needs no spool")
+        });
+        assert_eq!((freed, second.len()), (0, 0));
+    }
+
+    #[test]
     fn masking_twice_changes_nothing_more() {
         let mut h = history(4);
         mask_oldest_results(&mut h, 1, 100_000, no_spool);
         let once: Vec<String> = results(&h).into_iter().map(str::to_owned).collect();
-        assert_eq!(mask_oldest_results(&mut h, 1, 100_000, no_spool), 0);
+        assert_eq!(mask_oldest_results(&mut h, 1, 100_000, no_spool).0, 0);
         assert_eq!(
             results(&h),
             once.iter().map(String::as_str).collect::<Vec<_>>()

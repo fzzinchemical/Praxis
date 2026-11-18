@@ -25,8 +25,11 @@ impl SseDecoder {
         while let Some(end) = rest.iter().position(|&b| b == b'\n') {
             self.line.extend_from_slice(&rest[..end]);
             rest = &rest[end + 1..];
-            let line = std::mem::take(&mut self.line);
+            // Take the buffer so `finish_line` can borrow `self`, then give its capacity back.
+            let mut line = std::mem::take(&mut self.line);
             events.extend(self.finish_line(line.strip_suffix(b"\r").unwrap_or(&line)));
+            line.clear();
+            self.line = line;
         }
         self.line.extend_from_slice(rest);
         events
