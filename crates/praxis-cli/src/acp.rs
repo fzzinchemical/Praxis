@@ -118,6 +118,8 @@ const SET_MCP_ENABLED: &str = "_praxis/set_mcp_enabled";
 const APPROVE_MCP: &str = "_praxis/approve_mcp_server";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
+/// How long a `Read` waits for the client's buffer; a silent client must not hang the turn.
+const READ_WAIT: Duration = Duration::from_secs(3);
 
 /// The session config option the client shows as the model picker (ACP "model" category).
 const MODEL_OPTION: &str = "model";
@@ -848,7 +850,7 @@ pub fn agent(
 
 /// Reads through the client, so `Read` sees unsaved buffers. Runs on the tool's blocking thread,
 /// never in the dispatch loop, so waiting for the client's answer here cannot deadlock.
-/// shortcut: a failed request falls back to the disk, which `Read` has already confined.
+/// A failed or late request falls back to the disk, which `Read` has already confined.
 fn editor_reader(
     cx: ConnectionTo<Client>,
     session: String,
@@ -858,9 +860,10 @@ fn editor_reader(
     EditorReader(Box::new(move |path| {
         let path = client_path(&workspace, &client_cwd, path);
         let request = v1::ReadTextFileRequest::new(session.clone(), path);
-        let answer =
-            tokio::runtime::Handle::current().block_on(cx.send_request(request).block_task());
-        answer.ok().map(|reply| reply.content)
+        let answer = tokio::runtime::Handle::current().block_on(async {
+            tokio::time::timeout(READ_WAIT, cx.send_request(request).block_task()).await
+        });
+        answer.ok()?.ok().map(|reply| reply.content)
     }))
 }
 
@@ -2808,7 +2811,11 @@ mod tests {
 
     /// Has the model `Read` `a.txt` while the client holds an unsaved edit to it. Returns the
     /// tool output the model saw and the paths the client was asked to read.
-    async fn read_through_client(dir: &Path, advertise: bool) -> (String, Vec<String>) {
+    async fn read_through_client(
+        dir: &Path,
+        advertise: bool,
+        answer: bool,
+    ) -> (String, Vec<String>) {
         let server = fake_server_calling("Read", json!({"file_path": "a.txt"})).await;
         let (asked, output) = (Log::default(), Log::default());
         let (on_read, on_update) = (asked.clone(), output.clone());
@@ -2822,6 +2829,11 @@ mod tests {
             .on_receive_request(
                 async move |req: v1::ReadTextFileRequest, responder, _cx| {
                     push(&on_read, req.path.display().to_string());
+                    if !answer {
+                        // Dropping the responder would send an error reply; keep the request open.
+                        std::mem::forget(responder);
+                        return Ok(());
+                    }
                     responder.respond(v1::ReadTextFileResponse::new("unsaved buffer"))
                 },
                 on_receive_request!(),
@@ -2858,9 +2870,18 @@ mod tests {
     async fn read_returns_the_unsaved_buffer_when_the_client_serves_files() {
         let dir = temp_dir("read-buffer");
         std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
-        let (output, asked) = read_through_client(&dir, true).await;
+        let (output, asked) = read_through_client(&dir, true, true).await;
         assert!(output.contains("unsaved buffer"), "{output}");
         assert!(!output.contains("on disk"), "{output}");
+        assert_eq!(asked, [dir.join("a.txt").display().to_string()]);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn read_falls_back_to_disk_when_the_client_never_answers() {
+        let dir = temp_dir("read-silent");
+        std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
+        let (output, asked) = read_through_client(&dir, true, false).await;
+        assert!(output.contains("on disk"), "{output}");
         assert_eq!(asked, [dir.join("a.txt").display().to_string()]);
     }
 
@@ -3012,7 +3033,7 @@ mod tests {
     async fn read_uses_the_disk_when_the_client_does_not_serve_files() {
         let dir = temp_dir("read-disk");
         std::fs::write(dir.join("a.txt"), "on disk\n").unwrap();
-        let (output, asked) = read_through_client(&dir, false).await;
+        let (output, asked) = read_through_client(&dir, false, true).await;
         assert!(output.contains("on disk"), "{output}");
         assert!(asked.is_empty());
     }
