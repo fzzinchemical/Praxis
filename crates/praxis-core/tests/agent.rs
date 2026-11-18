@@ -1920,3 +1920,76 @@ async fn a_fallback_summary_stays_in_history_for_the_next_turn() {
         "summary {shown:?} missing from {messages:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn read_only_calls_around_an_edit_keep_call_order_in_history() {
+    let workspace = new_workspace();
+    let path = workspace.join("a.txt");
+    fs::write(&path, "hello\n").unwrap();
+    let script = vec![
+        tool_reply(&[
+            ("c1", "Glob", json!({"pattern": "*.txt"})),
+            ("c2", "Read", json!({"file_path": path})),
+            (
+                "c3",
+                "Edit",
+                json!({"file_path": path, "old_string": "hello", "new_string": "bye"}),
+            ),
+            ("c4", "Glob", json!({"pattern": "*.nothing"})),
+        ]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::in_workspace(workspace, script, 50).await;
+
+    h.turn("go", CancellationToken::new(), |_| {
+        Some(PermissionReply::AllowOnce)
+    })
+    .await;
+
+    let tool_ids: Vec<Value> = h
+        .request_messages(1)
+        .await
+        .iter()
+        .filter(|m| m["role"] == "tool")
+        .map(|m| m["tool_call_id"].clone())
+        .collect();
+    assert_eq!(tool_ids, ["c1", "c2", "c3", "c4"]);
+    // Each request extends the previous one byte for byte, so the server's cache still hits.
+    let requests = h.server.received_requests().await.unwrap();
+    let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+    assert_eq!(first["tools"].to_string(), second["tools"].to_string());
+    let old = first["messages"].to_string();
+    let new = second["messages"].to_string();
+    assert!(new.starts_with(&old[..old.len() - 1]), "{old}\n---\n{new}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_write_between_reads_is_not_overtaken_by_them() {
+    let workspace = new_workspace();
+    let path = workspace.join("a.txt");
+    fs::write(&path, "hello\n").unwrap();
+    let script = vec![
+        tool_reply(&[
+            ("c1", "Read", json!({"file_path": path})),
+            (
+                "c2",
+                "Edit",
+                json!({"file_path": path, "old_string": "hello", "new_string": "bye"}),
+            ),
+            ("c3", "Read", json!({"file_path": path})),
+        ]),
+        text_reply("done"),
+    ];
+    let mut h = Harness::in_workspace(workspace, script, 50).await;
+
+    h.turn("go", CancellationToken::new(), |_| {
+        Some(PermissionReply::AllowOnce)
+    })
+    .await;
+
+    let messages = h.request_messages(1).await;
+    let results: Vec<&Value> = messages.iter().filter(|m| m["role"] == "tool").collect();
+    assert!(results[0]["content"].as_str().unwrap().contains("hello"));
+    assert!(results[2]["content"].as_str().unwrap().contains("bye"));
+}

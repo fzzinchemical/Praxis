@@ -195,7 +195,7 @@ flowchart TD
 
 A cancel or provider failure can end the turn at any step, giving `TurnEnded(Cancelled)` or `TurnEnded(ProviderError)`.
 
-Tool calls run sequentially. Local servers process requests serially, and ordering keeps the logs and permission prompts understandable. Cap at `max_turn_requests` (default 50).
+Tool calls run sequentially, except for one case. Within a round, each run of consecutive read-only calls (built-in `Read`, `Grep` or `Glob`, with no matching `PreToolUse` hook, no MCP name clash, and a permission decision of `Allow` with no prompt) runs concurrently, and the run ends at the first other call. Its outputs are consumed at each call's serial position, so events, loop detection, cancellation and history keep call order, and request bytes match the serial loop. Writes, shell, MCP, subagents and anything that prompts are barriers that run alone, so a read never overtakes a write before it. Local servers process requests serially, and ordering keeps the logs and permission prompts understandable. Cap at `max_turn_requests` (default 50).
 
 ## 5. Provider
 

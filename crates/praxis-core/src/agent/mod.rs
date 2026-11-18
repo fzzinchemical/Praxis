@@ -31,7 +31,7 @@ use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
 use serde_json::{Value, json};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1079,8 +1079,15 @@ impl Agent {
             length_continues = 0;
             let mut stuck = None;
             let mut results = Vec::new();
-            for call in recovered.calls {
-                let trigger = detector.record(&call, silent);
+            let calls = recovered.calls;
+            // Outputs of the read-only run being consumed, one per call in order (`prefetch_reads`).
+            let mut ready = VecDeque::new();
+            for (index, call) in calls.iter().enumerate() {
+                if ready.is_empty() {
+                    ready = self.prefetch_reads(&calls[index..], turn).await;
+                }
+                let prefetched = ready.pop_front().flatten();
+                let trigger = detector.record(call, silent);
                 let content = if turn.cancel.is_cancelled() {
                     NOT_RUN_RESULT.to_owned()
                 } else if self.log_error.is_some() {
@@ -1098,7 +1105,7 @@ impl Agent {
                     nudge_due = true;
                     format!("Not run: {}", trigger.describe())
                 } else {
-                    let (content, succeeded) = self.run_call(&call, turn).await;
+                    let (content, succeeded) = self.run_call(call, turn, prefetched).await;
                     match call.name.as_str() {
                         "Edit" | "Write" if succeeded => {
                             detector.reset();
@@ -1116,7 +1123,7 @@ impl Agent {
                         .find(|t| t.name == call.name)
                         .cloned();
                 }
-                results.push((call.id, content));
+                results.push((call.id.clone(), content));
             }
             self.run_deferred_agents(turn, &mut results).await;
             for (tool_call_id, content) in results {
@@ -1494,9 +1501,74 @@ impl Agent {
         reply
     }
 
-    /// Returns the result to show the model.
-    /// Returns the result text and whether the tool succeeded.
-    async fn run_call(&mut self, call: &ToolCall, turn: &Turn<'_>) -> (String, bool) {
+    /// Runs the consecutive read-only calls at the front of `calls` concurrently (SPEC §4), in
+    /// their order. Each one must pass `allowed_read`; the first other call ends the run. The
+    /// caller consumes the outputs at each call's serial position, so events and history keep
+    /// their order. Skipped when cancelled or when the log is down, which both skip every call.
+    async fn prefetch_reads(
+        &self,
+        calls: &[ToolCall],
+        turn: &Turn<'_>,
+    ) -> VecDeque<Option<ToolOutput>> {
+        if turn.cancel.is_cancelled() || self.log_error.is_some() {
+            return VecDeque::new();
+        }
+        let inputs: Vec<(&ToolCall, Value)> = calls
+            .iter()
+            .map_while(|call| Some((call, self.allowed_read(call)?)))
+            .collect();
+        // shortcut: a loop-detected call is still run here and its output dropped, which costs a read.
+        futures::future::join_all(inputs.into_iter().map(|(call, input)| {
+            tools::execute(
+                &call.name,
+                input,
+                Arc::clone(&self.tools),
+                turn.cancel.clone(),
+            )
+        }))
+        .await
+        .into_iter()
+        .map(Some)
+        .collect()
+    }
+
+    /// The checked input of a call that may run before its serial turn: a built-in `Read`,
+    /// `Grep` or `Glob` that no hook matches and that the permissions allow without a prompt.
+    /// Anything else returns `None` and keeps its place in the sequence.
+    fn allowed_read(&self, call: &ToolCall) -> Option<Value> {
+        let read_only = matches!(call.name.as_str(), "Read" | "Grep" | "Glob");
+        let mcp_owned = self
+            .mcp
+            .as_ref()
+            .is_some_and(|m| m.schema(&call.name).is_some());
+        let hooked = self
+            .hooks
+            .iter()
+            .any(|(h, _)| h.matcher.matches(&call.name));
+        if !read_only || mcp_owned || hooked {
+            return None;
+        }
+        let input = recovery::parse_arguments(&call.arguments)?;
+        self.validate(&call.name, &input).ok()?;
+        let input = self.absolute_paths(&call.name, input);
+        match self
+            .permissions
+            .decide_with_hook(&call.name, input, &Outcome::default(), |i| {
+                self.validate(&call.name, i)
+            }) {
+            (input, Decision::Allow) => Some(input),
+            _ => None,
+        }
+    }
+
+    /// Returns the result text and whether the tool succeeded. `prefetched` is the output of a
+    /// call `prefetch_reads` already ran, used in place of running the tool again.
+    async fn run_call(
+        &mut self,
+        call: &ToolCall,
+        turn: &Turn<'_>,
+        prefetched: Option<ToolOutput>,
+    ) -> (String, bool) {
         let inner = self.unwrap_call_tool(call);
         let call = inner.as_ref().unwrap_or(call);
         let checked = self.check_call(call);
@@ -1536,10 +1608,13 @@ impl Agent {
                     Some(mcp) if mcp.schema(&call.name).is_some() => {
                         mcp.call(&call.name, input, turn.cancel.clone()).await
                     }
-                    _ => {
-                        let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
-                        tools::execute(&call.name, input, tools, cancel).await
-                    }
+                    _ => match prefetched {
+                        Some(output) => output,
+                        None => {
+                            let (tools, cancel) = (Arc::clone(&self.tools), turn.cancel.clone());
+                            tools::execute(&call.name, input, tools, cancel).await
+                        }
+                    },
                 },
                 Err(reason) => ToolOutput::error(reason),
             },
