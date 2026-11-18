@@ -59,6 +59,7 @@ impl Agent {
             &mut self.history,
             self.config.mask_keep_turns,
             excess,
+            tools.next_spool_path_len(),
             |text| tools.spool(text),
         );
         self.remember_masked(&unmasked, spooled);

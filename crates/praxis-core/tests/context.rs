@@ -1012,3 +1012,42 @@ async fn a_path_scoped_rule_loads_once_on_the_first_matching_touch() {
     assert_eq!(count(&sent[2]), 1, "a non-matching read adds nothing");
     assert_eq!(count(&sent[3]), 1, "not appended again by a second match");
 }
+
+#[test]
+fn a_masked_result_whose_note_would_not_shrink_is_never_spooled() {
+    use praxis_core::context::compaction::mask_oldest_results;
+    use praxis_core::provider::{Message, ToolCall};
+    use std::cell::Cell;
+
+    let ctx = ToolContext::new(&new_workspace()).unwrap();
+    let call = |id: &str, name: &str, arguments: String| Message::Assistant {
+        content: None,
+        tool_calls: vec![ToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments,
+        }],
+    };
+    let result = |id: &str, content: String| Message::Tool {
+        tool_call_id: id.into(),
+        content,
+    };
+    let mut history = vec![
+        Message::System {
+            content: "sys".into(),
+        },
+        call("b", "Bash", "c".repeat(200)),
+        result("b", "o".repeat(300)),
+        call("n", "Read", "{}".into()),
+        result("n", "newest".into()),
+    ];
+    let spools = Cell::new(0);
+    let (freed, spooled) = mask_oldest_results(&mut history, 1, 1, 60, |text| {
+        spools.set(spools.get() + 1);
+        ctx.spool(text)
+    });
+
+    assert_eq!(spools.get(), 0, "a note that can't shrink must not spool");
+    assert_eq!((freed, spooled), (0, Vec::new()));
+    assert!(matches!(&history[2], Message::Tool { content, .. } if content.len() == 300));
+}

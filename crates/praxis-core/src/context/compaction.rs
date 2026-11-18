@@ -12,6 +12,7 @@ pub const SUMMARY_PROMPT: &str = "The conversation is being compacted. Summarise
 pub(crate) const READ_ONLY_TOOLS: [&str; 5] = ["Read", "Grep", "Glob", "Skill", "ToolSearch"];
 const MAX_ARGUMENT_CHARS: usize = 200;
 const STUB: &str = "[Output removed.]";
+const CALL_AGAIN: &str = "Call it again if needed.";
 const MASKED_PREFIX: &str = "[Output removed";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,11 +104,13 @@ fn calls_by_id(history: &[Message]) -> HashMap<String, (String, String)> {
 
 /// Stage 1: masks results outside the keep window first, then, as `mask_keep_turns` is "or as
 /// many as fit", older turns inside it, but never the newest turn. Returns the chars freed and
-/// the spooled paths that now stand in the history.
+/// the spooled paths that now stand in the history. `spool_path_len` is the length of the path
+/// `spool` will return, so a note that wouldn't shrink is skipped before anything is spooled.
 pub fn mask_oldest_results(
     history: &mut [Message],
     keep_turns: u32,
     excess: usize,
+    spool_path_len: usize,
     spool: impl Fn(&str) -> io::Result<PathBuf>,
 ) -> (usize, Vec<PathBuf>) {
     let calls = calls_by_id(history);
@@ -118,7 +121,7 @@ pub fn mask_oldest_results(
         if content.starts_with(MASKED_PREFIX) {
             return None;
         }
-        placeholder(calls.get(id), content, &spool)
+        placeholder(calls.get(id), content, spool_path_len, &spool)
     };
     let (freed, mut spooled) = replace_results(history, 1.min(window), window, excess, &mut mask);
     let (more, rest) = replace_results(
@@ -138,6 +141,7 @@ pub fn mask_oldest_results(
 fn placeholder(
     call: Option<&(String, String)>,
     content: &str,
+    spool_path_len: usize,
     spool: impl Fn(&str) -> io::Result<PathBuf>,
 ) -> Option<(String, Option<PathBuf>)> {
     let Some((name, arguments)) = call else {
@@ -145,12 +149,19 @@ fn placeholder(
     };
     let arguments: String = arguments.chars().take(MAX_ARGUMENT_CHARS).collect();
     let head = format!("[Output removed to save space: {name} {arguments}. ");
-    // Every note is longer than the head, so a result this short can't shrink.
-    if content.chars().count() <= head.chars().count() {
+    let read_only = READ_ONLY_TOOLS.contains(&name.as_str());
+    // Decided before spooling, so a note that wouldn't be shorter leaves no spool file behind.
+    let refetch_len = if read_only {
+        CALL_AGAIN.chars().count()
+    } else {
+        "Read ".len() + spool_path_len + " if needed; don't repeat the call.".len()
+    };
+    let note_len = head.chars().count() + refetch_len + "]".len();
+    if content.chars().count() <= note_len {
         return None;
     }
-    let (refetch, path) = if READ_ONLY_TOOLS.contains(&name.as_str()) {
-        ("Call it again if needed.".to_owned(), None)
+    let (refetch, path) = if read_only {
+        (CALL_AGAIN.to_owned(), None)
     } else {
         match spool(content) {
             Ok(path) => (
@@ -271,7 +282,7 @@ mod tests {
     #[test]
     fn masks_whole_results_oldest_first_and_stops_at_the_target() {
         let mut h = history(6);
-        let (freed, _) = mask_oldest_results(&mut h, 2, 1500, no_spool);
+        let (freed, _) = mask_oldest_results(&mut h, 2, 1500, 0, no_spool);
         assert!(freed >= 1500);
         let full: Vec<bool> = results(&h).into_iter().map(is_full).collect();
         assert_eq!(full, [false, false, true, true, true, true]);
@@ -280,7 +291,7 @@ mod tests {
     #[test]
     fn keeps_recent_turns_when_older_results_free_enough() {
         let mut h = history(6);
-        mask_oldest_results(&mut h, 2, 3500, no_spool);
+        mask_oldest_results(&mut h, 2, 3500, 0, no_spool);
         let full: Vec<bool> = results(&h).into_iter().map(is_full).collect();
         assert_eq!(full, [false, false, false, false, true, true]);
     }
@@ -288,7 +299,7 @@ mod tests {
     #[test]
     fn dips_into_the_window_when_needed_but_never_masks_an_unused_result() {
         let mut h = history(3);
-        mask_oldest_results(&mut h, 100, 100_000, no_spool);
+        mask_oldest_results(&mut h, 100, 100_000, 0, no_spool);
         let full: Vec<bool> = results(&h).into_iter().map(is_full).collect();
         assert_eq!(full, [false, false, true]);
     }
@@ -296,7 +307,7 @@ mod tests {
     #[test]
     fn a_keep_window_of_zero_still_spares_the_unused_result() {
         let mut h = history(2);
-        mask_oldest_results(&mut h, 0, 100_000, no_spool);
+        mask_oldest_results(&mut h, 0, 100_000, 0, no_spool);
         let full: Vec<bool> = results(&h).into_iter().map(is_full).collect();
         assert_eq!(full, [false, true]);
     }
@@ -305,7 +316,7 @@ mod tests {
     fn keeps_assistant_text_and_tool_calls() {
         let mut h = history(3);
         let before: Vec<_> = calls_by_id(&h).into_iter().collect();
-        mask_oldest_results(&mut h, 1, 100_000, no_spool);
+        mask_oldest_results(&mut h, 1, 100_000, 0, no_spool);
         let mut after: Vec<_> = calls_by_id(&h).into_iter().collect();
         let mut before = before;
         before.sort();
@@ -317,7 +328,7 @@ mod tests {
     #[test]
     fn a_read_placeholder_names_the_call_and_how_to_repeat_it() {
         let mut h = history(2);
-        mask_oldest_results(&mut h, 1, 1, no_spool);
+        mask_oldest_results(&mut h, 1, 1, 0, no_spool);
         assert_eq!(
             results(&h)[0],
             r#"[Output removed to save space: Read {"file_path":"c0.rs"}. Call it again if needed.]"#
@@ -329,7 +340,7 @@ mod tests {
         let mut h = history(0);
         h.extend(turn("b", "Bash", &"y".repeat(1000)));
         h.extend(turn("c", "Read", "newest"));
-        mask_oldest_results(&mut h, 1, 1, |text| {
+        mask_oldest_results(&mut h, 1, 1, "/spool/result-1.txt".len(), |text| {
             assert_eq!(text, "y".repeat(1000));
             Ok(PathBuf::from("/spool/result-1.txt"))
         });
@@ -344,7 +355,7 @@ mod tests {
         h.extend(turn("b", "Bash", "ok"));
         h.extend(turn("c", "Read", "newest"));
         let (freed, spooled) =
-            mask_oldest_results(&mut h, 1, 1, |_: &str| -> io::Result<PathBuf> {
+            mask_oldest_results(&mut h, 1, 1, 0, |_: &str| -> io::Result<PathBuf> {
                 panic!("a result that can't shrink needs no spool")
             });
         assert_eq!((freed, spooled.len()), (0, 0));
@@ -358,7 +369,9 @@ mod tests {
         h.extend(turn("b", "Bash", &output));
         h.extend(turn("c", "Read", "newest"));
         let long_path = format!("/spool/{}/result.txt", "p".repeat(200));
-        let (freed, spooled) = mask_oldest_results(&mut h, 1, 1, |_| Ok(PathBuf::from(&long_path)));
+        let (freed, spooled) = mask_oldest_results(&mut h, 1, 1, long_path.len(), |_| {
+            Ok(PathBuf::from(&long_path))
+        });
         assert_eq!((freed, spooled), (0, Vec::new()));
         assert_eq!(results(&h)[0], output);
     }
@@ -368,20 +381,22 @@ mod tests {
         let mut h = history(0);
         h.extend(turn("b", "Bash", &"y".repeat(1000)));
         h.extend(turn("c", "Read", "newest"));
-        let (_, first) = mask_oldest_results(&mut h, 1, 1, |_| Ok(PathBuf::from("/spool/a.txt")));
+        let (_, first) =
+            mask_oldest_results(&mut h, 1, 1, 12, |_| Ok(PathBuf::from("/spool/a.txt")));
         assert_eq!(first, vec![PathBuf::from("/spool/a.txt")]);
-        let (freed, second) = mask_oldest_results(&mut h, 1, 100_000, |_| -> io::Result<PathBuf> {
-            panic!("an already masked result needs no spool")
-        });
+        let (freed, second) =
+            mask_oldest_results(&mut h, 1, 100_000, 0, |_| -> io::Result<PathBuf> {
+                panic!("an already masked result needs no spool")
+            });
         assert_eq!((freed, second.len()), (0, 0));
     }
 
     #[test]
     fn masking_twice_changes_nothing_more() {
         let mut h = history(4);
-        mask_oldest_results(&mut h, 1, 100_000, no_spool);
+        mask_oldest_results(&mut h, 1, 100_000, 0, no_spool);
         let once: Vec<String> = results(&h).into_iter().map(str::to_owned).collect();
-        assert_eq!(mask_oldest_results(&mut h, 1, 100_000, no_spool).0, 0);
+        assert_eq!(mask_oldest_results(&mut h, 1, 100_000, 0, no_spool).0, 0);
         assert_eq!(
             results(&h),
             once.iter().map(String::as_str).collect::<Vec<_>>()
@@ -391,7 +406,7 @@ mod tests {
     #[test]
     fn stubs_shrink_masked_results_but_not_the_newest_turn() {
         let mut h = history(3);
-        mask_oldest_results(&mut h, 1, 100_000, no_spool);
+        mask_oldest_results(&mut h, 1, 100_000, 0, no_spool);
         assert!(stub_oldest_results(&mut h, 100_000) > 0);
         let shown = results(&h);
         assert_eq!(&shown[..2], [STUB, STUB]);

@@ -270,6 +270,14 @@ impl ToolContext {
 
     /// Saves `text` privately and returns its path. The name is ours alone: tool call ids come
     /// from the model, so they must never reach a path.
+    /// Chars in the path the next [`Self::spool`] call returns, so masking can judge a note first.
+    pub fn next_spool_path_len(&self) -> usize {
+        let spooled = self.spooled.lock().unwrap_or_else(PoisonError::into_inner);
+        let next = spooled.unwrap_or(0) + 1;
+        let path = self.spool_dir.join(format!("result-{next}.txt"));
+        path.display().to_string().chars().count()
+    }
+
     pub fn spool(&self, text: &str) -> io::Result<PathBuf> {
         let mut spooled = self.spooled.lock().unwrap_or_else(PoisonError::into_inner);
         let count = match *spooled {
