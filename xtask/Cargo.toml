@@ -7,15 +7,15 @@ publish.workspace = true
 
 [dependencies]
 anyhow = "1"
+futures = "0.3"
 praxis-core = { path = "../crates/praxis-core" }
 serde_json = "1"
 tokio = { version = "1.54", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-util = "0.7"
 toml = "1.2"
-zip = { version = "9.4", default-features = false, features = ["deflate"] }
-
-[dev-dependencies]
+tokio-tungstenite = "0.30"
 wiremock = "0.6"
+zip = { version = "9.4", default-features = false, features = ["deflate"] }
 
 [lints]
 workspace = true

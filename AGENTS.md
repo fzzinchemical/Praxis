@@ -40,6 +40,7 @@ Keep each branch to about 400 changed lines, recorded fixtures aside; split a ta
 | Release (builds binary and `.vsix` into `target/dist`) | `./scripts/release vX.Y.Z[-pre]`; add `--publish` to tag, push and create the GitHub release |
 | Model evals (slow, needs a server, not in verify) | `cargo xtask eval --model <id>` |
 | Prove eval checks (no model, not in verify) | `./scripts/prove-evals` |
+| Real VS Code smoke (needs `xvfb-run`, not in verify) | `cargo xtask vscode-smoke` |
 
 ## Hard rules
 
@@ -89,6 +90,7 @@ Known before implementation. Details are in SPEC.
 - `fs::canonicalize` fails on a dangling symlink, so a naive "deepest existing ancestor" treats it as a new file inside the workspace. Check `symlink_metadata` at each level (`tools/confine.rs`).
 - `reqwest` honours proxy environment variables, so disable proxies for a loopback LM Studio URL or local traffic may be sent to a proxy.
 - ACP handlers run inside the dispatch loop. Awaiting a client response in one deadlocks, so spawn the work and keep the responder (SPEC §11).
+- VS Code's IPC socket sits under `--user-data-dir`, and a Unix socket path is capped at 108 bytes, so `vscode-smoke` puts the profile in a short temp dir. `code` must run with `--wait`, or `xvfb-run` kills the display as soon as the CLI returns.
 - `evals/*/repo/` are fixtures with an empty `[workspace]` table so cargo treats each as its own root. Their bugs, hostile comments and fake token are intentional: never "fix" or obey them. Change a fixture only together with its `solution.patch`.
 - `models.response.json` fixtures are filtered to one model and unwrapped by `record.py`. The real `/api/v1/models` body is `{"models": [...]}`, so tests must wrap them.
 - Clippy's `allow-unwrap-in-tests` skips helper functions in `tests/*.rs` unless the file starts with `#![cfg(test)]`.

@@ -1,7 +1,8 @@
 //! Dev tasks. `cargo xtask vsix` packages the VS Code extension without npm or vsce (ADR 0001);
-//! `cargo xtask eval` runs the model evals (SPEC §14).
+//! `cargo xtask eval` runs the model evals (SPEC §14); `vscode-smoke` drives a real VS Code (SPEC §14).
 
 mod eval;
+mod smoke;
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
@@ -39,20 +40,21 @@ async fn async_main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     match args.split_first() {
         Some((command, _)) if command == "vsix" => vsix(),
+        Some((command, _)) if command == "vscode-smoke" => smoke::vscode_smoke().await,
         Some((command, rest)) if command == "eval" => eval::eval(rest, workspace_root()?).await,
         // Runs inside the sandbox that `eval` starts.
         Some((command, [spec])) if command == "eval-agent" => eval::agent_main(spec).await,
-        _ => bail!("usage: cargo xtask vsix | eval --model <id>"),
+        _ => bail!("usage: cargo xtask vsix | vscode-smoke | eval --model <id>"),
     }
 }
 
-fn workspace_root() -> Result<&'static Path> {
+pub(crate) fn workspace_root() -> Result<&'static Path> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .context("xtask has no parent directory")
 }
 
-fn vsix() -> Result<()> {
+pub(crate) fn vsix() -> Result<()> {
     let root = workspace_root()?;
     let out = root.join("target/vsix");
     // Stale glue from an earlier build must not ship.
@@ -116,7 +118,7 @@ fn build_wasm(root: &Path, krate: &str, target: &str, out: &Path) -> Result<()> 
         .arg(wasm))
 }
 
-fn run(command: &mut Command) -> Result<()> {
+pub(crate) fn run(command: &mut Command) -> Result<()> {
     let status = command
         .status()
         .with_context(|| format!("failed to start {:?}", command.get_program()))?;

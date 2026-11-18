@@ -125,7 +125,8 @@ Verified latest versions on 2026-11-06. Use the current compatible release at T0
 | `leptos` (CSR) | 0.8 | Webview UI, not yet tried: T0.6 used `web-sys` directly |
 | `pulldown-cmark` | 0.13 | Markdown in the webview |
 | `zip` | 9.4 | `.vsix` (xtask only) |
-| `wiremock` | 0.6 | Dev: fake provider server |
+| `wiremock` | 0.6 | Dev: fake provider server; also the fake server in `xtask vscode-smoke` |
+| `tokio-tungstenite` | 0.30 | `xtask` only: Chrome DevTools websocket for `xtask vscode-smoke` (owner approved 2026-11-18) |
 
 No SSE crate: `eventsource-stream` hasn't been updated since 2022, and line parsing is short. No tokenizer crate: see §7.
 
