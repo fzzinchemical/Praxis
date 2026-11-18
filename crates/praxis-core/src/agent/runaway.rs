@@ -10,6 +10,8 @@ const MAX_PERIOD: usize = 50;
 const REPEATS: usize = 8;
 /// Fewest words a runaway spans, so short legitimate runs such as eight closing `}` don't count.
 const MIN_SPAN: usize = 64;
+/// Longest unbroken run kept as one partial word, so a token with no spaces can't grow without bound.
+const MAX_PARTIAL: usize = 64 * 1024;
 
 /// Feeds on each streamed delta and says when the last words repeat one unit too often.
 #[derive(Default)]
@@ -24,6 +26,9 @@ impl RunawayDetector {
         for c in delta.chars() {
             if !c.is_whitespace() {
                 self.partial.push(c);
+                if self.partial.len() > MAX_PARTIAL {
+                    self.partial.clear();
+                }
             } else if !self.partial.is_empty() {
                 let word = std::mem::take(&mut self.partial);
                 self.words.push_back(word);
@@ -62,6 +67,13 @@ mod tests {
     fn detects_one_word_repeated_over_the_minimum_span() {
         let mut detector = RunawayDetector::default();
         assert!(feed(&mut detector, &"thought ".repeat(MIN_SPAN)));
+    }
+
+    #[test]
+    fn an_unbroken_token_does_not_grow_the_partial_word_without_bound() {
+        let mut detector = RunawayDetector::default();
+        feed(&mut detector, &"x".repeat(MAX_PARTIAL * 4));
+        assert!(detector.partial.len() <= MAX_PARTIAL);
     }
 
     #[test]
