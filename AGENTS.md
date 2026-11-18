@@ -115,3 +115,6 @@ Known before implementation. Details are in SPEC.
 - Stale objects in a checkout's `llvm-cov` target can count a source file twice and drop coverage below the floors. If one checkout fails where another passes, run `cargo llvm-cov clean --workspace` before blaming the code.
 - MCP server `instructions` are appended to each of that server's tool descriptions, after the tool's own text, because the tool-search index shows only the first line of a description.
 - LM Studio's API reports no sampling presets. The vendor's values are only in `~/.lmstudio/hub/models/<key>/model.yaml`, and sending any sampling field overrides what LM Studio would apply for it (`profile::vendor_layer`).
+- Default SIGTERM skips destructors, so ACP and REPL race their work against it (`until_sigterm`); a plain `async` main leaks MCP children and tool process groups when VS Code stops it.
+- A worktree's `.git` is a file, so the bwrap Git guard never covers it; this repo's agent worktrees are unguarded (SPEC §9).
+- Bash fails when `bwrap` is on PATH but can't create namespaces: `sandbox::helper_command` has no unguarded fallback.

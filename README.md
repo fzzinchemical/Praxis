@@ -229,13 +229,14 @@ praxis "fix the failing test in src/parse.rs"
 praxis
 ```
 
-In the REPL, use `/plan <task>` to plan in read-only mode, `/execute` to carry out the plan, `/undo` to revert the last turn's edits and `/exit` to quit. Ctrl-C cancels the current turn; press it again to exit.
+In the REPL, use `/plan <task>` to plan in read-only mode, `/execute` to carry out the plan, `/undo` to revert the last turn's edits and `/exit` to quit. `/execute` is refused without a plan, and an unknown `/command` is reported rather than sent to the model. Ctrl-C cancels the current turn; press it again to exit.
 
 Other commands:
 
 ```sh
 praxis --model qwen3.5-4b "..."    # choose the model (default: the first one loaded)
 praxis --resume                    # continue the newest session in this workspace
+praxis --resume=<id>               # continue one session; the ID must follow `=`
 praxis sessions                    # list saved sessions
 praxis plugin install <git-url>    # plugins start disabled; enable them after review
 praxis plugin list
@@ -280,6 +281,7 @@ The full reference is [docs/SPEC.md §8](docs/SPEC.md#8-config-trust-and-session
 1. Install the extension: `code --install-extension praxis-<version>.vsix`.
 2. Set **Praxis: Binary Path** (`praxis.binaryPath`) to your `praxis` binary if it isn't on `PATH`.
 3. Run **Praxis: Open Chat** from the command palette.
+4. Settings (`praxis.*`) apply to new chats; a running chat keeps its values. Failed actions show an error message.
 
 ## Status and limits
 

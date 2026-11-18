@@ -221,7 +221,7 @@ Two backends ([ADR 0004](adr/0004-anthropic-backend-and-per-agent-models.md)). L
 - **Remote URLs:** warn when a non-loopback URL uses plain `http://`.
 - **Keys:** `api_key_env` in config names an environment variable. Keys are never stored in config or logged.
 - **Errors:** connection refused, no model loaded (HTTP 400, `code: null`, message `No models loaded`), unknown model (HTTP 400, `code: model_not_found`), context overflow (see §5.2) and unsupported tools each get a distinct `ProviderError` with a message that tells the user what to do.
-- **Retries (T13.2):** a 5xx, a dropped connection or a stream that ends before its first chunk is retried up to 3 times, waiting 1, 2 and 4 seconds, with the same request body so the prompt cache stays warm. Retries stop once output has arrived, so text the user already saw is never repeated. A 4xx and an SSE `event: error` (such as context overflow, §5.2) are never retried.
+- **Retries (T13.2):** a 5xx, a dropped connection or a stream that ends before its first chunk is retried up to 3 times, waiting 1, 2 and 4 seconds, with the same request body so the prompt cache stays warm. Retries stop once output has arrived, so text the user already saw is never repeated. A 4xx and an SSE `event: error` (such as context overflow, §5.2) are never retried. A stream that sends `[DONE]` before any `finish_reason` fails as `ProviderError::Truncated` and its buffered tool calls are dropped, so the caller reports or retries instead of acting on a partial reply.
 
 ### 5.2 LM Studio facts
 
@@ -427,7 +427,7 @@ flowchart TB
     class history grows
 ```
 
-- Date, cwd, branch and OS are captured once at session start. If they change, append a message; never rewrite the prefix.
+- Date, cwd, branch and OS are captured once at session start. `.git/HEAD` and the gitdir pointer are read up to 64 KiB, since the repository is untrusted. If they change, append a message; never rewrite the prefix.
 - Serialize tools and JSON deterministically, with stable key order.
 - **Don't change the `tools` array mid-session.** Changing it forces a full reprocess, measured on both tested models (ADR 0002).
 - Rewrite old messages only in a compaction pass. Filter and truncate tool output once, when first recorded.
@@ -446,7 +446,7 @@ Default allocation of the context window `C`:
 | One tool result | 10% of `C` |
 | History | Whatever remains; compact when the whole prompt passes 80% of `C` |
 
-**Counting:** no tokenizer dependency, because tokenizers vary by model and the server knows the truth. Estimate at `chars / 3.5`, then calibrate per session from the `usage` the server reports. Compact early when uncertain.
+**Counting:** no tokenizer dependency, because tokenizers vary by model and the server knows the truth. Estimate at `chars / 3.5`, then calibrate per session from the `usage` the server reports. Calibration skips empty prompts and clamps the chars-per-token ratio to [1.0, 8.0]. Compact early when uncertain.
 
 **Oversized tool results:** keep head and tail, write the full text to the session's spool directory, and tell the model the path and how to read more. `Read` and `Grep` respect the budget themselves (§6), so their results are never spooled. The budget reaches the tools as `ToolContext::set_result_chars`, set from `result_limit()` when the agent is built or its model changes. Until sessions exist (§8), the spool is a private per-session temp directory removed at session end. `Read` may read it (outside the workspace, read-only); file names never come from the model. `max_tokens` is set to the output reservation.
 
@@ -476,7 +476,7 @@ flowchart TD
 
 **Masking rules:**
 - Mask whole tool results, never individual tokens or lines. Assistant text and tool calls stay.
-- Always keep the most recent `mask_keep_turns` turns (default 10), or as many as fit. A turn starts at an assistant message. Never mask a result the model hasn't had a turn to use.
+- Always keep the most recent `mask_keep_turns` turns (default 10), or as many as fit. A turn starts at an assistant message. Never mask a result the model hasn't had a turn to use. Results already masked are skipped, and a result is spooled only when its placeholder is shorter.
 - The placeholder names the tool, its arguments and how to get the output again, such as `[Output removed to save space: Read src/a.rs lines 1-200. Call it again if needed.]`. Repeating a call with side effects isn't a safe re-fetch, so output from anything but `Read`, `Grep` and `Glob` is spooled when masked and the placeholder gives that path.
 - The window size needs tuning, so evals compare 5, 10 and 20 against no masking. Small models may be more sensitive.
 
@@ -756,7 +756,7 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 
 ```
 praxis [PROMPT]             one-shot if PROMPT or stdin is given; otherwise REPL
-praxis --resume[=ID]         resume a session
+praxis --resume[=ID]        resume a session; the ID needs `=`, bare `--resume` takes the newest
 praxis models               list models and effective context
 praxis acp                  ACP agent over stdio
 praxis plugin <install|list|enable|disable|remove>
@@ -767,7 +767,7 @@ praxis sandbox-exec         hidden helper
 
 Flags: `--model`, `--mode`, `--config-override KEY=VALUE`. So far only `--model` and `--config-override` exist.
 
-REPL commands: `/undo`, `/exit`, and plan-first (T5.9). `/plan <task>` runs the task under read-only mode, so `Write`, `Edit`, `Bash` and MCP tools are refused whatever the rules or the model say, and the prompt shows `(plan)` until `/execute`. `/execute` switches back to the configured mode and asks the model to carry out the plan. Only the developer's commands change the mode; no tool can. Without `--model`, the first loaded model is used. Piped stdin can't answer prompts: only a terminal can approve, so non-interactive runs deny. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled.
+REPL commands: `/undo`, `/exit`, and plan-first (T5.9). `/plan <task>` runs the task under read-only mode, so `Write`, `Edit`, `Bash` and MCP tools are refused whatever the rules or the model say, and the prompt shows `(plan)` until `/execute`. `/execute` switches back to the configured mode and asks the model to carry out the plan. Only the developer's commands change the mode; no tool can. `/execute` with no plan is refused, and an unknown `/command` is reported and never sent to the model. Without `--model`, the first loaded model is used. Piped stdin can't answer prompts: only a terminal can approve, so non-interactive runs deny. Exit codes: 0 success, 1 runtime or provider error, 2 usage or config error, 130 cancelled. ACP and REPL mode race their work against SIGTERM, so returning drops the agent and its MCP children and tool process groups are cleaned up.
 
 After a turn that called any tool, the CLI prints a turn summary to stderr (`praxis_core::summary`, T5.7): files changed by successful `Write`/`Edit` calls, Bash commands with exit codes, and whether a test command ran and passed. It reads only the tool log, so it says "No tests ran this turn" even when the model claimed otherwise. Commands that never finished show `not finished`. Test commands are matched by name (`cargo test`, `pytest`, `npm test`, `scripts/verify`, ...).
 
@@ -914,7 +914,7 @@ Security and accessibility requirements:
 
 - `capabilities.untrustedWorkspaces.supported = false`.
 - `praxis.binaryPath` must have **`"scope": "machine"`**, so a repository's `.vscode/settings.json` can't point it at a malicious binary. The same applies to any setting that affects execution.
-- Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}; connect-src ${cspSource}` (`connect-src` is how the glue fetches the wasm, ADR 0001). No inline scripts; `localResourceRoots` limited to the extension directory.
+- Webview CSP: `default-src 'none'; script-src ${cspSource} 'wasm-unsafe-eval'; style-src ${cspSource}; connect-src ${cspSource}; base-uri 'none'; form-action 'none'` (`connect-src` is how the glue fetches the wasm, ADR 0001). No inline scripts; `localResourceRoots` limited to the extension directory.
 - Render model text through `pulldown-cmark` with **raw HTML escaped**, not passed through. Only allow `http`, `https` and `vscode` link schemes, opened with the editor's confirmation.
 - Validate every message between webview and extension against typed enums.
 - All controls keyboard reachable and labelled; streaming region uses `aria-live="polite"`; use VS Code theme CSS variables. Respect reduced motion.
@@ -930,7 +930,7 @@ Config reaches the user through three surfaces. Each key lives in one of them:
 | Surface | Keys | Scope |
 |---|---|---|
 | Chat panel | `model`, `agent`, permission `mode` | Session only. Never written to a file; a new session falls back to config. |
-| VS Code settings | `praxis.binaryPath` (machine scope), `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput`, `praxis.permissions.mode` (machine scope, T10.7) | Forwarded to the CLI as `--config-override` only when the user set them. |
+| VS Code settings | `praxis.binaryPath` (machine scope), `praxis.defaultModel`, `praxis.lmstudio.baseUrl`, `praxis.agent.maxTurnRequests`, `praxis.context.maskKeepTurns`, `praxis.context.filterOutput`, `praxis.permissions.mode` (machine scope, T10.7) | Forwarded to the CLI as `--config-override` only when the user set them; they apply to new chats, since nothing watches configuration at runtime. Each open chat's agent is killed on deactivate. |
 | File only (`config.toml`) | `mcp`, `hooks`, `sandbox.*`, `permissions.allow`, `permissions.deny`, `anthropic.*`, `profiles.*`, `plugins` | Read from the user and project layers. |
 
 Rule: security-relevant keys are never workspace-settable VS Code settings. Workspace settings (`.vscode/settings.json`) come from the repository, so exposing permissions, sandbox, hooks or the binary path there would let a repository bypass the trust gate (§8) and the invariants in §10. `praxis.binaryPath` and `praxis.permissions.mode` are machine-scoped for the same reason; the mode is the only permission key exposed, and only so the user can choose `full-access` (T10.7).
@@ -960,7 +960,7 @@ Path rules from the manifest reference: component paths must begin with `./` (`s
 
 A built-in `general` agent is always offered through the same `Agent` tool, so delegation works with no plugin installed: it gets every session tool except `Agent` and `Skill` (as every subagent does), has no `model` (so it runs on the session model), and its system prompt asks for a short report of what it found or changed. A plugin agent named `general` is an error at load, naming the plugin.
 
-Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/praxis/plugins/`. `praxis plugin install <path|git URL>` clones into `plugins/<name>/` (a local path may be a plugin subdirectory of a marketplace repo: the repo is cloned and only that subdirectory kept), pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. Each session (CLI and `praxis acp`) loads enabled plugins at start: skills join the index, agents are offered through an `Agent` tool (`subagent_type`, `prompt`) that runs one in a fresh history with only its allowed tools and returns its last reply, `PreToolUse` hooks run in the permission check, and MCP servers connect and are pinned. `/<plugin>:<cmd>` works in the CLI only; other hook events don't run yet. A subagent's text and tool calls go to the front end tagged with its `Agent` call (SPEC §11, `_meta.praxis`); the VS Code panel nests them under that call, collapsed, with a summary such as "Explore · 6 tool calls · running" (T10.8). The panel's Stop button on a running subagent sends `_praxis/cancel_subagent` for it (T10.12).
+Plugins are never read from `~/.claude`. Install them explicitly into `~/.local/share/praxis/plugins/`. Names read from `installed.json` are validated on every read with the install rule, so a stored name like `../x` can't reach outside the store. `praxis plugin install <path|git URL>` clones into `plugins/<name>/` (a local path may be a plugin subdirectory of a marketplace repo: the repo is cloned and only that subdirectory kept), pins the HEAD commit in `plugins/installed.json`, prints what it can run (hooks, MCP servers, `bin/`) and leaves it disabled; `enable` prints that list again. `remove` keeps `plugins/data/<name>/` unless `--delete-data` is passed or a terminal confirms. Each session (CLI and `praxis acp`) loads enabled plugins at start: skills join the index, agents are offered through an `Agent` tool (`subagent_type`, `prompt`) that runs one in a fresh history with only its allowed tools and returns its last reply, `PreToolUse` hooks run in the permission check, and MCP servers connect and are pinned. `/<plugin>:<cmd>` works in the CLI only; other hook events don't run yet. A subagent's text and tool calls go to the front end tagged with its `Agent` call (SPEC §11, `_meta.praxis`); the VS Code panel nests them under that call, collapsed, with a summary such as "Explore · 6 tool calls · running" (T10.8). The panel's Stop button on a running subagent sends `_praxis/cancel_subagent` for it (T10.12).
 
 `plugin list --json` also carries each plugin's `readme` (its root `README.md` text, or `null`, never read through a link out of the plugin root) and `components`, one `{kind: command|skill|agent, name, description}` per command, skill and agent. The VS Code Plugins view opens a read-only details tab per plugin on click (T10.9): the README rendered with raw HTML escaped and unsafe links dropped, then the components. The page is built from the listing already in memory, under a CSP with no scripts. Agents are listed without resolving `model`, so one whose model is not enabled still shows.
 
@@ -984,7 +984,7 @@ User files (1) are the user's own, so each is prefixed with `Instructions from: 
 
 All of them sit in the frozen prefix under the existing budget, trimmed broadest-first with a warning. Block-level HTML comments outside code are stripped.
 
-**Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/praxis/`; otherwise it's skipped with a warning.
+**Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. All imports from one memory file share a 256 KiB budget; past it, no further imports expand. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/praxis/`; otherwise it's skipped with a warning.
 
 **Nested memory** (*Should*): the first time `Read`, `Write` or `Edit` touches a file under a subdirectory of cwd, that directory's memory file, and any rule whose `paths` glob matches the file, is appended as a message. Each is loaded once per session.
 
@@ -997,7 +997,7 @@ All of them sit in the frozen prefix under the existing budget, trimmed broadest
 | Agents | `~/.claude/agents/**/*.md`, `~/.config/praxis/agents/` | `.claude/agents/`, `.praxis/agents/` | `name` field |
 
 - Skills and commands share one namespace, invoked as `/<name>` in the CLI. A skill beats a command of the same name. On a clash, user beats project for skills and commands, and project beats user for agents (Claude Code's order). `.praxis/` beats `.claude/` at the same level, so a praxis-only override is possible. Plugin entries stay namespaced and never clash. A standalone agent named `general` is an error, as for plugins.
-- Frontmatter read: `name`, `description`, `when_to_use` (appended to the description), `argument-hint`, `disable-model-invocation` (left out of the index), `user-invocable: false` (no `/` command), `model`; agents also take `tools`, `disallowedTools`, `maxTurns` as in §12. `allowed-tools`, `permissionMode`, `hooks`, `mcpServers` and `` !`cmd` `` injection warn and are ignored. Other unknown fields are ignored silently, as in Claude Code.
+- Frontmatter read: `name`, `description`, `when_to_use` (appended to the description), `argument-hint`, `disable-model-invocation` (left out of the index), `user-invocable: false` (no `/` command), `model`; agents also take `tools`, `disallowedTools`, `maxTurns` as in §12. `allowed-tools`, `permissionMode`, `hooks`, `mcpServers` and `` !`cmd` `` injection warn and are ignored. Other unknown fields are ignored silently, as in Claude Code. An agent whose `maxTurns` is zero or not a number is skipped with a warning.
 - Substitutions in skill and command bodies: `$ARGUMENTS`, `$ARGUMENTS[N]` and `$N` (0-based, split like a shell), `${CLAUDE_SKILL_DIR}`, `${CLAUDE_PROJECT_DIR}`, `${CLAUDE_SESSION_ID}`; `\$` escapes. With no placeholder, `ARGUMENTS: <value>` is appended.
 - **Settings:** `~/.claude/settings.json` sits just below the user layer and `.claude/settings.json` plus `.claude/settings.local.json` just below the project layer (§8). Only `permissions.allow`, `permissions.deny` and `hooks` are read, in Claude Code's rule syntax, which §9 already uses; other keys are ignored without a warning, because they're Claude Code's own. Project allow rules and hooks are widening items for the trust gate. A malformed settings file is a config error naming the file, never skipped, because it carries permission rules.
 - Unreadable or malformed files are skipped with a warning naming the path; never fail silently.
@@ -1015,7 +1015,7 @@ Files wrap the event map in `"hooks"`; an inline manifest object doesn't.
 
 **Matcher:** `*`, an empty string or an omitted value matches all. Only letters, digits, `_`, `-`, spaces, `,` and `|` means an exact name or list. Anything else is an unanchored regex; Claude Code uses JS regex, and Rust's `regex` has no lookaround, so warn and skip on a pattern that doesn't compile.
 
-**Execution:** with `args`, run with no shell (exec form). Without `args`, run through the shell, because `command` may be a shell string. Default timeout 30 s; on timeout, kill it and treat it as a non-blocking error. Run hooks only from approved plugins.
+**Execution:** with `args`, run with no shell (exec form). Without `args`, run through the shell, because `command` may be a shell string. Default timeout 30 s; on timeout, kill its whole process group and treat it as a non-blocking error. `args` that aren't a list of strings reject the hook. Run hooks only from approved plugins.
 
 **Stdin JSON:**
 
@@ -1039,14 +1039,14 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 
 ### MCP tool names
 
-`mcp__<server>__<tool>`; for plugins, `mcp__plugin_<plugin>_<server>__<tool>`. Use these in permission rules and matchers.
+`mcp__<server>__<tool>`; for plugins, `mcp__plugin_<plugin>_<server>__<tool>`. Use these in permission rules and matchers. A server or plugin name containing `__` is rejected when config or plugins load, since it could make two tool names collide; a colliding tool is skipped.
 
 ## 13. MCP
 
 `rmcp` targets spec `2026-07-28`. Check the client API on docs.rs for the pinned version; its README doesn't include a client example.
 
 - **Transports:** stdio child process and streamable HTTP. No OAuth at first: static headers via `headers` in config, with values from environment variables.
-- **Lifecycle:** connect in the background at session start, so a slow server doesn't delay the prompt. A failed server produces a notice and the session continues without it. If it crashes mid-session, its tool calls return errors, and reconnect once.
+- **Lifecycle:** connect in the background at session start, so a slow server doesn't delay the prompt. Listings after connect run concurrently under the connect timeout. A failed server produces a notice and the session continues without it. If it crashes mid-session, its tool calls return errors, and reconnect once.
 - **Tool list freeze:** `tools/list` results are fixed at session start per §7, with later `list_changed` notifications logged rather than applied.
 - **Results:** pass through the tool-result budget; non-text content is replaced by a short description.
 - **Resources and prompts:** a server that declares them gets one `mcp__<server>__read_resource` tool (enum of its URIs) and one `mcp__<server>__get_prompt` tool (enum of its prompt names). They go through the same permission, hook, pin and budget paths. A server tool with the same name wins.
