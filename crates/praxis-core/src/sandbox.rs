@@ -4,9 +4,10 @@
 //!
 // shortcut: Landlock doesn't restrict UDP or all socket types, so "no network" isn't absolute;
 // add seccomp or a network namespace if this becomes a real threat.
-// shortcut: Landlock is allowlist-only and can't exclude a subdirectory of a writable tree, so an
-// approved Bash command can still write to .git/hooks or .praxis; run git with hooks disabled or
-// mount those paths read-only in a namespace if this proves exploitable.
+// shortcut: Landlock can't exclude a subdirectory of the writable workspace, so `helper_command`
+// adds a bwrap bind mount for .git/hooks and .git/config (SPEC §9); .praxis is still writable, and
+// worktree or submodule `.git` files aren't guarded, and `mv .git` then a fresh copy escapes the
+// binds. Upgrade to a read-only `.git` with writable objects/refs/index if that is exploited.
 
 use landlock::{
     ABI, Access, AccessFs, AccessNet, RestrictionStatus, Ruleset, RulesetAttr, RulesetCreatedAttr,
@@ -14,9 +15,14 @@ use landlock::{
 };
 use serde::{Deserialize, Serialize};
 use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::io;
 use std::os::unix::process::CommandExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Once;
+
+static WARN_NO_BWRAP: Once = Once::new();
 
 /// ABI 4 is the first that can block TCP, so it is the minimum.
 const ABI_REQUIRED: ABI = ABI::V4;
@@ -127,6 +133,66 @@ fn restrict(policy: &Policy) -> Result<RestrictionStatus, String> {
         })
         .and_then(|r| r.restrict_self())
         .map_err(|e| e.to_string())
+}
+
+/// The command that starts the sandbox helper. Landlock can't carve `.git/hooks` and
+/// `.git/config` out of the writable workspace, and a runtime-built path (`python -c`, a shell
+/// variable) could plant a hook that git runs later, unsandboxed (SPEC §10.5). So when the
+/// workspace has a `.git` folder, the helper runs under `bwrap` with those two paths read-only.
+/// The caller appends `sandbox-exec` and its arguments.
+pub fn helper_command(helper: &Path, workspace: &Path) -> io::Result<Command> {
+    let Some(guard) = git_guard_args(workspace)? else {
+        return Ok(Command::new(helper));
+    };
+    let mut command = Command::new("bwrap");
+    command.args(guard).arg("--").arg(helper);
+    Ok(command)
+}
+
+/// The `bwrap` arguments for the guard, or `None` when there's nothing to guard or no `bwrap`.
+fn git_guard_args(workspace: &Path) -> io::Result<Option<Vec<OsString>>> {
+    let git = workspace.join(".git");
+    // shortcut: a worktree or submodule keeps `.git` as a file pointing elsewhere, so it's skipped.
+    if !git.is_dir() {
+        return Ok(None);
+    }
+    if !bwrap_on_path() {
+        WARN_NO_BWRAP.call_once(|| {
+            tracing::warn!(
+                "bwrap is not installed: Bash can write .git/hooks and .git/config in full-access mode"
+            );
+        });
+        return Ok(None);
+    }
+    let hooks = git.join("hooks");
+    // Created so a runtime-built path can't make it later; git creates it on init anyway.
+    fs::create_dir_all(&hooks)?;
+    let mut args: Vec<OsString> = [
+        "--bind",
+        "/",
+        "/",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--proc",
+        "/proc",
+    ]
+    .map(OsString::from)
+    .to_vec();
+    // shortcut: a repository without .git/config isn't guarded, because bwrap needs the source.
+    for path in [hooks, git.join("config")].iter().filter(|p| p.exists()) {
+        args.extend([
+            "--ro-bind".into(),
+            path.as_os_str().to_owned(),
+            path.as_os_str().to_owned(),
+        ]);
+    }
+    Ok(Some(args))
+}
+
+fn bwrap_on_path() -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("bwrap").is_file()))
 }
 
 /// The `sandbox-exec` entry point. `args` follow the subcommand: `--policy <json> -- <program>

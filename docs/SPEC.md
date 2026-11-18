@@ -722,9 +722,11 @@ sequenceDiagram
 
 `// shortcut: Landlock doesn't restrict UDP or all socket types, so "no network" isn't absolute; add seccomp or a network namespace if this becomes a real threat.`
 
-`// shortcut: Landlock is allowlist-only and can't exclude a subdirectory of a writable tree, so an approved Bash command can still write to .git/hooks or .praxis; run git with hooks disabled or mount those paths read-only in a namespace if this proves exploitable.`
+- **Git guard:** when the workspace has a `.git` folder and `bwrap` is on `PATH`, the helper runs under `bwrap --bind / / --dev-bind /dev /dev --proc /proc --ro-bind .git/hooks .git/hooks --ro-bind .git/config .git/config --`, so a runtime-built path can't plant a hook or alias that git runs later. Network and environment are unchanged, and Landlock still applies inside. A `.git` file (worktree, submodule) isn't guarded. Without `bwrap` the guard is skipped and a one-time warning is logged.
 
-Because of that limit, hard denials (§10) are fully enforced for `Write` and `Edit` only. For `Bash`, they are enforced by the prompt: a command that mentions a hard-denied path never matches an allow rule, and the threat model must state the gap, including indirect writes that the text check can't see.
+`// shortcut: Landlock can't exclude a subdirectory of the writable workspace, so the Git guard (above) adds a bwrap bind mount for .git/hooks and .git/config; .praxis is still writable and worktree or submodule .git files aren't guarded. Upgrade if a bind mount can't cover them.`
+
+Because of that limit, hard denials (§10) are fully enforced for `Write` and `Edit` only. For `Bash`, they are enforced by the Git guard for `.git/hooks` and `.git/config` (when bwrap is present) and otherwise by the prompt: a command that mentions a hard-denied path never matches an allow rule, and the threat model must state the gap, including indirect writes that the text check can't see.
 
 `praxis` and `xtask` both handle `sandbox-exec` before the async runtime starts, so restriction happens in a single-threaded process; it exits 126 when it refuses. Evals run the same sandbox nested inside their bwrap container. `sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
 
@@ -739,7 +741,7 @@ MCP servers and hooks are **not** sandboxed in the first version, because they a
 2. A repository can't run code or widen permissions without approval, and changed content requires re-approval.
 3. `Bash` never runs outside the sandbox unless the user turned it off in **user** config or a flag.
 4. Write and edit paths are checked after symlink resolution.
-5. **Hard denials,** even under `auto-edit` and `full-access` (§9, T10.7): `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.praxis/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9): the text check is best effort, and only the prompt stops a command that builds a `.git` path at run time (an interpreter or a variable).
+5. **Hard denials,** even under `auto-edit` and `full-access` (§9, T10.7): `.git` (the file or folder, at any depth, so submodule `.git/modules/*/hooks` and worktree `.git` files count), `.praxis/**`, `.mcp.json`, and user config. Otherwise the agent could approve itself or plant code that runs later. `Bash` has a documented limit (§9): the text check is best effort. A command that builds a `.git` path at run time (an interpreter or a variable) can still write `.git` objects, refs and index, and only the prompt stops that. `.git/hooks` and `.git/config` are read-only under the Git guard (§9) when `bwrap` is present, so a planted hook or alias can't run later; without `bwrap`, the prompt is the only stop for them too.
 6. Secrets don't appear in logs, session records or child environments. Keys are referenced by variable name.
 7. Tool output, MCP results and file contents are treated as data: never parsed for tool calls, and shown escaped in UIs.
 8. No network traffic except to the configured LM Studio server, the Anthropic API when enabled in user config or a flag, MCP servers, and whatever the user approves.

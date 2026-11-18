@@ -4,7 +4,7 @@
 //! cgroup or PID namespace if that becomes a real problem.
 
 use super::{ToolContext, ToolError, ToolOutput, filter};
-use crate::sandbox::Policy;
+use crate::sandbox::{self, Policy};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -180,7 +180,9 @@ pub async fn run(
             let policy = Policy::new(sandbox, &ctx.workspace, &tmp, &ctx.env);
             let policy = serde_json::to_string(&policy)
                 .map_err(|e| ToolError::Refused(format!("Can't encode the sandbox policy: {e}")))?;
-            let mut command = Command::new(&sandbox.helper);
+            let helper = sandbox::helper_command(&sandbox.helper, &ctx.workspace)
+                .map_err(ToolError::io("protect .git in", &ctx.workspace))?;
+            let mut command = Command::from(helper);
             command
                 .args(["sandbox-exec", "--policy", &policy, "--"])
                 .args(shell);

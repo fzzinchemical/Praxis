@@ -175,3 +175,82 @@ fn a_bad_invocation_never_runs_the_command() {
     assert_eq!(output.status.code(), Some(126));
     assert!(!exists(&marker));
 }
+
+/// Runs `script` through the `Bash` tool with the real helper, so the git guard applies.
+async fn bash_tool(f: &Fixture, script: &str) -> praxis_core::tools::ToolOutput {
+    let env = [
+        (OsString::from("HOME"), f.path("home").into_os_string()),
+        (OsString::from("PATH"), OsString::from("/usr/bin:/bin")),
+    ];
+    let sandbox = Sandbox {
+        helper: PathBuf::from(BIN),
+        ..Sandbox::default()
+    };
+    let ctx = praxis_core::tools::ToolContext::with_env(&f.path("ws"), env)
+        .unwrap()
+        .with_sandbox(sandbox);
+    let input = serde_json::json!({"command": script, "timeout": 30_000});
+    praxis_core::tools::execute(
+        "Bash",
+        input,
+        std::sync::Arc::new(ctx),
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+}
+
+/// A repository in the workspace, made outside the sandbox.
+fn init_repo(f: &Fixture) {
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(f.path("ws"))
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_INDEX_FILE")
+        .env_remove("GIT_WORK_TREE")
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+fn bwrap_available() -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join("bwrap").is_file()))
+}
+
+#[tokio::test]
+async fn runtime_built_git_paths_cannot_plant_hooks_or_config() {
+    if !bwrap_available() {
+        eprintln!("skipped: bwrap is not installed, so the git guard can't be tested");
+        return;
+    }
+    let f = Fixture::new();
+    init_repo(&f);
+    let hook = f.path("ws/.git/hooks/pre-commit");
+    let config = f.path("ws/.git/config");
+    let config_before = fs::read_to_string(&config).unwrap();
+
+    let script = "p=.g; p=${p}it; echo 'exit 1' > $p/hooks/pre-commit; \
+                  echo '[alias]' >> $p/config";
+    let output = bash_tool(&f, script).await;
+    assert!(output.is_error, "{}", output.content);
+    assert!(!exists(&hook), "a hook was planted");
+    assert_eq!(fs::read_to_string(&config).unwrap(), config_before);
+}
+
+#[tokio::test]
+async fn git_still_commits_inside_the_sandbox_with_the_guard() {
+    if !bwrap_available() {
+        eprintln!("skipped: bwrap is not installed, so the git guard can't be tested");
+        return;
+    }
+    let f = Fixture::new();
+    init_repo(&f);
+    let output = bash_tool(
+        &f,
+        "echo x > a.txt && git add a.txt && \
+         git -c user.name=t -c user.email=t@example.com commit -qm first",
+    )
+    .await;
+    assert!(!output.is_error, "{}", output.content);
+    assert!(exists(&f.path("ws/a.txt")));
+}
