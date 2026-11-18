@@ -188,6 +188,8 @@ const MAX_CALL_FAILURES: u32 = 3;
 const MAX_LENGTH_CONTINUES: u32 = 2;
 const NOT_RUN_RESULT: &str = "Cancelled by the user before this call ran.";
 const LOOP_NOT_RUN_RESULT: &str = "Not run: the turn stopped because a tool loop was detected.";
+/// Sent once after the first repeat; the turn stops only if the repeat continues.
+const REPEAT_NUDGE: &str = "You repeated the same call with the same result. Do not repeat it; read the file again or try a different approach.";
 const LOG_NOT_RUN_RESULT: &str = "Not run: the session log could not be written.";
 const ORPHAN_NOT_RUN_RESULT: &str = "Not run: the session ended before this call finished.";
 const INTERRUPTED_REPLY: &str = "(interrupted)";
@@ -967,6 +969,7 @@ impl Agent {
         let mut retry: Option<ToolSchema> = None;
         let mut overflow_retried = false;
         let mut warned = false;
+        let mut nudge_due = false;
         let mut length_continues = 0u32;
         // A change not yet followed by a command, and whether the nudge for it was already sent.
         let mut unchecked = false;
@@ -1096,12 +1099,10 @@ impl Agent {
                     stuck = Some(trigger);
                     LOOP_NOT_RUN_RESULT.to_owned()
                 } else if let Some(trigger) = trigger {
-                    // The first detection lets the model change course before the turn stops.
+                    // The first detection skips the call and nudges the model after the results.
                     warned = true;
-                    format!(
-                        "Not run: {} Try a different approach, or finish with a summary of what is done and what is not.",
-                        trigger.describe()
-                    )
+                    nudge_due = true;
+                    format!("Not run: {}", trigger.describe())
                 } else {
                     let (content, succeeded) = self.run_call(&call, turn).await;
                     match call.name.as_str() {
@@ -1131,6 +1132,13 @@ impl Agent {
                 });
             }
             // After every result of this round, so the tool-call pairing stays valid.
+            if nudge_due && stuck.is_none() {
+                nudge_due = false;
+                // The marker keeps this out of turn numbering (`Message::starts_turn`).
+                self.record(Message::User {
+                    content: format!("{MEMORY_MARK}{REPEAT_NUDGE}"),
+                });
+            }
             if !self.pending_memory.is_empty() {
                 // The marker keeps this message out of turn numbering (`Message::starts_turn`).
                 let content = format!(

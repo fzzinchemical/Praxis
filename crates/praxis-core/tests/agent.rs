@@ -6,7 +6,7 @@
 use praxis_core::agent::{Agent, AgentConfig, AgentEvent, PermissionReply, ToolOutcome};
 use praxis_core::hooks::{Hook, Matcher};
 use praxis_core::permissions::Policy;
-use praxis_core::provider::{Message, Provider};
+use praxis_core::provider::{MEMORY_MARK, Message, Provider};
 use praxis_core::tools::ToolContext;
 use serde_json::{Value, json};
 use std::fs;
@@ -1264,6 +1264,22 @@ async fn a_repeated_call_stops_the_turn_with_a_warning_and_a_new_prompt_starts_c
     let events = h.turn("again", CancellationToken::new(), never_asked).await;
     assert_eq!(h.server.received_requests().await.unwrap().len(), 8);
     assert_eq!(events.last().unwrap(), "ended:LoopDetected");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_first_repeat_appends_a_marked_nudge_after_the_results() {
+    let looping = tool_reply(&[("c", "Glob", json!({"pattern": "*"}))]);
+    let mut h = Harness::new(vec![looping], 50).await;
+
+    h.turn("go", CancellationToken::new(), never_asked).await;
+
+    // Request 4 follows the first repeat: the nudge is the last message, after the tool result.
+    let messages = h.request_messages(3).await;
+    let last = messages.last().unwrap();
+    assert_eq!(last["role"], "user");
+    let content = last["content"].as_str().unwrap();
+    assert!(content.starts_with(MEMORY_MARK));
+    assert!(content.contains("You repeated the same call"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
