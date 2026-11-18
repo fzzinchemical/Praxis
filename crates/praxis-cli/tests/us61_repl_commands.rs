@@ -13,6 +13,39 @@ use std::fs;
 const NO_LOAD_ARGS: &str = "--config-override agent.auto_load=false --model m";
 
 #[tokio::test(flavor = "multi_thread")]
+async fn execute_without_a_plan_says_so_and_sends_nothing_to_the_model() {
+    let dir = workspace();
+    let server = server(None, Replies(vec![text_reply("should not be used")])).await;
+
+    let output = in_terminal(&server.uri(), &dir, NO_LOAD_ARGS, "y\n/execute\n/exit\n").await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", out(&output));
+    assert!(
+        out(&output).contains("Nothing to execute; start with /plan <task>."),
+        "{}",
+        out(&output)
+    );
+    assert!(requests_to(&server, CHAT).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unknown_slash_command_is_reported_and_not_sent_to_the_model() {
+    let dir = workspace();
+    let server = server(None, Replies(vec![text_reply("should not be used")])).await;
+
+    let typed = "y\n/nosuchcommand now\n/exit\n";
+    let output = in_terminal(&server.uri(), &dir, NO_LOAD_ARGS, typed).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", out(&output));
+    assert!(
+        out(&output).contains("Unknown command: /nosuchcommand now"),
+        "{}",
+        out(&output)
+    );
+    assert!(requests_to(&server, CHAT).await.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn plan_without_a_task_prints_usage_and_sends_nothing_to_the_model() {
     let dir = workspace();
     let server = server(None, Replies(vec![text_reply("should not be used")])).await;

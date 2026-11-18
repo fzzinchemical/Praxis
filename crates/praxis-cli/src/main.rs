@@ -54,7 +54,8 @@ struct Cli {
     #[arg(long = "config-override", value_name = "KEY=VALUE", global = true)]
     overrides: Vec<String>,
     /// Continue the session with this id, or without one the newest session in this workspace.
-    #[arg(long, value_name = "ID", num_args = 0..=1)]
+    // require_equals keeps `praxis --resume "fix bug"` a prompt; an ID needs `--resume=ID`.
+    #[arg(long, value_name = "ID", num_args = 0..=1, require_equals = true)]
     resume: Option<Option<String>>,
     #[command(subcommand)]
     command: Option<Command>,
@@ -359,7 +360,6 @@ struct Plugins {
     mcp: BTreeMap<String, McpServer>,
 }
 
-/// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
 /// Lists the servers a session would start, with their source (SPEC §13). Nothing connects, so
 /// the status is `configured` rather than a health check.
 fn mcp_list(json: bool, config: &Config, workspace: &Path) -> Result<u8> {
@@ -401,6 +401,7 @@ fn mcp_list(json: bool, config: &Config, workspace: &Path) -> Result<u8> {
     Ok(0)
 }
 
+/// Loads enabled plugins; a broken one is skipped with a notice so the session still starts.
 fn load_plugins(workspace: &Path, config: &Config) -> Plugins {
     let mut out = Plugins::default();
     let found = standalone(&markdown_layers(workspace));
@@ -615,7 +616,8 @@ fn tool_context(workspace: &Path, config: &Config) -> Result<ToolContext> {
         .with_readable(user_files.into_iter().flatten());
     let settings = &config.sandbox;
     if settings.mode == SandboxMode::Off {
-        eprintln!("The sandbox is off: commands run with your full access.");
+        static NOTICE: std::sync::Once = std::sync::Once::new();
+        NOTICE.call_once(|| eprintln!("The sandbox is off: commands run with your full access."));
         return Ok(tools);
     }
     Ok(tools.with_sandbox(Sandbox {
@@ -847,16 +849,19 @@ async fn run_turn(
     while let Some(event) = rx.recv().await {
         let event = match event {
             // A subagent's text stays out of the terminal view; its tool calls and prompts show as before.
-            AgentEvent::Subagent { event, .. } if !matches!(*event, AgentEvent::TextDelta(_)) => {
-                *event
+            AgentEvent::Subagent { event, .. } if matches!(*event, AgentEvent::TextDelta(_)) => {
+                continue;
             }
-            AgentEvent::Subagent { .. } => continue,
+            AgentEvent::Subagent { event, .. } => *event,
             other => other,
         };
         match event {
             AgentEvent::TextDelta(text) => {
                 let text = sanitize(&text);
-                mid_line = !text.ends_with('\n');
+                // An empty chunk after sanitizing leaves the cursor where it was.
+                if !text.is_empty() {
+                    mid_line = !text.ends_with('\n');
+                }
                 stdout.write_all(text.as_bytes())?;
                 stdout.flush()?;
             }
@@ -900,7 +905,7 @@ async fn run_turn(
             AgentEvent::Compaction(state) => eprintln!("[compaction {state:?}]"),
             AgentEvent::Notice { title, .. } => eprintln!("{}", sanitize(&title)),
             AgentEvent::TurnEnded(reason) => stop = reason,
-            // Unwrapped above, so only reachable if that unwrapping changes.
+            // Subagent wrappers are unwrapped above; this arm only keeps the match exhaustive.
             AgentEvent::Subagent { .. } => {}
         }
     }
@@ -948,30 +953,45 @@ fn load_context(model: &str, requested: Option<u32>, profiles: &[(String, Profil
         .unwrap_or(DEFAULT_CONTEXT)
 }
 
-/// Follows SPEC §5.2: the provider refuses an unapproved load, this asks and retries.
+/// Loads the model and returns the model list it read, if it had to read one to pick the model,
+/// so the caller doesn't ask LM Studio twice.
 async fn ready_model(
     provider: &Provider,
     requested: Option<String>,
     config: &Config,
     terminal: &mut Option<Terminal>,
-) -> Result<ReadyModel, ProviderError> {
-    let (model, context) = match requested {
+) -> Result<(ReadyModel, Option<Vec<ModelInfo>>), ProviderError> {
+    let (model, context, fetched) = match requested {
         Some(model) => {
             let context = load_context(&model, config.lmstudio.context, &user_profiles(config));
-            (model, context)
+            (model, context, None)
         }
         None => {
             let models = provider.list_models().await?;
-            let (model, loaded) = first_loaded(&models).ok_or(ProviderError::NoModelLoaded)?;
-            (model.key.clone(), config.lmstudio.context.unwrap_or(loaded))
+            let (key, loaded) = first_loaded(&models)
+                .map(|(model, loaded)| (model.key.clone(), loaded))
+                .ok_or(ProviderError::NoModelLoaded)?;
+            (key, config.lmstudio.context.unwrap_or(loaded), Some(models))
         }
     };
+    let ready = load_model(provider, &model, context, config, terminal).await?;
+    Ok((ready, fetched))
+}
+
+/// Follows SPEC §5.2: the provider refuses an unapproved load, this asks and retries.
+async fn load_model(
+    provider: &Provider,
+    model: &str,
+    context: u32,
+    config: &Config,
+    terminal: &mut Option<Terminal>,
+) -> Result<ReadyModel, ProviderError> {
     let policy = if config.agent.auto_load {
         LoadPolicy::Allowed
     } else {
         LoadPolicy::AskFirst
     };
-    match provider.ensure_ready(&model, context, policy).await {
+    match provider.ensure_ready(model, context, policy).await {
         Err(error @ ProviderError::LoadNeedsConsent { .. }) => {
             let Some(terminal) = terminal else {
                 return Err(error);
@@ -980,7 +1000,7 @@ async fn ready_model(
             match terminal.recv().await {
                 Some(line) if parse_reply(&line, false) == PermissionReply::AllowOnce => {
                     provider
-                        .ensure_ready(&model, context, LoadPolicy::Allowed)
+                        .ensure_ready(model, context, LoadPolicy::Allowed)
                         .await
                 }
                 _ => Err(error),
@@ -1052,6 +1072,9 @@ async fn repl(
                     let prompt = format!("{PLAN_PROMPT}\n\n{task}");
                     agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
                 }
+                Some(PlanCommand::Execute) if !planning => {
+                    eprintln!("Nothing to execute; start with /plan <task>.");
+                }
                 Some(PlanCommand::Execute) => {
                     planning = false;
                     agent.set_mode(configured);
@@ -1059,13 +1082,20 @@ async fn repl(
                     agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
                 }
                 None => {
-                    let prompt = run_command(
+                    let expanded = run_command(
                         commands,
                         line.trim(),
                         agent.tools().workspace(),
                         agent.session_id(),
-                    )
-                    .unwrap_or_else(|| line.trim().to_owned());
+                    );
+                    let prompt = match expanded {
+                        Some(prompt) => prompt,
+                        None if line.trim().starts_with('/') => {
+                            eprintln!("Unknown command: {}", sanitize(line.trim()));
+                            continue;
+                        }
+                        None => line.trim().to_owned(),
+                    };
                     agent = run_turn(agent, prompt, &mut terminal, interrupt).await?.0;
                 }
             },
@@ -1180,7 +1210,7 @@ impl acp::Models for Picker {
     }
 
     async fn load(&self, key: &str) -> Result<acp::Loaded> {
-        let ready = ready_model(
+        let (ready, _) = ready_model(
             &self.provider,
             Some(key.to_owned()),
             &self.config,
@@ -1272,30 +1302,34 @@ async fn run(
         }
         None => None,
     };
-    let plugins = load_plugins(&workspace, &config);
-    let mut servers = config.mcp.clone();
-    let mut sources = config.mcp_sources.clone();
-    sources.extend(
-        plugins
-            .mcp
-            .keys()
-            .map(|name| (name.clone(), praxis_core::mcp::McpSource::Plugin)),
-    );
-    servers.extend(plugins.mcp);
-    // Connecting needs only config, so it overlaps the model load (F11). Pinning stays after the reply.
-    let connect = async {
-        if servers.is_empty() && config.mcp_pending.is_empty() {
+    // Plugin discovery and connecting need only config and the workspace, so both overlap the
+    // model load (F11). Discovery is blocking file IO, so it runs off the async threads.
+    let loading = async {
+        let (dir, cfg) = (workspace.clone(), config.clone());
+        let plugins = tokio::task::spawn_blocking(move || load_plugins(&dir, &cfg)).await?;
+        let mut servers = config.mcp.clone();
+        let mut sources = config.mcp_sources.clone();
+        sources.extend(
+            plugins
+                .mcp
+                .keys()
+                .map(|name| (name.clone(), praxis_core::mcp::McpSource::Plugin)),
+        );
+        servers.extend(plugins.mcp.clone());
+        // Pinning stays after the reply.
+        let connected = if servers.is_empty() && config.mcp_pending.is_empty() {
             None
         } else {
             Some(praxis_core::mcp::Mcp::connect(&servers, praxis_core::mcp::CONNECT_TIMEOUT).await)
-        }
+        };
+        Ok::<_, anyhow::Error>((plugins, sources, connected))
     };
-    let (ready, connected) = tokio::join!(
+    let (ready, loaded) = tokio::join!(
         ready_model(&provider, requested, &config, &mut terminal),
-        connect
+        loading
     );
-    let ready = match ready {
-        Ok(ready) => ready,
+    let (ready, fetched) = match ready {
+        Ok(pair) => pair,
         // Stay up so the editor shows the problem on session/new instead of a dead process.
         Err(error) if acp => {
             let message = error.to_string();
@@ -1315,7 +1349,11 @@ async fn run(
         }
         Err(error) => return Err(error.into()),
     };
-    let models = provider.list_models().await?;
+    let (plugins, sources, connected) = loaded?;
+    let models = match fetched {
+        Some(models) => models,
+        None => provider.list_models().await?,
+    };
     let reported = models.iter().find(|m| {
         m.loaded_instances
             .iter()
@@ -1495,6 +1533,16 @@ mod tests {
         assert_eq!(plan_command("/execute"), Some(PlanCommand::Execute));
         assert_eq!(plan_command("/planning notes"), None);
         assert_eq!(plan_command("write a plan"), None);
+    }
+
+    #[test]
+    fn a_bare_resume_flag_leaves_the_following_words_as_the_prompt() {
+        let cli = Cli::try_parse_from(["praxis", "--resume", "fix bug"]).unwrap();
+        assert_eq!(cli.resume, Some(None));
+        assert_eq!(cli.prompt.as_deref(), Some("fix bug"));
+        let cli = Cli::try_parse_from(["praxis", "--resume=abc", "fix bug"]).unwrap();
+        assert_eq!(cli.resume, Some(Some("abc".to_owned())));
+        assert_eq!(cli.prompt.as_deref(), Some("fix bug"));
     }
 
     #[test]

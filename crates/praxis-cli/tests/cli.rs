@@ -112,6 +112,26 @@ async fn without_a_model_flag_it_uses_what_is_loaded() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn without_a_model_flag_the_cli_adds_no_model_listing_of_its_own() {
+    let server = server(Some(4096), Replies(vec![text_reply("ok")])).await;
+
+    let output = run(&server, &workspace(), &["hi"]).await;
+
+    assert_eq!(output.status.code(), Some(0), "{}", err(&output));
+    let listings = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|r| r.url.path() == "/api/v1/models")
+        .count();
+    // One lists the models to pick the loaded one; the other is `ensure_ready`'s own check
+    // in praxis-core. The CLI adds no third listing.
+    // shortcut: ensure_ready lists again on every call; drop to 1 once core takes the list.
+    assert_eq!(listings, 2);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn takes_the_prompt_from_stdin() {
     let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
     let mut child = command(&server.uri(), &workspace(), &["--model", "m"])
@@ -284,12 +304,7 @@ async fn resume_with_an_unknown_id_names_the_session_it_could_not_resume() {
     let dir = workspace();
     let server = server(Some(32768), Replies(vec![text_reply("ok")])).await;
 
-    let output = run(
-        &server,
-        &dir,
-        &["--model", "m", "say hi", "--resume", "nope"],
-    )
-    .await;
+    let output = run(&server, &dir, &["--model", "m", "say hi", "--resume=nope"]).await;
 
     assert_eq!(output.status.code(), Some(1), "{}", out(&output));
     assert!(

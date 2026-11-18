@@ -75,6 +75,8 @@ struct Server<M> {
     client_reads: AtomicBool,
     /// Whether the client advertised `_meta.praxis.diagnostics` at `initialize` (SPEC §11).
     client_diagnostics: AtomicBool,
+    /// Set by the first `initialize`, so a repeat doesn't start a second resources loop.
+    resources_started: AtomicBool,
 }
 
 /// The `sessionId` and `name` of an approval request, or `None` when either is missing.
@@ -176,6 +178,8 @@ impl<M: Models> Server<M> {
         client_cwd: &Path,
         cx: &ConnectionTo<Client>,
     ) -> anyhow::Result<(String, Vec<Entry>, String)> {
+        // Built before the log is created, so a failure leaves no empty session file behind.
+        let agent = (self.new_agent)()?;
         let (log, prior) = match resume {
             Some(id) => {
                 // The old slot holds the log's lock, so release it before reopening the file.
@@ -190,7 +194,6 @@ impl<M: Models> Server<M> {
             ),
         };
         let id = log.id().to_owned();
-        let agent = (self.new_agent)()?;
         let mode = agent.permission_mode();
         agent
             .tools()
@@ -436,6 +439,7 @@ pub fn agent(
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
         client_diagnostics: AtomicBool::new(false),
+        resources_started: AtomicBool::new(false),
     });
     let (
         for_init,
@@ -464,7 +468,9 @@ pub fn agent(
         .v1()
         .on_receive_request(
             async move |req: v1::InitializeRequest, responder, cx| {
-                spawn_resources(cx.clone());
+                if !for_init.resources_started.swap(true, Ordering::Relaxed) {
+                    spawn_resources(cx.clone());
+                }
                 let reads = req.client_capabilities.fs.read_text_file;
                 for_init.client_reads.store(reads, Ordering::Relaxed);
                 let diagnostics = req
@@ -519,8 +525,9 @@ pub fn agent(
                     match for_load.open(Some(&req.session_id.to_string()), &req.cwd, &cx) {
                         Ok((id, prior, _)) => (prior, for_load.config_options(&id)),
                         Err(e) => {
-                            return responder
-                                .respond_with_error(Error::invalid_params().data(e.to_string()));
+                            return responder.respond_with_error(
+                                Error::invalid_params().data(format!("{e:#}")),
+                            );
                         }
                     };
                 if let Some(note) = commands_update(req.session_id.clone(), &for_load.commands) {
@@ -644,9 +651,7 @@ pub fn agent(
                     }
                     match stop_reason(stop) {
                         Some(reason) => responder.respond(v1::PromptResponse::new(reason)),
-                        None => {
-                            responder.respond_with_internal_error(format!("turn failed: {stop:?}"))
-                        }
+                        None => responder.respond_with_internal_error(stop_message(stop)),
                     }
                 })
             },
@@ -766,7 +771,7 @@ pub fn agent(
                     return match outcome {
                         Ok(()) => responder.respond(json!({"path": path})),
                         Err(e) => responder
-                            .respond_with_error(Error::invalid_params().data(e.to_string())),
+                            .respond_with_error(Error::invalid_params().data(format!("{e:#}"))),
                     };
                 }
                 if req.method() == MCP_SERVERS {
@@ -833,7 +838,7 @@ pub fn agent(
                 match outcome {
                     Ok(_) => responder.respond(json!({"turn": turn})),
                     Err(e) => {
-                        responder.respond_with_error(Error::invalid_params().data(e.to_string()))
+                        responder.respond_with_error(Error::invalid_params().data(format!("{e:#}")))
                     }
                 }
             },
@@ -983,24 +988,47 @@ fn chunk(text: String) -> v1::ContentChunk {
     v1::ContentChunk::new(text.into())
 }
 
-/// The `AgentEvent` to `session/update` table in SPEC §11. Permission requests and the turn's
-/// end aren't updates, so they map to `None`.
 /// The model's prompt: text blocks as they are, editor context as text it can read. Images and
 /// audio are dropped.
+/// The local path of a `file://` URI, with its percent-escapes decoded (`%20` is a space).
+fn file_path(uri: &str) -> String {
+    let raw = uri.trim_start_matches("file://").as_bytes();
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let escape = match raw.get(i + 1..i + 3) {
+            Some(&[hi, lo]) if raw[i] == b'%' => {
+                (hi as char).to_digit(16).zip((lo as char).to_digit(16))
+            }
+            _ => None,
+        };
+        match escape {
+            Some((hi, lo)) => {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+            }
+            None => {
+                out.push(raw[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 // shortcut: a resource link carries its path, not its contents; the model reads the file with Read.
 fn prompt_text(blocks: &[v1::ContentBlock]) -> String {
     blocks
         .iter()
         .filter_map(|block| match block {
             v1::ContentBlock::Text(text) => Some(text.text.clone()),
-            v1::ContentBlock::ResourceLink(link) => Some(format!(
-                "Attached file: {}",
-                link.uri.trim_start_matches("file://")
-            )),
+            v1::ContentBlock::ResourceLink(link) => {
+                Some(format!("Attached file: {}", file_path(&link.uri)))
+            }
             v1::ContentBlock::Resource(embedded) => match &embedded.resource {
                 v1::EmbeddedResourceResource::TextResourceContents(text) => Some(format!(
                     "Selection from {}:\n```\n{}\n```",
-                    text.uri.trim_start_matches("file://"),
+                    file_path(&text.uri),
                     text.text
                 )),
                 _ => None,
@@ -1011,6 +1039,8 @@ fn prompt_text(blocks: &[v1::ContentBlock]) -> String {
         .join("\n")
 }
 
+/// The `AgentEvent` to `session/update` table in SPEC §11. Permission requests and the turn's
+/// end aren't updates, so they map to `None`.
 fn update(event: AgentEvent) -> Option<v1::SessionUpdate> {
     Some(match event {
         AgentEvent::TextDelta(text) => v1::SessionUpdate::AgentMessageChunk(chunk(text)),
@@ -1251,6 +1281,18 @@ fn iso8601(secs: u64) -> String {
 }
 
 /// `None` for a turn that failed rather than stopped: the client gets an error instead.
+/// The error text for a turn that ended without a protocol stop reason, for the editor to show.
+fn stop_message(stop: StopReason) -> String {
+    match stop {
+        StopReason::LoopDetected => {
+            "The model kept repeating the same tool call, so the turn was stopped."
+        }
+        StopReason::LogFailed => "The session log could not be written, so the turn was stopped.",
+        _ => "The model provider failed. Check that LM Studio is running and has a model loaded.",
+    }
+    .to_owned()
+}
+
 fn stop_reason(stop: StopReason) -> Option<v1::StopReason> {
     match stop {
         StopReason::EndTurn => Some(v1::StopReason::EndTurn),
@@ -1265,6 +1307,20 @@ fn stop_reason(stop: StopReason) -> Option<v1::StopReason> {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::ProtocolVersion;
+
+    #[test]
+    fn file_uris_lose_their_scheme_and_percent_escapes() {
+        assert_eq!(file_path("file:///tmp/a%20b/c%2Dd.rs"), "/tmp/a b/c-d.rs");
+        assert_eq!(file_path("file:///tmp/100%"), "/tmp/100%");
+        assert_eq!(file_path("file:///tmp/%zz"), "/tmp/%zz");
+    }
+
+    #[test]
+    fn a_turn_without_a_stop_reason_says_why_in_plain_words() {
+        assert!(stop_message(StopReason::LoopDetected).contains("repeating"));
+        assert!(stop_message(StopReason::LogFailed).contains("session log"));
+        assert!(stop_message(StopReason::ProviderError).contains("LM Studio"));
+    }
     use praxis_core::agent::AgentConfig;
     use praxis_core::provider::{Provider, ToolCall};
     use praxis_core::tools::{ToolContext, ToolOutput};
@@ -1683,6 +1739,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
+            resources_started: AtomicBool::new(false),
         };
         let tools = Arc::new(ToolContext::new(&dir).unwrap());
         let provider = Arc::new(Provider::new("http://127.0.0.1:1", None).unwrap());
@@ -1733,6 +1790,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
+            resources_started: AtomicBool::new(false),
         };
         let pending = PendingMcp {
             server: McpServer::Stdio(StdioServer {
@@ -1854,6 +1912,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
+            resources_started: AtomicBool::new(false),
         };
         let status = ServerStatus {
             name: "git".into(),
@@ -1937,6 +1996,7 @@ mod tests {
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
+            resources_started: AtomicBool::new(false),
         };
         let url = "http://127.0.0.1:1".to_owned();
         let tools = Arc::new(ToolContext::new(&dir).unwrap());
