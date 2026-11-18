@@ -157,6 +157,9 @@ struct Ui {
     /// The context the agent last reported (tokens used, window size), and the tool now running.
     usage: Option<(u32, u32)>,
     running: Option<String>,
+    /// Streamed text changed since the last render; a frame renders it once for many tokens.
+    dirty: bool,
+    frame_pending: bool,
 }
 
 fn parse_commands(message: &Value) -> Vec<view::Command> {
@@ -351,6 +354,25 @@ fn reduced_motion() -> bool {
         .is_some_and(|query: MediaQueryList| query.matches())
 }
 
+/// Renders pending streamed text on the next animation frame, at most one frame pending at a time.
+fn schedule_render(state: &Shared) {
+    let mut ui = state.borrow_mut();
+    if !ui.dirty || ui.frame_pending {
+        return;
+    }
+    ui.frame_pending = true;
+    let state = state.clone();
+    let frame = Closure::once_into_js(move || {
+        let mut ui = state.borrow_mut();
+        ui.frame_pending = false;
+        let _ = ui.render_text();
+    });
+    // Without a window or frame the text still renders at the message's close.
+    if let Some(window) = web_sys::window() {
+        let _ = window.request_animation_frame(frame.unchecked_ref());
+    }
+}
+
 fn set_enabled(element: &Element, enabled: bool) -> Result<(), JsValue> {
     if enabled {
         element.remove_attribute("disabled")
@@ -438,6 +460,8 @@ pub fn start() -> Result<(), JsValue> {
         subagents: 0,
         usage: None,
         running: None,
+        dirty: false,
+        frame_pending: false,
     }));
 
     let state = ui.clone();
@@ -449,6 +473,7 @@ pub fn start() -> Result<(), JsValue> {
         if let Some(message) = message {
             // Errors here mean a DOM call failed; nothing useful to do but keep the panel alive.
             let _ = state.borrow_mut().handle(&message);
+            schedule_render(&state);
         }
     });
     window.add_event_listener_with_callback("message", on_message.as_ref().unchecked_ref())?;
@@ -556,8 +581,10 @@ pub fn start() -> Result<(), JsValue> {
             return;
         }
         if view::can_send(ui.ready, &ui.phase) {
-            // A failed send leaves the turn unstarted; the prompt is already in the box to retry.
-            let _ = ui.send(&text);
+            // `send` renders before it posts, so a failure means nothing was sent: keep the prompt to retry.
+            if ui.send(&text).is_err() {
+                return;
+            }
         } else {
             ui.queue.push(text);
             let _ = ui.render_queue();
@@ -863,18 +890,20 @@ impl Ui {
             }
         }
         self.turns = turn - 1;
-        self.message = None;
+        self.close_message()?;
         let note = format!("Rewound to before turn {turn}. Bash effects are not undone.");
         self.append("p", "notice", &note)?;
         Ok(())
     }
 
     /// Posts a prompt the way a normal send does, then starts the turn it opens.
+    /// Renders the turn before posting it, so a DOM failure leaves nothing sent to retry twice.
     fn send(&mut self, text: &str) -> Result<(), JsValue> {
+        self.begin(text)?;
         let message = json!({"type": "prompt", "text": text, "file": self.attached_file(),
             "files": self.added, "problems": self.problems.checked()});
         self.vscode.post_message(&message.to_string());
-        self.begin(text)
+        Ok(())
     }
 
     /// Shows the queued prompts above the input, each with its own Remove button.
@@ -882,12 +911,19 @@ impl Ui {
         let prompts = self.queue.prompts();
         set_hidden(&self.queue_box, prompts.is_empty())?;
         set_hidden(&self.queue_status, !self.queue.is_paused())?;
+        // Rebuilding detaches a focused Remove; focus the one now in its place, else the prompt box.
+        let focused = self
+            .document
+            .active_element()
+            .filter(|el| self.queue_list.contains(Some(el)))
+            .and_then(|el| el.get_attribute("data-queue-remove")?.parse::<usize>().ok());
         self.queue_list.set_text_content(Some(""));
+        let mut removes: Vec<HtmlElement> = Vec::with_capacity(prompts.len());
         for (index, prompt) in prompts.iter().enumerate() {
             let item = self.document.create_element("li")?;
             let text = self.document.create_element("span")?;
             text.set_text_content(Some(prompt));
-            let remove = self.document.create_element("button")?;
+            let remove: HtmlElement = self.document.create_element("button")?.dyn_into()?;
             remove.set_attribute("type", "button")?;
             remove.set_attribute("data-queue-remove", &index.to_string())?;
             remove.set_attribute("aria-label", &format!("Remove queued prompt: {prompt}"))?;
@@ -895,12 +931,20 @@ impl Ui {
             item.append_child(&text)?;
             item.append_child(&remove)?;
             self.queue_list.append_child(&item)?;
+            removes.push(remove);
+        }
+        match focused {
+            Some(index) if !removes.is_empty() => {
+                removes[index.min(removes.len() - 1)].focus()?;
+            }
+            Some(_) => self.input.focus()?,
+            None => {}
         }
         Ok(())
     }
 
     fn begin(&mut self, prompt: &str) -> Result<(), JsValue> {
-        self.message = None;
+        self.close_message()?;
         self.user_bubble(prompt)?;
         self.started = js_sys::Date::now();
         self.ended = None;
@@ -922,9 +966,34 @@ impl Ui {
         Ok(())
     }
 
+    /// Renders the streamed text as it stands now; a frame calls this for each burst of tokens.
+    fn render_text(&mut self) -> Result<(), JsValue> {
+        if !std::mem::take(&mut self.dirty) {
+            return Ok(());
+        }
+        if let Some((element, markdown)) = &self.message {
+            keep_bottom(&self.output, || {
+                // Safe only because `view::markdown` escapes raw HTML and drops unsafe links.
+                element.set_inner_html(&view::markdown(markdown));
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Renders the final text and ends the streamed message; only now does it become announceable.
+    fn close_message(&mut self) -> Result<(), JsValue> {
+        self.render_text()?;
+        if let Some((element, _)) = self.message.take() {
+            element.remove_attribute("aria-busy")?;
+            element.set_attribute("aria-live", "polite")?;
+        }
+        Ok(())
+    }
+
     /// Leaves the busy state, so a dead or failed session never looks like it is still working.
     fn idle(&mut self) -> Result<(), JsValue> {
-        self.message = None;
+        self.close_message()?;
         self.phase = Phase::Idle;
         self.ended = Some(js_sys::Date::now());
         self.output.remove_attribute("aria-busy")?;
@@ -1088,7 +1157,7 @@ impl Ui {
                 self.render_menu()?;
             }
             "user" => {
-                self.message = None;
+                self.close_message()?;
                 self.user_bubble(text("text"))?;
             }
             "reverted" => {
@@ -1108,15 +1177,14 @@ impl Ui {
                 self.phase = Phase::Generating;
                 if self.message.is_none() {
                     let element = self.append("div", "message", "")?;
+                    // Busy while streaming so screen readers announce the finished message once.
+                    element.set_attribute("aria-busy", "true")?;
+                    element.set_attribute("aria-live", "off")?;
                     self.message = Some((element, String::new()));
                 }
-                if let Some((element, markdown)) = &mut self.message {
+                if let Some((_, markdown)) = &mut self.message {
                     markdown.push_str(text("text"));
-                    keep_bottom(&self.output, || {
-                        // Safe only because `view::markdown` escapes raw HTML and drops unsafe links.
-                        element.set_inner_html(&view::markdown(markdown));
-                        Ok(())
-                    })?;
+                    self.dirty = true;
                 }
             }
             "active" => {
@@ -1186,7 +1254,7 @@ impl Ui {
     }
 
     fn tool(&mut self, message: &Value) -> Result<(), JsValue> {
-        self.message = None;
+        self.close_message()?;
         let id = message["id"].as_str().unwrap_or_default().to_owned();
         let status = message["status"].as_str().unwrap_or("pending");
         self.phase = match status {
@@ -1255,7 +1323,10 @@ impl Ui {
             stop.set_attribute("type", "button")?;
             stop.set_attribute("data-stop-subagent", &id)?;
             stop.set_text_content(Some("Stop"));
-            tool.details.insert_before(&stop, Some(tool.pre.as_ref()))?;
+            // Beside the collapsed block, like Open diff: inside it, the button is hidden and unreachable.
+            if let Some(parent) = tool.details.parent_node() {
+                parent.insert_before(&stop, tool.details.next_sibling().as_ref())?;
+            }
             tool.stop = Some(stop);
         }
         if tool.kind.is_some() && tool.files.is_none() {
@@ -1347,14 +1418,21 @@ impl Ui {
                 .iter()
                 .map(|(_, file, status)| (file.as_deref(), status.as_str())),
         );
+        // Rebuilding detaches the focused button; remember its file and focus the new one for it.
+        let focused = self
+            .document
+            .active_element()
+            .filter(|el| container.contains(Some(el)))
+            .and_then(|el| el.get_attribute("data-open-change"));
         container.set_text_content(None);
+        let mut refocus: Option<HtmlElement> = None;
         for file in files {
             // The file's last call, so its diff is that change's, as the call's own button shows.
             let last = calls
                 .iter()
                 .rev()
                 .find(|(_, call_file, _)| call_file.as_deref() == Some(file));
-            let button = self.document.create_element("button")?;
+            let button: HtmlElement = self.document.create_element("button")?.dyn_into()?;
             button.set_attribute("type", "button")?;
             button.set_attribute("data-open-change", file)?;
             if let Some((id, _, _)) = last {
@@ -1362,6 +1440,12 @@ impl Ui {
             }
             button.set_text_content(Some(file));
             container.append_child(&button)?;
+            if focused.as_deref() == Some(file) {
+                refocus = Some(button);
+            }
+        }
+        if let Some(button) = refocus {
+            button.focus()?;
         }
         Ok(())
     }
@@ -1383,7 +1467,7 @@ impl Ui {
     }
 
     fn permission(&mut self, message: &Value) -> Result<(), JsValue> {
-        self.message = None;
+        self.close_message()?;
         self.phase = Phase::Waiting;
         let id = message["id"].to_string();
         let title = message["title"].as_str().unwrap_or("a tool");
@@ -1402,8 +1486,12 @@ impl Ui {
             button.set_attribute("data-option", option["id"].as_str().unwrap_or_default())?;
             button.set_text_content(option["name"].as_str());
             prompt.append_child(&button)?;
-            if index == 0 {
-                // Keyboard users land on the prompt instead of hunting for it.
+            // Keyboard users land on the prompt, but never pull focus out of a prompt being typed.
+            let typing = self
+                .document
+                .active_element()
+                .is_some_and(|el| el.is_same_node(Some(self.input.as_ref())));
+            if index == 0 && !typing {
                 button.focus()?;
             }
         }
