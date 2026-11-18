@@ -2479,6 +2479,112 @@ mod tests {
         assert!(!dir.join("ok.txt").exists());
     }
 
+    /// Closing drops the slot at once, so its agent and MCP children go with it when idle.
+    #[tokio::test]
+    async fn closing_a_session_frees_its_slot() {
+        let dir = temp_dir("close-frees");
+        let server = Server {
+            new_agent: Box::new(|| unreachable!("no new agent is needed")),
+            models: FakeModels,
+            sessions_dir: dir.join("sessions"),
+            commands: Vec::new(),
+            trust: None,
+            sessions: Mutex::new(HashMap::new()),
+            client_reads: AtomicBool::new(false),
+            client_diagnostics: AtomicBool::new(false),
+            resources_started: AtomicBool::new(false),
+        };
+        let tools = Arc::new(ToolContext::new(&dir).unwrap());
+        let provider = Arc::new(Provider::new("http://127.0.0.1:1", None).unwrap());
+        let config = AgentConfig {
+            model: "m".into(),
+            context_size: 100_000,
+            system_prompt: "sys".into(),
+            memory: Vec::new(),
+            user_memory: 0,
+            scoped_rules: Vec::new(),
+            mask_keep_turns: 10,
+            max_turn_requests: 10,
+            profile: praxis_core::agent::profile::ModelProfile::default(),
+            seed: None,
+            policy: praxis_core::permissions::Policy::default(),
+            masking: true,
+        };
+        let agent = Agent::new(provider, tools, config);
+        server.sessions().insert(
+            "s".into(),
+            Slot {
+                subagents: agent.subagent_stops(),
+                agent: Some(agent),
+                cancel: CancellationToken::new(),
+                model: "m".into(),
+                mode: Mode::Ask,
+                mcp: Vec::new(),
+                mcp_off: BTreeSet::new(),
+            },
+        );
+        server.close("s").unwrap();
+        assert!(server.sessions().get("s").is_none());
+        assert!(server.close("s").is_err(), "a second close finds nothing");
+    }
+
+    /// A closed session is reloaded from its log by `session/load`, with its history replayed.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn closing_then_loading_a_session_restores_its_history() {
+        let dir = temp_dir("close-load");
+        let server = fake_server().await;
+        let log = Log::default();
+        let on_update = log.clone();
+        let run = Client
+            .v1()
+            .on_receive_notification(
+                async move |note: v1::SessionNotification, _cx| {
+                    let update = to_value(&note.update).unwrap();
+                    let text = update["content"]["text"].as_str().unwrap_or_default();
+                    push(&on_update, format!("{} {text}", update["sessionUpdate"]));
+                    Ok(())
+                },
+                on_receive_notification!(),
+            )
+            .connect_with(praxis(&server, &dir), async |cx| {
+                let init = v1::InitializeRequest::new(ProtocolVersion::V1);
+                cx.send_request(init).block_task().await?;
+                let session = cx
+                    .send_request(v1::NewSessionRequest::new(&dir))
+                    .block_task()
+                    .await?;
+                let id = session.session_id.clone();
+                let prompt = v1::PromptRequest::new(id.clone(), vec!["go".into()]);
+                cx.send_request(prompt).block_task().await?;
+                cx.send_request(v1::CloseSessionRequest::new(id.clone()))
+                    .block_task()
+                    .await?;
+                // Only the load's replay is checked, not the live turn's updates.
+                log.lock().unwrap().clear();
+                cx.send_request(v1::LoadSessionRequest::new(id, &dir))
+                    .block_task()
+                    .await?;
+                push(&log, "loaded".into());
+                Ok(())
+            });
+        tokio::time::timeout(Duration::from_secs(20), run)
+            .await
+            .unwrap()
+            .unwrap();
+        let seen = log.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [
+                r#""user_message_chunk" go"#,
+                // The fake turn's write replays as a call, as in the reload test above.
+                r#""tool_call" "#,
+                r#""tool_call_update" "#,
+                r#""agent_message_chunk" done"#,
+                "loaded"
+            ]
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn loading_a_session_replays_its_conversation_first() {
         let dir = temp_dir("load");
