@@ -9,6 +9,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::net::TcpListener;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -27,12 +28,10 @@ const FRAME: &str = "(document.getElementById('active-frame')?.contentDocument ?
 const OVERALL: Duration = Duration::from_secs(240);
 
 pub async fn vscode_smoke() -> Result<()> {
-    for tool in ["xvfb-run", "code"] {
-        if !on_path(tool, &env::var_os("PATH").unwrap_or_default()) {
-            bail!(
-                "`{tool}` not on PATH; install VS Code and `xorg-server-xvfb` (pacman -S xorg-server-xvfb)"
-            );
-        }
+    if let Some(tool) = missing_tool(&env::var_os("PATH").unwrap_or_default()) {
+        bail!(
+            "`{tool}` not on PATH; install VS Code and `xorg-server-xvfb` (pacman -S xorg-server-xvfb)"
+        );
     }
     let root = workspace_root()?;
     vsix()?;
@@ -51,22 +50,13 @@ pub async fn vscode_smoke() -> Result<()> {
     // Electron's IPC socket lives under the profile, and a socket path is capped at 108 bytes.
     let data = env::temp_dir().join(format!("pxsmoke-{}", std::process::id()));
     let _ = fs::remove_dir_all(&data);
-    let (home, xdg, exts, ws) = (
-        tmp.join("home"),
-        tmp.join("xdg"),
-        tmp.join("ext"),
-        tmp.join("workspace"),
-    );
-    for dir in [xdg.join("praxis"), exts.clone(), ws.clone(), home.clone()] {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(ws.join("README.md"), "# Smoke fixture\n")?;
     let server = fake_server().await;
-    let config = format!(
-        "default_model = \"{MODEL}\"\n\n[lmstudio]\nbase_url = \"{}\"\n",
-        server.uri()
-    );
-    fs::write(xdg.join("praxis/config.toml"), config)?;
+    let Profile {
+        home,
+        xdg,
+        exts,
+        ws,
+    } = profile(&tmp, &server.uri())?;
 
     let port = TcpListener::bind("127.0.0.1:0")?.local_addr()?.port();
     let log = tmp.join("code.log");
@@ -265,6 +255,41 @@ async fn stop(code: &mut Child) {
     let _ = code.kill().await;
 }
 
+fn missing_tool(path: &OsStr) -> Option<&'static str> {
+    ["xvfb-run", "code"]
+        .into_iter()
+        .find(|tool| !on_path(tool, path))
+}
+
+struct Profile {
+    home: PathBuf,
+    xdg: PathBuf,
+    exts: PathBuf,
+    ws: PathBuf,
+}
+
+/// Lays out the isolated home, config (pointing at the fake server) and fixture workspace.
+fn profile(tmp: &Path, server: &str) -> Result<Profile> {
+    let profile = Profile {
+        home: tmp.join("home"),
+        xdg: tmp.join("xdg"),
+        exts: tmp.join("ext"),
+        ws: tmp.join("workspace"),
+    };
+    for dir in [
+        &profile.xdg.join("praxis"),
+        &profile.exts,
+        &profile.ws,
+        &profile.home,
+    ] {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(profile.ws.join("README.md"), "# Smoke fixture\n")?;
+    let config = format!("default_model = \"{MODEL}\"\n\n[lmstudio]\nbase_url = \"{server}\"\n");
+    fs::write(profile.xdg.join("praxis/config.toml"), config)?;
+    Ok(profile)
+}
+
 fn on_path(tool: &str, path: &OsStr) -> bool {
     env::split_paths(path).any(|dir| dir.join(tool).is_file())
 }
@@ -395,6 +420,147 @@ mod tests {
         let head = b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\n\r\n";
         assert!(!response_complete(&[head.as_slice(), b"["].concat()));
         assert!(response_complete(&[head.as_slice(), b"[]"].concat()));
+    }
+
+    #[tokio::test]
+    async fn reads_json_from_a_server_that_keeps_the_connection_open() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n[{\"a\":1}]")
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await; // never closes in time
+        });
+        let value = http_json(port, "/json/list").await.unwrap();
+        assert_eq!(value, json!([{"a": 1}]));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn cdp_skips_events_and_returns_the_matching_answer() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let request: Value = serde_json::from_str(&text).unwrap();
+                let id = request["id"].clone();
+                let event = json!({"method": "Page.loadEventFired"});
+                ws.send(Message::text(event.to_string())).await.unwrap();
+                let reply = match request["params"]["expression"].as_str() {
+                    Some("boom") => json!({"id": id, "result": {"exceptionDetails": {}}}),
+                    Some("fail") => json!({"id": id, "error": {"message": "no"}}),
+                    _ => json!({"id": id, "result": {"result": {"value": 42}}}),
+                };
+                ws.send(Message::text(reply.to_string())).await.unwrap();
+            }
+        });
+        let mut cdp = Cdp::connect(&format!("ws://127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        assert_eq!(cdp.eval("1").await.unwrap(), json!(42));
+        assert!(cdp.eval("boom").await.is_err());
+        assert!(cdp.eval("fail").await.is_err());
+        cdp.key("keyDown", json!({})).await.unwrap();
+    }
+
+    /// A DevTools stand-in: `/json/list` names a workbench and our webview, and every CDP call
+    /// answers as if the reply had already rendered.
+    async fn fake_devtools() -> u16 {
+        let ws = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let ws_url = format!("ws://{}", ws.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = ws.accept().await {
+                tokio::spawn(async move {
+                    let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    while let Some(Ok(Message::Text(text))) = ws.next().await {
+                        let id = serde_json::from_str::<Value>(&text).unwrap()["id"].clone();
+                        let value = json!({"text": "", "output": REPLY});
+                        let reply = json!({"id": id, "result": {"result": {"value": value}}});
+                        ws.send(Message::text(reply.to_string())).await.unwrap();
+                    }
+                });
+            }
+        });
+        let list = json!([
+            {"type": "page", "url": "vscode-file://w", "webSocketDebuggerUrl": ws_url},
+            {"type": "iframe", "title": "Praxis", "url": "", "webSocketDebuggerUrl": ws_url},
+        ])
+        .to_string();
+        let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = http.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = http.accept().await {
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request).await;
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", list.len());
+                let _ = socket.write_all(format!("{head}{list}").as_bytes()).await;
+            }
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn drives_the_chat_until_the_reply_renders() {
+        let port = fake_devtools().await;
+        let mut code = tokio::process::Command::new("sleep")
+            .arg("60")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        drive(port, &mut code).await.unwrap();
+    }
+
+    #[test]
+    fn names_the_first_missing_tool_and_writes_the_profile() {
+        assert_eq!(
+            missing_tool(OsStr::new("/nonexistent-dir")),
+            Some("xvfb-run")
+        );
+        let tmp = env::temp_dir().join(format!("smoke-profile-{}", std::process::id()));
+        let profile = profile(&tmp, "http://127.0.0.1:9").unwrap();
+        let config = fs::read_to_string(profile.xdg.join("praxis/config.toml")).unwrap();
+        assert!(config.contains("base_url = \"http://127.0.0.1:9\""));
+        assert!(profile.ws.join("README.md").is_file() && profile.home.is_dir());
+        assert!(profile.exts.is_dir());
+        fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    #[tokio::test]
+    async fn stop_ends_the_process_group() {
+        let mut code = Command::new("sleep")
+            .arg("60")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        stop(&mut code).await;
+        assert!(code.try_wait().unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn an_early_exit_is_an_error_while_waiting_for_a_target() {
+        let mut code = tokio::process::Command::new("true").spawn().unwrap();
+        code.wait().await.unwrap();
+        let until = Instant::now() + Duration::from_secs(1);
+        let error = wait_target(1, &mut code, until, is_workbench)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exited early"));
+    }
+
+    #[tokio::test]
+    async fn the_fake_server_lists_the_loaded_model() {
+        let server = fake_server().await;
+        let models = http_json(server.address().port(), "/api/v1/models")
+            .await
+            .unwrap();
+        assert_eq!(models["models"][0]["key"], MODEL);
     }
 
     #[test]
