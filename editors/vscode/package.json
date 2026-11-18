@@ -72,36 +72,36 @@
           "type": "string",
           "default": "praxis",
           "scope": "machine",
-          "description": "Path to the praxis binary. Machine-scoped so a workspace can't change it."
+          "description": "Path to the praxis binary. Machine-scoped so a workspace can't change it. Applies to new chats."
         },
         "praxis.defaultModel": {
           "type": "string",
-          "description": "Model key for new runs. Unset uses config.toml (default_model)."
+          "description": "Model key for new runs. Unset uses config.toml (default_model). Applies to new chats."
         },
         "praxis.permissions.mode": {
           "type": "string",
           "enum": ["read-only", "ask", "auto-edit", "full-access"],
           "scope": "machine",
-          "markdownDescription": "Permission mode for tool calls. `full-access` runs `Bash` and MCP tools without asking, still under the hard denials. Machine-scoped so a workspace can't raise it. Unset uses config.toml (permissions.mode)."
+          "markdownDescription": "Permission mode for tool calls. `full-access` runs `Bash` and MCP tools without asking, still under the hard denials. Machine-scoped so a workspace can't raise it. Unset uses config.toml (permissions.mode). Applies to new chats."
         },
         "praxis.lmstudio.baseUrl": {
           "type": "string",
           "scope": "machine",
-          "description": "LM Studio server URL. Machine-scoped so a workspace can't send prompts to another server. Unset uses config.toml (lmstudio.base_url)."
+          "description": "LM Studio server URL. Machine-scoped so a workspace can't send prompts to another server. Unset uses config.toml (lmstudio.base_url). Applies to new chats."
         },
         "praxis.agent.maxTurnRequests": {
           "type": "integer",
           "minimum": 0,
-          "description": "Model requests allowed in one turn. Unset uses config.toml (agent.max_turn_requests)."
+          "description": "Model requests allowed in one turn. Unset uses config.toml (agent.max_turn_requests). Applies to new chats."
         },
         "praxis.context.maskKeepTurns": {
           "type": "integer",
           "minimum": 0,
-          "description": "Recent turns whose tool output stays unmasked. Unset uses config.toml (context.mask_keep_turns)."
+          "description": "Recent turns whose tool output stays unmasked. Unset uses config.toml (context.mask_keep_turns). Applies to new chats."
         },
         "praxis.context.filterOutput": {
           "type": "boolean",
-          "description": "Filter noisy tool output before the model sees it. Unset uses config.toml (context.filter_output)."
+          "description": "Filter noisy tool output before the model sees it. Unset uses config.toml (context.filter_output). Applies to new chats."
         }
       }
     }

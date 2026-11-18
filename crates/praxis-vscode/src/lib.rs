@@ -218,6 +218,10 @@ extern "C" {
     type Writable;
     #[wasm_bindgen(method)]
     fn write(this: &Writable, text: &str) -> bool;
+    #[wasm_bindgen(method)]
+    fn on(this: &Writable, event: &str, callback: &JsValue);
+    #[wasm_bindgen(method, js_name = removeListener)]
+    fn off(this: &Writable, event: &str, callback: &JsValue);
 
     type Emitter;
     #[wasm_bindgen(method, js_name = setEncoding)]
@@ -290,6 +294,7 @@ struct ChildListeners {
     stdout: Closure<dyn FnMut(JsValue)>,
     stderr: Closure<dyn FnMut(JsValue)>,
     error: Closure<dyn FnMut(JsValue)>,
+    stdin: Closure<dyn FnMut(JsValue)>,
     close: JsValue,
 }
 
@@ -313,6 +318,7 @@ fn detach(panel: &mut Panel) {
     child.stdout().off("data", listeners.stdout.as_ref());
     child.stderr().off("data", listeners.stderr.as_ref());
     child.off_child("error", listeners.error.as_ref());
+    child.stdin().off("error", listeners.stdin.as_ref());
     child.off_child("close", &listeners.close);
     child.kill();
 }
@@ -395,6 +401,17 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
         }
     })?;
     command(&context, "praxis.refreshSessions", |_| refresh_sessions())
+}
+
+/// Kills each open chat's agent when VS Code deactivates the extension, so none outlives the host.
+/// Panels stay open; VS Code disposes them, and their dispose handler finds nothing left to stop.
+#[wasm_bindgen]
+pub fn deactivate() {
+    PANELS.with(|panels| {
+        for state in panels.borrow().iter().filter_map(Weak::upgrade) {
+            detach(&mut state.borrow_mut());
+        }
+    });
 }
 
 /// Registers a command whose handler receives the command's arguments, and keeps the handler alive.
@@ -583,6 +600,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         }
         // Dropping the closures releases their clones of `state`, so the panel can free.
         drop(closures);
+        refresh_mcp();
     });
     panel.on_did_dispose(&on_dispose);
 
@@ -700,6 +718,14 @@ fn start(state: &Shared) {
         panel.webview.notify(&format!("praxis acp failed: {error}"));
     });
     child.on_child("error", on_error.as_ref());
+    // A write to a dead agent emits `error` on stdin, which is unhandled without this listener.
+    let on_stdin_error = listener(state, |state, error| {
+        state
+            .borrow()
+            .output
+            .append(&format!("praxis acp stdin: {error}\n"));
+    });
+    child.stdin().on("error", on_stdin_error.as_ref());
     let on_close = {
         let state = state.clone();
         Closure::once_into_js(move |code: JsValue| exited(&state, &text_of(code)))
@@ -713,6 +739,7 @@ fn start(state: &Shared) {
         stdout: on_stdout,
         stderr: on_stderr,
         error: on_error,
+        stdin: on_stdin_error,
         close: on_close,
     });
     panel.client = Some(client);
@@ -1217,7 +1244,7 @@ struct Sidebar {
     emitter: EventEmitter,
     output: OutputChannel,
     items: Vec<SessionItem>,
-    /// Why the last listing failed, shown as the view's first item until a listing succeeds.
+    /// Why the view is empty or stale, shown as its first item until a listing succeeds.
     problem: Option<String>,
 }
 
@@ -1302,26 +1329,16 @@ fn root_children() -> Vec<JsValue> {
             .unwrap_or_default()
     });
     if let Some(problem) = problem {
-        nodes.insert(
-            0,
-            node(&[
-                (
-                    "label",
-                    JsValue::from_str(&format!("Could not list sessions: {problem}")),
-                ),
-                (
-                    "tooltip",
-                    JsValue::from_str("Details are in the Praxis output channel"),
-                ),
-            ]),
-        );
+        nodes.insert(0, label_row(&problem));
     } else if nodes.is_empty() {
-        nodes.push(node(&[(
-            "label",
-            JsValue::from_str("No sessions in this workspace yet"),
-        )]));
+        nodes.push(label_row("No sessions in this workspace yet"));
     }
     nodes
+}
+
+/// A tree row that only says something, such as a problem or an empty list.
+fn label_row(label: &str) -> JsValue {
+    node(&[("label", JsValue::from_str(label))])
 }
 
 /// The sessions filed in `folder`, newest first as the listing gives them.
@@ -1370,6 +1387,7 @@ fn move_to_folder(id: String) {
         run_cli(args, None, |result| {
             if let Err(error) = result {
                 sessions_log(&format!("sessions: move failed: {error}\n"));
+                show_error_message(&format!("Praxis: could not move the session: {error}"));
             }
             refresh_sessions();
         });
@@ -1408,6 +1426,7 @@ fn delete_session(id: String) {
             run_cli(args, None, |result| {
                 if let Err(error) = result {
                     sessions_log(&format!("sessions: delete failed: {error}\n"));
+                    show_error_message(&format!("Praxis: could not delete the session: {error}"));
                 }
                 refresh_sessions();
             });
@@ -1467,7 +1486,7 @@ fn publish(items: Vec<SessionItem>) {
 fn fail(problem: String) {
     redraw(|sidebar| {
         sidebar.output.append(&format!("sessions: {problem}\n"));
-        sidebar.problem = Some(problem);
+        sidebar.problem = Some(format!("Could not list sessions: {problem}"));
     });
 }
 
@@ -1487,7 +1506,10 @@ fn redraw(change: impl FnOnce(&mut Sidebar)) {
 /// Re-reads this workspace's sessions from `praxis sessions --json` and redraws the view.
 fn refresh_sessions() {
     let Some(cwd) = workspace_dir() else {
-        return publish(Vec::new());
+        return redraw(|sidebar| {
+            sidebar.items.clear();
+            sidebar.problem = Some("Open a folder to list its sessions".to_owned());
+        });
     };
     let args = vec!["sessions".to_owned(), "--json".to_owned()];
     run_cli(args, Some(&cwd), |result| {
@@ -1503,6 +1525,8 @@ struct Plugins {
     emitter: EventEmitter,
     output: OutputChannel,
     items: Vec<PluginItem>,
+    /// Why the last listing failed, shown as the view's first item until a listing succeeds.
+    problem: Option<String>,
 }
 
 thread_local! {
@@ -1527,23 +1551,28 @@ fn create_plugins_view(output: &OutputChannel) {
             emitter,
             output: output.clone(),
             items: Vec::new(),
+            problem: None,
         });
     });
 }
 
 fn plugin_children() -> Array {
-    let mut nodes: Vec<JsValue> = PLUGINS.with(|plugins| {
+    let (problem, mut nodes): (Option<String>, Vec<JsValue>) = PLUGINS.with(|plugins| {
         plugins
             .borrow()
             .as_ref()
-            .map(|plugins| plugins.items.iter().map(plugin_node).collect())
+            .map(|plugins| {
+                (
+                    plugins.problem.clone(),
+                    plugins.items.iter().map(plugin_node).collect(),
+                )
+            })
             .unwrap_or_default()
     });
-    if nodes.is_empty() {
-        nodes.push(node(&[(
-            "label",
-            JsValue::from_str("No plugins installed"),
-        )]));
+    if let Some(problem) = problem {
+        nodes.insert(0, label_row(&problem));
+    } else if nodes.is_empty() {
+        nodes.push(label_row("No plugins installed"));
     }
     let array = Array::new();
     for node in &nodes {
@@ -1597,7 +1626,11 @@ fn show_details(name: String) {
         return plugin_log(&format!("plugins: {name} is not listed\n"));
     };
     if let Err(error) = open_details(&name, &page) {
-        plugin_log(&format!("plugins: details failed: {}\n", text_of(error)));
+        let error = text_of(error);
+        plugin_log(&format!("plugins: details failed: {error}\n"));
+        show_error_message(&format!(
+            "Praxis: could not open the plugin details: {error}"
+        ));
     }
 }
 
@@ -1629,6 +1662,7 @@ fn publish_plugins(items: Vec<PluginItem>) {
     let emitter = PLUGINS.with(|plugins| {
         plugins.borrow_mut().as_mut().map(|plugins| {
             plugins.items = items;
+            plugins.problem = None;
             plugins.emitter.clone()
         })
     });
@@ -1764,31 +1798,46 @@ fn toggle_checkboxes(event: &JsValue) {
         };
         let enabled = pair.get(1).as_f64() == Some(1.0);
         let name = name.to_owned();
-        send_mcp(|client| client.set_mcp_enabled(&name, enabled));
+        act_on_mcp(|client| client.set_mcp_enabled(&name, enabled));
     }
 }
 
 /// Lists the servers of the newest open session. Its answer comes back through `react`.
 fn refresh_mcp() {
-    send_mcp(Client::mcp_servers);
+    if !send_mcp(Client::mcp_servers) {
+        list_mcp_offline();
+    }
 }
 
-/// Sends one request on the newest open session that has one. With none, the view says so.
-fn send_mcp(build: impl Fn(&Client) -> Option<String>) {
+/// A user's approve or toggle needs a live session; without one, the view says so instead of listing.
+fn act_on_mcp(build: impl Fn(&Client) -> Option<String>) {
+    if !send_mcp(build) {
+        publish_mcp(Err(
+            "Open a chat to approve or toggle MCP servers".to_owned()
+        ));
+    }
+}
+
+/// Sends one request on the newest open session that has one. Returns false when none can take it.
+fn send_mcp(build: impl Fn(&Client) -> Option<String>) -> bool {
     let target = PANELS.with(|panels| {
         panels
             .borrow()
             .iter()
             .rev()
             .filter_map(Weak::upgrade)
+            .filter(|state| !state.borrow().closed)
             .find_map(|state| {
                 let line = build(state.borrow().client.as_ref()?)?;
                 Some((state, line))
             })
     });
     match target {
-        Some((state, line)) => state.borrow().send([line]),
-        None => list_mcp_offline(),
+        Some((state, line)) => {
+            state.borrow().send([line]);
+            true
+        }
+        None => false,
     }
 }
 
@@ -1800,11 +1849,12 @@ fn has_mcp_session() -> bool {
             .iter()
             .filter_map(Weak::upgrade)
             .any(|state| {
-                state
-                    .borrow()
-                    .client
-                    .as_ref()
-                    .is_some_and(|client| client.mcp_servers().is_some())
+                let panel = state.borrow();
+                !panel.closed
+                    && panel
+                        .client
+                        .as_ref()
+                        .is_some_and(|client| client.mcp_servers().is_some())
             })
     })
 }
@@ -1940,7 +1990,7 @@ fn approve_mcp(name: String) {
         "Approve the MCP server `{name}`?\n\nPraxis will run this command on your machine, outside the sandbox:\n{command}\n\nA later change to it asks again."
     );
     confirm(&message, "Approve", move || {
-        send_mcp(|client| client.approve_mcp(&name));
+        act_on_mcp(|client| client.approve_mcp(&name));
     });
 }
 
@@ -2005,9 +2055,24 @@ fn refresh_plugins() {
     run_cli(list_args(), None, |result| {
         match result.and_then(|json| plugin_items(&json)) {
             Ok(items) => publish_plugins(items),
-            Err(error) => plugin_log(&format!("plugins: list failed: {error}\n")),
+            Err(error) => fail_plugins(error),
         }
     });
+}
+
+/// Logs a failed plugin listing and shows it in the view, keeping the last known plugins.
+fn fail_plugins(problem: String) {
+    plugin_log(&format!("plugins: list failed: {problem}\n"));
+    let emitter = PLUGINS.with(|plugins| {
+        plugins.borrow_mut().as_mut().map(|plugins| {
+            plugins.problem = Some(format!("Could not list plugins: {problem}"));
+            plugins.emitter.clone()
+        })
+    });
+    // Fired after the borrow ends: VS Code may call `getChildren` synchronously.
+    if let Some(emitter) = emitter {
+        emitter.fire(&JsValue::UNDEFINED);
+    }
 }
 
 /// Runs a CLI action, then refreshes the view whatever its outcome.
@@ -2018,6 +2083,7 @@ fn run_action(args: Vec<String>) {
 fn finish_action(result: Result<String, String>) {
     if let Err(error) = result {
         plugin_log(&format!("plugins: {error}\n"));
+        show_error_message(&format!("Praxis: plugin action failed: {error}"));
     }
     refresh_plugins();
 }

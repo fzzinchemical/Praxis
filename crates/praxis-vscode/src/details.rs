@@ -35,7 +35,7 @@ pub fn details_page(item: &PluginItem) -> String {
     let settings = settings_list(item);
     format!(
         "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">\n\
+<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'\">\n\
 <title>{name}</title>\n\
 <style>body {{ font-family: var(--vscode-font-family); color: var(--vscode-foreground); \
 background: var(--vscode-editor-background); line-height: 1.5; max-width: 60rem; margin: 0 auto; padding: 1rem; }}\n\
@@ -260,7 +260,9 @@ mod tests {
     fn the_page_allows_no_scripts_and_no_remote_resources() {
         let page = details_page(&plugin(Some("text"), Vec::new()));
         assert!(
-            page.contains("default-src 'none'; style-src 'unsafe-inline'"),
+            page.contains(
+                "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+            ),
             "{page}"
         );
     }
