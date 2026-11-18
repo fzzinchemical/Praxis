@@ -5,10 +5,10 @@ mod admin;
 mod chat;
 pub mod stream;
 
-pub use admin::{Capabilities, InstanceConfig, LoadPolicy, LoadedInstance, ModelInfo, ReadyModel};
+pub use admin::{Capabilities, LoadPolicy, ModelInfo, ReadyModel};
 pub use chat::{
-    ChatChunk, ChatRequest, CompletionDetails, FinishReason, MEMORY_MARK, Message, Sampling,
-    ToolCall, ToolSchema, Usage,
+    ChatChunk, ChatRequest, FinishReason, MEMORY_MARK, Message, Sampling, ToolCall, ToolSchema,
+    Usage,
 };
 
 use admin::AdminClient;

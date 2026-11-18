@@ -1,7 +1,7 @@
 # ADR 0003: Keep ACP as the front-end protocol
 
 > [!NOTE]
-> **Status: accepted, 2026-11-06.** From spike T0.5, against `agent-client-protocol` 5.0.0 and `agent-client-protocol-schema` 1.15.1. The spike is `crates/praxis-cli/tests/acp_spike.rs`.
+> **Status: accepted, 2026-11-06.** From spike T0.5, against `agent-client-protocol` 5.0.0 and `agent-client-protocol-schema` 1.15.1. The spike was `crates/praxis-cli/tests/acp_spike.rs`, deleted once T5.1 replaced it with real ACP tests; see git history (`git log --all -- crates/praxis-cli/tests/acp_spike.rs`).
 
 ## Context
 

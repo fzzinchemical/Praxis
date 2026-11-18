@@ -107,7 +107,7 @@ impl Agent {
 
     async fn finish(&self, stage: CompactionStage, before_tokens: u32, turn: &Turn<'_>) {
         let after_tokens = self.prompt_tokens();
-        // shortcut: the boundary only reaches events and logs; add it to the session log with T3.
+        // shortcut: the boundary reaches events and tracing, not the session log; log it once resume needs it.
         tracing::info!(?stage, before_tokens, after_tokens, "history compacted");
         turn.compaction(CompactionState::Finished {
             stage,
