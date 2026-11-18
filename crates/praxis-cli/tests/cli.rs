@@ -750,6 +750,43 @@ fn enabled_plugin(dir: &Path) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn sigterm_stops_acp_cleanly_so_its_children_are_dropped() {
+    let server = server(Some(4096), Replies(vec![])).await;
+    let dir = workspace();
+    let mut child = command(&server.uri(), &dir, &["acp"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let mut lines = tokio::io::BufReader::new(child.stdout.take().unwrap()).lines();
+    let init = json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {"protocolVersion": 1}});
+    stdin
+        .write_all(format!("{init}\n").as_bytes())
+        .await
+        .unwrap();
+    // The answer shows the agent is up, so its signal handler is installed.
+    let answer = tokio::time::timeout(Duration::from_secs(20), lines.next_line())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(answer.is_some(), "acp exited before answering initialize");
+
+    let pid = child.id().expect("child has a pid").to_string();
+    let sent = std::process::Command::new("kill")
+        .args(["-TERM", &pid])
+        .status()
+        .unwrap();
+    assert!(sent.success());
+    let status = tokio::time::timeout(Duration::from_secs(10), child.wait())
+        .await
+        .expect("acp did not exit after SIGTERM")
+        .unwrap();
+    assert_eq!(status.code(), Some(0), "killed by signal: {status:?}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn enabled_plugins_add_skills_commands_and_blocking_hooks() {
     let dir = workspace();
     enabled_plugin(&dir);

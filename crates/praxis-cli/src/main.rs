@@ -26,6 +26,7 @@ use praxis_core::tools::ToolContext;
 use praxis_core::trust::{TrustStore, hash};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::io::{BufRead, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -1431,7 +1432,13 @@ async fn run(
         })
     };
     if acp {
-        return serve_acp(Box::new(new_agent), picker, plugins.commands.clone(), trust).await;
+        return until_sigterm(serve_acp(
+            Box::new(new_agent),
+            picker,
+            plugins.commands.clone(),
+            trust,
+        ))
+        .await;
     }
     let resume = cli.resume.as_ref().map(Option::as_deref);
     let agent = with_session(new_agent()?, resume, &session_workspace)?;
@@ -1447,7 +1454,27 @@ async fn run(
             let (_, stop) = run_turn(agent, prompt, &mut terminal, &interrupt).await?;
             Ok(exit_code(stop))
         }
-        None => repl(agent, &plugins.commands, terminal, &interrupt, configured).await,
+        None => {
+            until_sigterm(repl(
+                agent,
+                &plugins.commands,
+                terminal,
+                &interrupt,
+                configured,
+            ))
+            .await
+        }
+    }
+}
+
+/// Runs `work` until it ends or the process gets SIGTERM (what VS Code sends to stop ACP).
+/// Returning drops the agent, so its MCP servers and tool children are killed; a signal's
+/// default action would skip the destructors.
+async fn until_sigterm(work: impl Future<Output = Result<u8>>) -> Result<u8> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    tokio::select! {
+        result = work => result,
+        _ = terminate.recv() => Ok(0),
     }
 }
 
