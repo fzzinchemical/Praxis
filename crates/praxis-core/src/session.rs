@@ -220,6 +220,7 @@ pub fn delete(dir: &Path, id: &str) -> io::Result<()> {
     let file = open(dir, id, false)?;
     lock(&file, id)?;
     fs::remove_file(path(dir, id)?)?;
+    let _folders = lock_folders(dir)?;
     let mut folders = read_folders(dir);
     if folders.remove(id).is_some() {
         write_folders(dir, &folders)?;
@@ -237,6 +238,7 @@ pub fn set_folder(dir: &Path, id: &str, name: &str) -> io::Result<()> {
         ));
     }
     let name = name.trim();
+    let _folders = lock_folders(dir)?;
     let mut folders = read_folders(dir);
     if name.is_empty() {
         folders.remove(id);
@@ -252,6 +254,23 @@ pub fn set_folder(dir: &Path, id: &str, name: &str) -> io::Result<()> {
         folders.insert(id.to_owned(), name.to_owned());
     }
     write_folders(dir, &folders)
+}
+
+/// Holds an exclusive lock on a sibling file across a folders read-modify-write, so concurrent
+/// changes from other windows can't drop each other's entries. The lock lasts until the file drops.
+fn lock_folders(dir: &Path) -> io::Result<File> {
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .mode(0o600)
+        .open(dir.join(format!("{FOLDERS_FILE}.lock")))?;
+    file.lock()?;
+    Ok(file)
 }
 
 /// Every session's folder. A missing or unreadable file reads as no folders, so sessions still list.
@@ -466,5 +485,34 @@ mod tests {
 
         assert_eq!(texts(&messages), ["one", "a"]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn concurrent_folder_changes_keep_every_session_entry() {
+        let dir = std::env::temp_dir().join(format!("praxis-folders-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for thread in 0..8 {
+            for n in 0..10 {
+                fs::write(dir.join(format!("s{thread}-{n}.jsonl")), "").unwrap();
+            }
+        }
+        std::thread::scope(|scope| {
+            for thread in 0..8 {
+                let dir = dir.clone();
+                scope.spawn(move || {
+                    for n in 0..10 {
+                        set_folder(&dir, &format!("s{thread}-{n}"), "work").unwrap();
+                    }
+                });
+            }
+        });
+        let folders = read_folders(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            folders.len(),
+            8 * 10,
+            "concurrent folder changes lost entries"
+        );
     }
 }

@@ -39,7 +39,9 @@ fn final_state(line: &str) -> String {
     let mut plain = String::with_capacity(line.len());
     let mut chars = line.chars();
     while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.next() == Some('[') {
+        // Peeks, so an ESC that doesn't start a CSI keeps the character after it.
+        if c == '\u{1b}' && chars.as_str().starts_with('[') {
+            chars.next();
             // Only CSI sequences occur in build tool output; they end at a letter.
             for end in chars.by_ref() {
                 if end.is_ascii_alphabetic() {
@@ -72,4 +74,19 @@ fn is_keep(line: &str) -> bool {
     ]
     .iter()
     .any(|word| lower.contains(word))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::final_state;
+
+    #[test]
+    fn an_escape_before_a_csi_keeps_the_text_after_it() {
+        assert_eq!(final_state("\u{1b}\u{1b}[31mX"), "\u{1b}X");
+    }
+
+    #[test]
+    fn a_non_csi_escape_keeps_the_characters_after_it() {
+        assert_eq!(final_state("\u{1b}(B"), "\u{1b}(B");
+    }
 }

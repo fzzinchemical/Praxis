@@ -151,15 +151,16 @@ pub fn grep(
         if searcher.search_path(&matcher, path, sink).is_err() {
             continue;
         }
+        // Checked before the match arms, which `continue` past it for Content mode.
+        if full {
+            break;
+        }
         let text = match mode {
             OutputMode::FilesWithMatches if matches > 0 => shown.to_string(),
             OutputMode::Count if matches > 0 => format!("{shown}:{matches}"),
             _ => continue,
         };
         full |= !push_within(&mut lines, &mut used, text, room);
-        if full {
-            break;
-        }
     }
     Ok(finish(lines, full))
 }
@@ -200,4 +201,42 @@ pub fn glob(
         }
     }
     Ok(finish(kept, full))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    /// Many files with the same match, and a budget that fits only a few of them.
+    fn crowded_workspace(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("praxis-grep-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for n in 0..200 {
+            fs::write(dir.join(format!("f{n:03}.txt")), "needle here\n").unwrap();
+        }
+        dir
+    }
+
+    #[test]
+    fn content_grep_stops_at_the_budget_and_reports_truncation() {
+        let dir = crowded_workspace("budget");
+        let ctx = ToolContext::new(&dir).unwrap();
+        ctx.set_result_chars(400);
+        let input = GrepInput {
+            pattern: "needle".to_owned(),
+            path: None,
+            glob: None,
+            output_mode: None,
+            case_insensitive: None,
+            multiline: None,
+        };
+        let out = grep(input, &ctx, &CancellationToken::new()).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(out.structured["truncated"], true);
+        let shown = out.structured["numResults"].as_u64().unwrap();
+        assert!(shown > 0 && shown < 200, "shown {shown}");
+        assert!(out.content.contains(&format!("after {shown} results")));
+    }
 }

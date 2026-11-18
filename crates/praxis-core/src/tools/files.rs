@@ -341,6 +341,26 @@ fn near_match(text: &str, old: &str) -> String {
     )
 }
 
+/// Replaces each span of `text` with `new_string`. A CRLF file gets CRLF in the new text,
+/// whatever line endings the model used.
+fn splice(text: &str, spans: &[Range<usize>], new_string: &str) -> String {
+    let crlf = spans.iter().any(|span| text[span.clone()].contains("\r\n"));
+    let new = if crlf {
+        new_string.replace("\r\n", "\n").replace('\n', "\r\n")
+    } else {
+        new_string.to_owned()
+    };
+    let mut updated = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in spans {
+        updated.push_str(&text[last..span.start]);
+        updated.push_str(&new);
+        last = span.end;
+    }
+    updated.push_str(&text[last..]);
+    updated
+}
+
 pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     let path = resolve(&ctx.workspace, &input.file_path)?;
     check_writable(&ctx.workspace, &path)?;
@@ -376,21 +396,7 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
              Add surrounding lines or set replace_all."
         ));
     }
-    // A CRLF file gets CRLF in the new text, whatever line endings the model used.
-    let crlf = spans.iter().any(|span| text[span.clone()].contains("\r\n"));
-    let new = if crlf {
-        input.new_string.replace("\r\n", "\n").replace('\n', "\r\n")
-    } else {
-        input.new_string.clone()
-    };
-    let mut updated = String::with_capacity(text.len());
-    let mut last = 0;
-    for span in &spans {
-        updated.push_str(&text[last..span.start]);
-        updated.push_str(&new);
-        last = span.end;
-    }
-    updated.push_str(&text[last..]);
+    let updated = splice(text, &spans, &input.new_string);
     store(&path, &updated, ctx)?;
     let mut output = ToolOutput::ok(
         format!(
@@ -445,11 +451,11 @@ pub fn proposed_diff(name: &str, input: &Value, workspace: &Path) -> Option<File
                 return None;
             }
             let old = current_text(&path)?;
-            let count = old.matches(&input.old_string).count();
-            if count == 0 || (count > 1 && !input.replace_all.unwrap_or(false)) {
+            let spans = find_spans(&old, &input.old_string);
+            if spans.is_empty() || (spans.len() > 1 && !input.replace_all.unwrap_or(false)) {
                 return None;
             }
-            let new = old.replace(&input.old_string, &input.new_string);
+            let new = splice(&old, &spans, &input.new_string);
             Some(FileDiff {
                 path,
                 old: Some(old),
@@ -497,6 +503,20 @@ mod tests {
         fs::write(&target, bytes).unwrap();
         let ctx = ToolContext::new(&dir).unwrap();
         (dir, target, ctx)
+    }
+
+    #[test]
+    fn proposed_diff_of_an_edit_keeps_crlf_line_endings() {
+        let (dir, _target, _ctx) =
+            workspace_with("crlf-preview.rs", b"fn a() {\r\n    x();\r\n}\r\n");
+        let input = json!({
+            "file_path": "crlf-preview.rs",
+            "old_string": "fn a() {\n    x();\n}\n",
+            "new_string": "fn a() {\n    y();\n}\n",
+        });
+        let diff = proposed_diff("Edit", &input, &dir);
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(diff.unwrap().new, "fn a() {\r\n    y();\r\n}\r\n");
     }
 
     #[cfg(unix)]

@@ -76,11 +76,9 @@ impl Policy {
                 .filter_map(|dir| home.as_ref().map(|home| home.join(dir))),
         );
         // Git reads these on every call and warns when it can't, so expose only the config files.
-        let xdg = var("XDG_CONFIG_HOME")
-            .filter(|dir| !dir.as_os_str().is_empty())
-            .or_else(|| home.as_ref().map(|home| home.join(".config")));
+        // XDG_CONFIG_HOME is never in the child env (bash::ALLOWED_ENV), so git uses ~/.config.
         read.extend(home.as_ref().map(|home| home.join(".gitconfig")));
-        read.extend(xdg.map(|dir| dir.join("git/config")));
+        read.extend(home.as_ref().map(|home| home.join(".config/git/config")));
         read.extend(sandbox.extra_read.iter().cloned());
         let mut write = vec![workspace.to_owned(), tmp.to_owned()];
         write.extend(DEVICES_WRITE.iter().map(PathBuf::from));

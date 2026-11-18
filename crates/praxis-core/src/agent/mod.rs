@@ -420,7 +420,11 @@ impl Agent {
         let waiting = format!("no MCP server named `{name}` is waiting for approval");
         let mcp = self.mcp.as_ref().ok_or_else(|| waiting.clone())?;
         let pending = mcp.unapproved().get(name).ok_or(waiting)?;
-        trust.set(&pending.key, &pending.digest)?;
+        // The store takes a file lock and fsyncs, so it runs off the async runtime.
+        let (store, key, digest) = (trust.clone(), pending.key.clone(), pending.digest.clone());
+        tokio::task::spawn_blocking(move || store.set(&key, &digest))
+            .await
+            .map_err(|e| e.to_string())??;
         let (mut next, failure) = mcp.approve(name, CONNECT_TIMEOUT).await;
         let mut notices: Vec<String> = failure.into_iter().collect();
         notices.extend(next.pin(Some(trust), &mut |_| false));

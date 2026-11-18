@@ -423,22 +423,47 @@ pub fn schemas() -> Vec<ToolSchema> {
 /// Checks arguments against the tool's schema (SPEC §5.3). `Err` names the problem and the
 /// expected shape, for the model to correct.
 pub fn validate(name: &str, input: &Value) -> Result<(), String> {
-    let all = schemas();
-    let Some(schema) = all.iter().find(|tool| tool.name == name) else {
-        let known: Vec<&str> = all.iter().map(|tool| tool.name.as_str()).collect();
+    let all = builtin_validators();
+    let Some((schema, validator)) = all.iter().find(|(tool, _)| tool.name == name) else {
+        let known: Vec<&str> = all.iter().map(|(tool, _)| tool.name.as_str()).collect();
         return Err(format!(
             "Unknown tool `{name}`. Expected one of: {}.",
             known.join(", ")
         ));
     };
-    validate_schema(schema, input)
+    check(schema, validator, input)
+}
+
+/// A compiled schema, or why it doesn't compile.
+type Compiled = Result<jsonschema::Validator, String>;
+
+/// Built-in schemas with their validators, compiled once: they never change while the process runs.
+fn builtin_validators() -> &'static [(ToolSchema, Compiled)] {
+    static VALIDATORS: OnceLock<Vec<(ToolSchema, Compiled)>> = OnceLock::new();
+    VALIDATORS.get_or_init(|| {
+        schemas()
+            .into_iter()
+            .map(|schema| {
+                let compiled = compile(&schema);
+                (schema, compiled)
+            })
+            .collect()
+    })
+}
+
+fn compile(schema: &ToolSchema) -> Compiled {
+    jsonschema::validator_for(&schema.parameters)
+        .map_err(|e| format!("The schema for `{}` is broken: {e}", schema.name))
 }
 
 /// Like [`validate`], against a schema from elsewhere, such as an MCP server.
 pub(crate) fn validate_schema(schema: &ToolSchema, input: &Value) -> Result<(), String> {
+    check(schema, &compile(schema), input)
+}
+
+fn check(schema: &ToolSchema, validator: &Compiled, input: &Value) -> Result<(), String> {
     let name = &schema.name;
-    let validator = jsonschema::validator_for(&schema.parameters)
-        .map_err(|e| format!("The schema for `{name}` is broken: {e}"))?;
+    let validator = validator.as_ref()?;
     let problems: Vec<String> = validator
         .iter_errors(input)
         .map(|e| e.to_string())
@@ -483,7 +508,7 @@ pub async fn execute(
 ) -> ToolOutput {
     let name = name.to_owned();
     let task = if name == "Bash" {
-        tokio::spawn(async move { bash::run(parse(input)?, &ctx, &cancel).await })
+        tokio::spawn(async move { bash::run(parse(input)?, ctx, &cancel).await })
     } else {
         tokio::task::spawn_blocking(move || run_blocking(&name, input, &ctx, &cancel))
     };

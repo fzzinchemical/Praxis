@@ -10,7 +10,9 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::ffi::OsString;
+use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
@@ -150,20 +152,32 @@ fn filtered(ctx: &ToolContext, full: String) -> String {
     }
 }
 
+/// A blocking task that panicked or was cancelled; its output is lost with it.
+fn blocking_failed(error: tokio::task::JoinError) -> ToolError {
+    ToolError::Refused(format!("A background task failed: {error}"))
+}
+
 pub async fn run(
     input: BashInput,
-    ctx: &ToolContext,
+    ctx: Arc<ToolContext>,
     cancel: &CancellationToken,
 ) -> Result<ToolOutput, ToolError> {
     let timeout_ms = input
         .timeout
         .unwrap_or(DEFAULT_TIMEOUT_MS)
         .min(MAX_TIMEOUT_MS);
-    let tmp = ctx.tmp().map_err(ToolError::io("create", &ctx.tmp_dir))?;
+    // Creating the folder is a blocking syscall, so it stays off the async runtime.
+    let tmp = {
+        let shared = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || shared.tmp().map(Path::to_owned))
+            .await
+            .map_err(blocking_failed)?
+            .map_err(ToolError::io("create", &ctx.tmp_dir))?
+    };
     let shell = ["/bin/sh", "-c", &input.command];
     let mut command = match &ctx.sandbox {
         Some(sandbox) => {
-            let policy = Policy::new(sandbox, &ctx.workspace, tmp, &ctx.env);
+            let policy = Policy::new(sandbox, &ctx.workspace, &tmp, &ctx.env);
             let policy = serde_json::to_string(&policy)
                 .map_err(|e| ToolError::Refused(format!("Can't encode the sandbox policy: {e}")))?;
             let mut command = Command::new(&sandbox.helper);
@@ -182,7 +196,7 @@ pub async fn run(
         .current_dir(&ctx.workspace)
         .env_clear()
         .envs(ctx.env.iter().map(|(name, value)| (name, value)))
-        .env("TMPDIR", tmp)
+        .env("TMPDIR", &tmp)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -266,8 +280,12 @@ pub async fn run(
     } else {
         content.join("\n")
     };
+    // Filtering may write the spool, a blocking file write of up to the capture limit.
     let content = if ctx.filter_output {
-        filtered(ctx, content)
+        let shared = Arc::clone(&ctx);
+        tokio::task::spawn_blocking(move || filtered(&shared, content))
+            .await
+            .map_err(blocking_failed)?
     } else {
         content
     };
