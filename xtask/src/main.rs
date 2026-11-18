@@ -21,6 +21,7 @@ const CONTENT_TYPES: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <Default Extension="js" ContentType="application/javascript"/>
 <Default Extension="wasm" ContentType="application/wasm"/>
 <Default Extension="svg" ContentType="image/svg+xml"/>
+<Default Extension="css" ContentType="text/css"/>
 </Types>
 "#;
 
