@@ -1008,6 +1008,39 @@ async fn max_tokens_is_the_remaining_context_not_the_output_reserve() {
     assert!(body["max_tokens"].as_u64().unwrap() > 50_000, "{body}");
 }
 
+/// SPEC §7: every request in a session extends the one before it, across turns too, so LM
+/// Studio can reuse its prompt cache. Messages and tools are compared as serialized JSON.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_request_in_a_session_extends_the_previous_one_byte_for_byte() {
+    let workspace = new_workspace();
+    let path = workspace.join("a.txt");
+    fs::write(&path, "hello\n").unwrap();
+    let script = vec![
+        tool_reply(&[("c1", "Read", json!({"file_path": path}))]),
+        text_reply("one"),
+        text_reply("two"),
+    ];
+    let mut h = Harness::in_workspace(workspace, script, 50).await;
+    h.turn("first", CancellationToken::new(), never_asked).await;
+    h.turn("second", CancellationToken::new(), never_asked)
+        .await;
+
+    let requests = h.server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    let bodies: Vec<Value> = requests
+        .iter()
+        .map(|r| serde_json::from_slice(&r.body).unwrap())
+        .collect();
+    for pair in bodies.windows(2) {
+        let (old, new) = (&pair[0], &pair[1]);
+        let old_messages = old["messages"].as_array().unwrap();
+        let new_messages = new["messages"].as_array().unwrap();
+        assert!(new_messages.len() > old_messages.len());
+        assert_eq!(&new_messages[..old_messages.len()], &old_messages[..]);
+        assert_eq!(old["tools"].to_string(), new["tools"].to_string());
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn invalid_arguments_go_back_to_the_model_instead_of_ending_the_turn() {
     let bad = sse(&[
