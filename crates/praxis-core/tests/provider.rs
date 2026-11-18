@@ -402,6 +402,30 @@ async fn a_stream_ending_before_finish_reports_truncation() {
     assert_eq!(items.len(), 2);
 }
 
+#[tokio::test(start_paused = true)]
+async fn done_without_a_finish_reason_reports_truncation_instead_of_ending_quietly() {
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"Bash\",\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}\n\n",
+        "data: [DONE]\n\n",
+    );
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(CHAT))
+        .respond_with(sse(body.as_bytes().to_vec()))
+        .mount(&server)
+        .await;
+    let provider = Provider::new(&server.uri(), None).unwrap();
+    // Nothing reached the caller, so the request is retried like a dropped stream, then fails.
+    let error = provider
+        .chat(request(), CancellationToken::new())
+        .await
+        .err()
+        .unwrap();
+
+    assert!(matches!(error, ProviderError::Truncated));
+    assert_eq!(sent_bodies(&server).await.len(), 4);
+}
+
 #[tokio::test]
 async fn an_unparseable_chunk_is_a_malformed_error() {
     let (_s, provider) = serve(sse(b"data: {nope\n\n".to_vec())).await;

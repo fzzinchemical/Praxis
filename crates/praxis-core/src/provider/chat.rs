@@ -276,6 +276,10 @@ impl ChunkAssembler {
             return Err(parse_error_body(&event.data));
         }
         if event.data == "[DONE]" {
+            // Without a finish_reason, buffered tool calls were never flushed: report it, don't end quietly.
+            if !self.finished {
+                return Err(ProviderError::Truncated);
+            }
             self.done = true;
             return Ok(Vec::new());
         }
