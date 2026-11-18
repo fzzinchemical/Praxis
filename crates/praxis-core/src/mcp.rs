@@ -10,7 +10,7 @@ use futures::future::join_all;
 use reqwest::header::{HeaderName, HeaderValue};
 use rmcp::model::{
     CallToolRequestParams, ContentBlock, GetPromptRequestParams, Prompt, ReadResourceRequestParams,
-    Resource, ResourceContents,
+    Resource, ResourceContents, ResourceTemplate,
 };
 use rmcp::service::{NotificationContext, Peer, RunningService, ServiceError};
 use rmcp::transport::StreamableHttpClientTransport;
@@ -28,6 +28,8 @@ use tokio_util::sync::CancellationToken;
 /// without it.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const CALL_TIMEOUT: Duration = Duration::from_secs(60);
+/// Longest server `instructions` text shown to the model, per server.
+const MAX_NOTES_CHARS: usize = 500;
 
 /// What a model-visible tool maps to on its server.
 #[derive(Clone)]
@@ -48,7 +50,10 @@ struct Tool {
 struct Catalog {
     tools: Vec<rmcp::model::Tool>,
     resources: Vec<Resource>,
+    templates: Vec<ResourceTemplate>,
     prompts: Vec<Prompt>,
+    /// The server's own usage notes from `initialize`. Untrusted, so shown as data.
+    instructions: Option<String>,
 }
 
 /// Logs `list_changed` rather than applying it: the tools stay frozen (SPEC §13).
@@ -229,14 +234,20 @@ async fn connect_one(name: &str, server: &McpServer) -> Result<(Client, Catalog)
     let declares = |has: fn(&rmcp::model::ServerCapabilities) -> bool| {
         info.as_ref().is_some_and(|info| has(&info.capabilities))
     };
-    let resources = if declares(|c| c.resources.is_some()) {
-        client
+    let (resources, templates) = if declares(|c| c.resources.is_some()) {
+        let resources = client
             .list_all_resources()
             .await
-            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+        let templates = client
+            .list_all_resource_templates()
+            .await
+            .map_err(|e| e.to_string())?;
+        (resources, templates)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
+    let instructions = info.as_ref().and_then(|info| info.instructions.clone());
     let prompts = if declares(|c| c.prompts.is_some()) {
         client.list_all_prompts().await.map_err(|e| e.to_string())?
     } else {
@@ -247,7 +258,9 @@ async fn connect_one(name: &str, server: &McpServer) -> Result<(Client, Catalog)
         Catalog {
             tools,
             resources,
+            templates,
             prompts,
+            instructions,
         },
     ))
 }
@@ -257,8 +270,8 @@ async fn connect_one(name: &str, server: &McpServer) -> Result<(Client, Catalog)
 /// name, since two tools can't share one.
 fn synthetic_tools(server: &str, catalog: &Catalog) -> Vec<Tool> {
     let mut tools = Vec::new();
-    if !catalog.resources.is_empty() {
-        let list = catalog
+    if !catalog.resources.is_empty() || !catalog.templates.is_empty() {
+        let mut list = catalog
             .resources
             .iter()
             .map(|r| {
@@ -269,13 +282,27 @@ fn synthetic_tools(server: &str, catalog: &Catalog) -> Vec<Tool> {
                 )
             })
             .collect::<Vec<_>>();
+        list.extend(catalog.templates.iter().map(|t| {
+            format!(
+                "- {} (URI template, fill in the braces): {}",
+                t.uri_template,
+                t.description.as_deref().unwrap_or(&t.name)
+            )
+        }));
+        // shortcut: no `enum` when templates exist, since a template URI can't be listed; a
+        // model may then send a bad URI that the server rejects, so the error must name the form.
+        let uri = if catalog.templates.is_empty() {
+            json!({"type": "string", "enum": catalog.resources.iter().map(|r| &r.uri).collect::<Vec<_>>()})
+        } else {
+            json!({"type": "string"})
+        };
         tools.push(Tool {
             schema: ToolSchema {
                 name: format!("mcp__{server}__read_resource"),
                 description: format!("Reads a resource from `{server}`.\n{}", list.join("\n")),
                 parameters: json!({
                     "type": "object",
-                    "properties": {"uri": {"type": "string", "enum": catalog.resources.iter().map(|r| &r.uri).collect::<Vec<_>>()}},
+                    "properties": {"uri": uri},
                     "required": ["uri"]
                 }),
             },
@@ -350,10 +377,20 @@ impl Mcp {
     }
 
     fn adopt(&mut self, server: &str, config: &McpServer, client: Client, catalog: Catalog) {
+        // After the tool's own text: the tool search index shows only the first line.
+        let notes = catalog.instructions.as_deref().map(|text| {
+            // shortcut: a fixed cap rather than a token budget; raise it if real servers need more.
+            let text: String = text.chars().take(MAX_NOTES_CHARS).collect();
+            format!("\nServer notes from `{server}` (untrusted, verify before use): {text}")
+        });
         self.tools.extend(catalog.tools.iter().map(|tool| Tool {
             schema: ToolSchema {
                 name: format!("mcp__{server}__{}", tool.name),
-                description: tool.description.clone().unwrap_or_default().into_owned(),
+                description: format!(
+                    "{}{}",
+                    tool.description.as_deref().unwrap_or_default(),
+                    notes.as_deref().unwrap_or_default()
+                ),
                 parameters: Value::Object((*tool.input_schema).clone()),
             },
             server: server.to_owned(),
@@ -759,7 +796,9 @@ mod tests {
         let catalog = Catalog {
             tools: vec![Tool::new("read_resource", "Its own.", schema)],
             resources: vec![Resource::new("memo://a", "a")],
+            templates: Vec::new(),
             prompts: Vec::new(),
+            instructions: None,
         };
         assert!(synthetic_tools("test", &catalog).is_empty());
     }

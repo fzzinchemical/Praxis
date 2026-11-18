@@ -14,10 +14,11 @@ use praxis_core::tools::ToolContext;
 use praxis_core::trust::TrustStore;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
-    GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourcesResult, ListToolsResult,
-    PaginatedRequestParams, Prompt, PromptArgument, PromptMessage, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
-    ServerConfig, ServerNotification, Tool,
+    GetPromptResponse, GetPromptResult, ListPromptsResult, ListResourceTemplatesResult,
+    ListResourcesResult, ListToolsResult, PaginatedRequestParams, Prompt, PromptArgument,
+    PromptMessage, ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, ResourceTemplate, Role, ServerCapabilities, ServerConfig, ServerNotification,
+    Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt as _};
@@ -44,6 +45,16 @@ impl ServerHandler for Echo {
                 .enable_prompts()
                 .build(),
         )
+        .with_instructions("Look up articles with read_resource and a wiki:// URI.")
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _: Option<PaginatedRequestParams>,
+        _: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        let template = ResourceTemplate::new("wiki://{title}", "article");
+        Ok(ListResourceTemplatesResult::with_all_items(vec![template]))
     }
 
     async fn list_resources(
@@ -174,6 +185,32 @@ async fn slow_or_failing_servers_dont_block_startup() {
     );
     let all = notices.join("\n");
     assert!(all.contains("`broken`") && all.contains("`slow`"), "{all}");
+}
+
+/// A server's `instructions` and resource templates reach the model: models guess the URI form of
+/// a template, and an `enum` of listed resources alone rejects every such URI.
+async fn instructions_and_resource_templates_reach_the_model() {
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(2)).await;
+    let schemas = mcp.schemas();
+    let find = |name: &str| schemas.iter().find(|s| s.name == name).unwrap();
+    let echo = find("mcp__test__echo");
+    assert!(
+        echo.description
+            .contains("Look up articles with read_resource and a wiki:// URI."),
+        "{}",
+        echo.description
+    );
+    let read = find("mcp__test__read_resource");
+    assert!(
+        read.description.contains("wiki://{title}"),
+        "{}",
+        read.description
+    );
+    assert!(
+        read.parameters["properties"]["uri"].get("enum").is_none(),
+        "{}",
+        read.parameters
+    );
 }
 
 /// Resources and prompts reach the model as `read_resource` and `get_prompt` tools per server.
@@ -495,7 +532,12 @@ async fn plugin_tools_take_the_plugin_name_and_are_pinned() {
     );
     let name = format!("mcp__plugin_{}_echo__echo", plugin.name);
     let schema = mcp.schemas().into_iter().find(|s| s.name == name).unwrap();
-    assert_eq!(schema.description, root.to_str().unwrap());
+    // The server notes follow the tool's own text, which the root path still ends.
+    assert!(
+        schema.description.contains(root.to_str().unwrap()),
+        "{}",
+        schema.description
+    );
     assert!(store.get(&format!("mcp:{name}")).unwrap().is_some());
 }
 
@@ -1128,6 +1170,8 @@ fn main() {
     println!("plugin_tools_take_the_plugin_name_and_are_pinned ... ok");
     runtime.block_on(resources_and_prompts_are_tools());
     println!("resources_and_prompts_are_tools ... ok");
+    runtime.block_on(instructions_and_resource_templates_reach_the_model());
+    println!("instructions_and_resource_templates_reach_the_model ... ok");
     runtime.block_on(http_headers_resolve_from_the_environment_without_being_logged());
     println!("http_headers_resolve_from_the_environment_without_being_logged ... ok");
     runtime.block_on(indexed_mode_hides_mcp_schemas_behind_search_and_call());
