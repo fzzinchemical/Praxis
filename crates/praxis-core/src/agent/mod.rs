@@ -585,17 +585,7 @@ impl Agent {
                 child.run_turn(prompt, &tx, cancel).await;
                 // Skips an empty last reply, such as one answering T13.7's check note, and the
                 // harness's fallback summary, so the report keeps the model's own words.
-                let reply = child
-                    .history
-                    .iter()
-                    .enumerate()
-                    .rev()
-                    .find_map(|(i, m)| match m {
-                        Message::Assistant {
-                            content: Some(c), ..
-                        } if !c.is_empty() && child.fallback_at != Some(i) => Some(c.clone()),
-                        _ => None,
-                    });
+                let reply = report::last_reply(&child.history, child.fallback_at);
                 (reply, child.history)
             };
             // The parent's front end sees the subagent's text, tool calls and permission prompts,
@@ -1485,7 +1475,7 @@ impl Agent {
                     reply.prompt_tokens = Some(usage.prompt_tokens);
                     turn.emit(AgentEvent::Usage {
                         prompt_tokens: usage.prompt_tokens,
-                        used_tokens: usage.prompt_tokens + usage.completion_tokens,
+                        used_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
                         context_size: self.config.context_size,
                         // LM Studio reports no cached-token field (SPEC §5.2).
                         cached_tokens: None,

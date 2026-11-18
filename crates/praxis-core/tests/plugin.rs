@@ -172,6 +172,23 @@ fn agents_read_tool_restrictions_and_turn_limits() {
 }
 
 #[test]
+fn an_agent_with_zero_turns_is_skipped() {
+    let root = plugin_dir("zero-turns");
+    manifest(&root, r#"{"name":"kit"}"#);
+    write(
+        &root.join("agents/stuck.md"),
+        "---\ndescription: Never runs\nmaxTurns: 0\n---\nYou stop.\n",
+    );
+    let plugin = load(&root).unwrap();
+    let agents = plugin.agents(&praxis_core::config::Config::default());
+    assert!(
+        agents.iter().all(|a| a.skill.name != "kit:stuck"),
+        "{:?}",
+        agents.iter().map(|a| &a.skill.name).collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn skills_and_commands_read_frontmatter_and_commands_substitute_arguments() {
     let root = plugin_dir("components");
     manifest(&root, r#"{"name":"kit"}"#);

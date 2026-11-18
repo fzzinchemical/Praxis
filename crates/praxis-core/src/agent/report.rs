@@ -2,6 +2,7 @@
 //! log, so the model never states its own status, changed files or checks.
 
 use super::{AgentEvent, StopReason, ToolCallId, ToolOutcome};
+use crate::provider::Message;
 use serde_json::Value;
 
 /// Longest final text the parent gets, so one worker can't flood the parent's context.
@@ -164,10 +165,31 @@ fn truncate(text: &str) -> String {
     format!("{kept}… [truncated]")
 }
 
+/// The subagent's last reply with text, skipping the harness's fallback summary at
+/// `fallback_at`, so the report keeps the model's own words.
+pub fn last_reply(history: &[Message], fallback_at: Option<usize>) -> Option<String> {
+    history.iter().enumerate().rev().find_map(|(i, m)| match m {
+        Message::Assistant {
+            content: Some(c), ..
+        } if !c.trim().is_empty() && fallback_at != Some(i) => Some(c.clone()),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tools::ToolOutput;
+
+    #[test]
+    fn a_whitespace_only_reply_does_not_hide_the_one_before_it() {
+        let reply = |text: &str| Message::Assistant {
+            content: Some(text.to_owned()),
+            tool_calls: Vec::new(),
+        };
+        let history = [reply("the answer"), reply(" \n ")];
+        assert_eq!(last_reply(&history, None).as_deref(), Some("the answer"));
+    }
     use serde_json::json;
 
     fn call(log: &mut ToolLog, id: &str, name: &str, input: Value, output: ToolOutput) {

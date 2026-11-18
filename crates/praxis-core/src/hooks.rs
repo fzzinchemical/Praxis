@@ -1,7 +1,7 @@
 //! Plugin hooks (SPEC §12): `type: "command"` only, run with a scrubbed environment and a
 //! timeout. Their output is untrusted; the permission check decides what it can change.
 
-use crate::tools::bash::child_env;
+use crate::tools::bash::{child_env, kill_group};
 use regex::Regex;
 use serde_json::{Map, Value};
 use std::path::Path;
@@ -93,12 +93,28 @@ pub fn parse(events: &Value) -> (Vec<Hook>, Vec<String>) {
                     warnings.push(format!("hooks: `{event}` hook of type `{kind}` skipped"));
                     continue;
                 }
-                let args = hook.get("args").and_then(Value::as_array).map(|a| {
-                    a.iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect()
-                });
+                let args = match hook.get("args") {
+                    None => None,
+                    Some(Value::Array(items)) => {
+                        let strings: Option<Vec<String>> = items
+                            .iter()
+                            .map(|a| a.as_str().map(str::to_owned))
+                            .collect();
+                        if strings.is_none() {
+                            warnings.push(format!(
+                                "hooks: `{event}` hook has non-string args, skipped"
+                            ));
+                            continue;
+                        }
+                        strings
+                    }
+                    Some(_) => {
+                        warnings.push(format!(
+                            "hooks: `{event}` hook has args that aren't a list, skipped"
+                        ));
+                        continue;
+                    }
+                };
                 let secs = hook.get("timeout").and_then(Value::as_u64);
                 hooks.push(Hook {
                     event: event.clone(),
@@ -211,6 +227,8 @@ pub async fn run(hook: &Hook, input: &Value, plugin_root: &Path, project_dir: &P
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        // Its own group, so a timeout can kill the hook's children too (see `kill_group`).
+        .process_group(0)
         .kill_on_drop(true);
     let error = |e: String| Outcome {
         error: Some(e),
@@ -220,6 +238,7 @@ pub async fn run(hook: &Hook, input: &Value, plugin_root: &Path, project_dir: &P
         Ok(child) => child,
         Err(e) => return error(format!("couldn't start hook `{}`: {e}", hook.command)),
     };
+    let pgid = child.id();
     // The stdin write sits inside the timeout: a hook that never reads a large input
     // blocks the write forever. Dropping the future on timeout kills the child.
     let run_to_end = async move {
@@ -236,8 +255,13 @@ pub async fn run(hook: &Hook, input: &Value, plugin_root: &Path, project_dir: &P
             &String::from_utf8_lossy(&out.stderr),
         ),
         Ok(Err(e)) => error(format!("hook `{}`: {e}", hook.command)),
-        // Dropping the future kills the child (`kill_on_drop`).
-        Err(_) => error(format!("hook `{}` timed out", hook.command)),
+        // Dropping the future kills the shell (`kill_on_drop`); the group takes its children.
+        Err(_) => {
+            if let Some(pgid) = pgid {
+                kill_group(pgid).await;
+            }
+            error(format!("hook `{}` timed out", hook.command))
+        }
     }
 }
 
@@ -245,6 +269,7 @@ pub async fn run(hook: &Hook, input: &Value, plugin_root: &Path, project_dir: &P
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn matcher_forms() {
@@ -344,6 +369,52 @@ mod tests {
             outcome(Some(0), hookify, "").block.as_deref(),
             Some("no rm")
         );
+    }
+
+    #[test]
+    fn parse_rejects_a_hook_whose_args_are_not_a_list_of_strings() {
+        let (hooks, warnings) = parse(&json!({
+            "PreToolUse": [{ "matcher": "Bash", "hooks": [
+                { "type": "command", "command": "a", "args": [1] },
+                { "type": "command", "command": "b", "args": "x" } ] }]
+        }));
+        assert_eq!(hooks.len(), 0, "{hooks:?}");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[tokio::test]
+    async fn a_timed_out_hook_takes_its_children_down() {
+        let dir = std::env::temp_dir().join(format!("praxis-hook-tree-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("pid");
+        let script = format!("sleep 30 & echo $! > {}; wait", pid_file.display());
+        let out = run(
+            &hook("/bin/sh", Some(&["-c", &script]), 1),
+            &json!({}),
+            &dir,
+            &dir,
+        )
+        .await;
+        assert!(
+            out.error
+                .as_deref()
+                .is_some_and(|e| e.contains("timed out"))
+        );
+        let pid = fs::read_to_string(&pid_file).unwrap();
+        let alive = || {
+            std::process::Command::new("/bin/sh")
+                .args(["-c", "kill -0 \"$1\"", "sh", pid.trim()])
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        for _ in 0..50 {
+            if !alive() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(!alive(), "grandchild {} survived the timeout", pid.trim());
+        fs::remove_dir_all(dir).unwrap();
     }
 
     fn hook(command: &str, args: Option<&[&str]>, secs: u64) -> Hook {

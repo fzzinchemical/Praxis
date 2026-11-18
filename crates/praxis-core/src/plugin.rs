@@ -468,10 +468,18 @@ fn agent_def(
             }
         },
     };
+    let max_turns = match field("maxTurns").map(|v| v.parse::<u32>()) {
+        None => None,
+        Some(Ok(turns)) if turns > 0 => Some(turns),
+        Some(_) => {
+            tracing::warn!(path = %path.display(), "agent skipped, maxTurns must be a positive number");
+            return None;
+        }
+    };
     Some(AgentDef {
         tools: list("tools"),
         disallowed_tools: list("disallowedTools").unwrap_or_default(),
-        max_turns: field("maxTurns").and_then(|v| v.parse().ok()),
+        max_turns,
         model,
         skill,
     })
@@ -619,7 +627,14 @@ impl Plugin {
                     }
                     McpServer::Http(server) => server.url = expand(&server.url),
                 }
-                servers.insert(format!("plugin_{}_{name}", self.name), server);
+                let key = format!("plugin_{}_{name}", self.name);
+                if key.contains("__") {
+                    return Err(format!(
+                        "plugin {}: MCP server `{name}` can't contain `__`",
+                        self.name
+                    ));
+                }
+                servers.insert(key, server);
             }
         }
         Ok(servers)
@@ -897,7 +912,15 @@ impl Store {
     pub fn list(&self) -> Result<BTreeMap<String, Installed>, String> {
         let path = self.root.join("installed.json");
         match fs::read_to_string(&path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display())),
+            Ok(text) => {
+                let list: BTreeMap<String, Installed> =
+                    serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+                // Each name is joined onto the store's root, so `../x` must not get that far.
+                match list.keys().find(|name| !valid_name(name)) {
+                    Some(name) => Err(format!("{}: invalid plugin name `{name}`", path.display())),
+                    None => Ok(list),
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(BTreeMap::new()),
             Err(e) => Err(format!("{}: {e}", path.display())),
         }
@@ -945,10 +968,7 @@ impl Store {
         let commit = git(&checkout, &["rev-parse", "HEAD"])?;
         let clone = checkout.join(&prefix);
         let name = load(&clone)?.name;
-        let valid = name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-        if !valid || name == "data" {
+        if !valid_name(&name) {
             return Err(format!(
                 "plugin name `{name}` must be letters, digits, `-` or `_`, and not `data`"
             ));
@@ -994,6 +1014,16 @@ impl Store {
     }
 }
 
+/// Letters, digits, `-` or `_`, and not `data`, the store's own directory. A name is joined onto
+/// the store's root, so anything else could reach outside it.
+fn valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name != "data"
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = std::process::Command::new("git")
         .args(args)
@@ -1010,4 +1040,32 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
         return Err(format!("git {}: {}", args.join(" "), stderr.trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_refuses_a_name_that_escapes_the_plugins_dir() {
+        let base =
+            std::env::temp_dir().join(format!("praxis-plugin-escape-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let (root, victim) = (base.join("plugins"), base.join("victim"));
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&victim).unwrap();
+        let entry = r#"{"source":"s","commit":"c","enabled":false}"#;
+        fs::write(
+            root.join("installed.json"),
+            format!(r#"{{"../victim": {entry}}}"#),
+        )
+        .unwrap();
+        let store = Store { root: root.clone() };
+        assert!(store.remove("../victim").is_err());
+        assert!(
+            victim.is_dir(),
+            "remove deleted a directory outside the store"
+        );
+        fs::remove_dir_all(base).unwrap();
+    }
 }

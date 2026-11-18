@@ -116,6 +116,16 @@ fn default_turn_limit_leaves_room_for_a_real_task() {
 }
 
 #[test]
+fn mcp_server_names_with_a_double_underscore_are_rejected() {
+    let user = file("[mcp.\"a__b\"]\ncommand = \"x\"\n");
+    let message = load_err(Sources {
+        user: Some(user),
+        ..Sources::default()
+    });
+    assert!(message.contains("a__b"), "{message}");
+}
+
+#[test]
 fn unknown_keys_are_errors_naming_the_source_and_key() {
     let user = file("[agent]\nmax_turns = 1\n");
     let message = load_err(Sources {

@@ -115,7 +115,7 @@ async fn capture(mut pipe: impl AsyncRead + Unpin, stop: CancellationToken) -> C
 
 /// Signalling a group needs `kill(2)`, which is `unsafe` from Rust and forbidden in this crate,
 /// so this asks the shell's builtin. Returns whether the group got the signal.
-async fn kill_group(pgid: u32) -> bool {
+pub(crate) async fn kill_group(pgid: u32) -> bool {
     Command::new("/bin/sh")
         .args(["-c", "kill -s KILL -- \"-$1\"", "sh", &pgid.to_string()])
         .env_clear()

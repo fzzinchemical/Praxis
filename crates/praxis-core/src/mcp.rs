@@ -228,31 +228,37 @@ async fn connect_one(name: &str, server: &McpServer) -> Result<(Client, Catalog)
         McpServer::Http(server) => handler.serve(http_transport(server)?).await,
     }
     .map_err(|e| e.to_string())?;
-    let tools = client.list_all_tools().await.map_err(|e| e.to_string())?;
-    // Only listed when declared: a server without the capability has nothing to offer.
+    // Only listed when declared: a server without the capability has nothing to offer. The
+    // listings run together, so they share the connect timeout instead of adding up.
     let info = client.peer_info();
     let declares = |has: fn(&rmcp::model::ServerCapabilities) -> bool| {
         info.as_ref().is_some_and(|info| has(&info.capabilities))
     };
-    let (resources, templates) = if declares(|c| c.resources.is_some()) {
-        let resources = client
-            .list_all_resources()
-            .await
-            .map_err(|e| e.to_string())?;
-        let templates = client
-            .list_all_resource_templates()
-            .await
-            .map_err(|e| e.to_string())?;
-        (resources, templates)
-    } else {
-        (Vec::new(), Vec::new())
-    };
+    let (tools, resources, templates, prompts) = tokio::try_join!(
+        async { client.list_all_tools().await.map_err(|e| e.to_string()) },
+        async {
+            if !declares(|c| c.resources.is_some()) {
+                return Ok(Vec::new());
+            }
+            client.list_all_resources().await.map_err(|e| e.to_string())
+        },
+        async {
+            if !declares(|c| c.resources.is_some()) {
+                return Ok(Vec::new());
+            }
+            client
+                .list_all_resource_templates()
+                .await
+                .map_err(|e| e.to_string())
+        },
+        async {
+            if !declares(|c| c.prompts.is_some()) {
+                return Ok(Vec::new());
+            }
+            client.list_all_prompts().await.map_err(|e| e.to_string())
+        },
+    )?;
     let instructions = info.as_ref().and_then(|info| info.instructions.clone());
-    let prompts = if declares(|c| c.prompts.is_some()) {
-        client.list_all_prompts().await.map_err(|e| e.to_string())?
-    } else {
-        Vec::new()
-    };
     Ok((
         client,
         Catalog {
@@ -383,19 +389,27 @@ impl Mcp {
             let text: String = text.chars().take(MAX_NOTES_CHARS).collect();
             format!("\nServer notes from `{server}` (untrusted, verify before use): {text}")
         });
-        self.tools.extend(catalog.tools.iter().map(|tool| Tool {
-            schema: ToolSchema {
-                name: format!("mcp__{server}__{}", tool.name),
-                description: format!(
-                    "{}{}",
-                    tool.description.as_deref().unwrap_or_default(),
-                    notes.as_deref().unwrap_or_default()
-                ),
-                parameters: Value::Object((*tool.input_schema).clone()),
-            },
-            server: server.to_owned(),
-            op: Op::Tool(tool.name.to_string()),
-        }));
+        for tool in &catalog.tools {
+            let name = format!("mcp__{server}__{}", tool.name);
+            // Two servers can make the same name, since `__` also appears inside server names.
+            if self.find(&name).is_some() {
+                tracing::warn!(tool = %name, "MCP tool skipped, a tool with that name exists");
+                continue;
+            }
+            self.tools.push(Tool {
+                schema: ToolSchema {
+                    name,
+                    description: format!(
+                        "{}{}",
+                        tool.description.as_deref().unwrap_or_default(),
+                        notes.as_deref().unwrap_or_default()
+                    ),
+                    parameters: Value::Object((*tool.input_schema).clone()),
+                },
+                server: server.to_owned(),
+                op: Op::Tool(tool.name.to_string()),
+            });
+        }
         self.tools.extend(synthetic_tools(server, &catalog));
         self.clients
             .get_mut()
@@ -615,7 +629,7 @@ impl Mcp {
 
     /// Restarts a crashed server once per session and says how that went. Its tools stay
     /// the ones listed at session start.
-    async fn reconnect(&self, server: &str) -> &'static str {
+    async fn reconnect(&self, server: &str) -> String {
         let first = self
             .reconnected
             .lock()
@@ -624,19 +638,21 @@ impl Mcp {
         let restarted = match self.servers.get(server).filter(|_| first) {
             Some(config) => tokio::time::timeout(CONNECT_TIMEOUT, connect_one(server, config))
                 .await
-                .ok()
-                .and_then(Result::ok),
-            None => None,
+                .unwrap_or_else(|_| {
+                    Err(format!("no answer within {}s", CONNECT_TIMEOUT.as_secs()))
+                }),
+            None => Err("it was already restarted this session".to_owned()),
         };
         let mut clients = self.clients.lock().unwrap_or_else(PoisonError::into_inner);
         match restarted {
-            Some((client, _)) => {
+            Ok((client, _)) => {
                 clients.insert(server.to_owned(), Arc::new(client));
-                " It was restarted, so the call can be tried again."
+                " It was restarted, so the call can be tried again.".to_owned()
             }
-            None => {
+            Err(reason) => {
+                tracing::warn!(server, %reason, "MCP server restart failed");
                 clients.remove(server);
-                " It stays down for the rest of the session."
+                format!(" It stays down for the rest of the session: {reason}.")
             }
         }
     }
@@ -664,7 +680,7 @@ impl Mcp {
                     error,
                     ServiceError::TransportClosed | ServiceError::TransportSend(_)
                 ) {
-                    message.push_str(self.reconnect(&tool.server).await);
+                    message.push_str(&self.reconnect(&tool.server).await);
                 }
                 ToolOutput::error(message)
             }
@@ -778,7 +794,22 @@ fn scan(description: &str) -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::scan;
+    use super::*;
+
+    #[tokio::test]
+    async fn a_failed_restart_says_why() {
+        let mut mcp = Mcp::default();
+        mcp.servers.insert(
+            "gone".to_owned(),
+            McpServer::Stdio(crate::config::StdioServer {
+                command: "/nonexistent/mcp-server".to_owned(),
+                args: Vec::new(),
+                env: BTreeMap::new(),
+            }),
+        );
+        let note = mcp.reconnect("gone").await;
+        assert!(note.contains("couldn't start"), "{note}");
+    }
 
     #[test]
     fn scan_flags_instructions_encoding_and_length() {

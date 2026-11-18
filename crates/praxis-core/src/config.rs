@@ -576,6 +576,15 @@ pub fn load_with_approval(
         .collect();
     config.hooks = hooks;
     config.mcp_pending = pending;
+    // Tool names are `mcp__server__tool`, so a `__` in a server name could make two collide.
+    for name in config.mcp.keys().chain(config.mcp_pending.keys()) {
+        if name.contains("__") {
+            return Err(error(
+                "config",
+                format!("MCP server `{name}` can't contain `__`"),
+            ));
+        }
+    }
     Ok(Loaded { config, notices })
 }
 
