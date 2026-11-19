@@ -293,6 +293,10 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.0.1-beta
+
+- MCP tool calls run without asking: enabling or disabling a server in the MCP view is the approval. Deny rules, hooks and read-only mode still apply.
+
 ### New in 2.0.0-beta
 
 - Consecutive `Read`, `Grep` and `Glob` calls run concurrently; results keep their order.
