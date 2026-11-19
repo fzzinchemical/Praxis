@@ -293,6 +293,11 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.1.0-beta
+
+- Lazy memory: index lines in your own `~/.claude/CLAUDE.md` or `~/.config/praxis/AGENTS.md` (`~/.claude/docs/code.md — read when writing code`) stay out of the prompt, and the agent may `Read` the named file when the trigger applies.
+- Model routing recipe: map a big model to an alias (`[models.planner] model = "<LM Studio key>"`) and give planning or review agents `model: planner` in `~/.claude/agents/*.md`; the session model (for example `qwen3.5-4b`) carries out the steps.
+
 ### New in 2.0.2-beta
 
 - MCP servers from LM Studio's `~/.lmstudio/mcp.json` load without approval; the MCP view's checkboxes turn them on and off. Project `.mcp.json` servers still ask once.

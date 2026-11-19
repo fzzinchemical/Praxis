@@ -194,6 +194,24 @@ fn project_memory(
         .collect()
 }
 
+/// Files a user memory file lists as an index line (`path — read when <trigger>`), so `Read` can
+/// open them on demand instead of importing them up front (SPEC §12). Only for the user's own
+/// files: a project file could name `~/.ssh` this way. Relative paths start at `dir`.
+pub fn index_paths(text: &str, home: &Path, dir: &Path) -> Vec<PathBuf> {
+    text.lines()
+        .filter_map(|line| {
+            let (head, _) = line
+                .split_once(" — read when")
+                .or_else(|| line.split_once(" - read when"))?;
+            let path = head.split_whitespace().last()?.trim_matches('`');
+            Some(match path.strip_prefix("~/") {
+                Some(rest) => home.join(rest),
+                None => dir.join(path),
+            })
+        })
+        .collect()
+}
+
 /// The memory of one directory, `rel` below `root`, for a directory first touched after the
 /// prefix was frozen (SPEC §12, nested memory). Same file rules as `load_memory`; `AGENTS.md`
 /// is judged over the directories from `root` down to `rel`, not the whole workspace.
@@ -514,6 +532,22 @@ fn utc_date(unix_seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_lines_name_files_to_read_later() {
+        let text = "# Index\n- ~/.claude/docs/code.md — read when writing code\n\
+                    - `docs/tests.md` - read when testing\n- /abs/x.md — read when x\n\
+                    - see docs/other.md for details\n";
+        let (home, dir) = (Path::new("/h"), Path::new("/h/.claude"));
+        assert_eq!(
+            index_paths(text, home, dir),
+            [
+                PathBuf::from("/h/.claude/docs/code.md"),
+                PathBuf::from("/h/.claude/docs/tests.md"),
+                PathBuf::from("/abs/x.md"),
+            ]
+        );
+    }
 
     fn facts(date: &str, branch: Option<&str>) -> SessionFacts {
         SessionFacts {

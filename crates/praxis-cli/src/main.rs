@@ -607,14 +607,26 @@ fn load_config(workspace: &Path, overrides: Vec<String>) -> Result<(Config, Poli
 
 fn tool_context(workspace: &Path, config: &Config) -> Result<ToolContext> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    // The user instruction files are already in the prompt, so reading them exposes nothing new.
-    let user_files = [
-        home.map(|home| home.join(".claude/CLAUDE.md")),
+    // The user instruction files are already in the prompt, so reading them exposes nothing new;
+    // the files their index lines name are what the user chose to show on demand.
+    let user_files: Vec<PathBuf> = [
+        home.as_ref().map(|home| home.join(".claude/CLAUDE.md")),
         xdg_dir("XDG_CONFIG_HOME", ".config").map(|dir| dir.join("AGENTS.md")),
-    ];
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let indexed: Vec<PathBuf> = match &home {
+        Some(home) => user_files
+            .iter()
+            .filter_map(|file| Some((std::fs::read_to_string(file).ok()?, file.parent()?)))
+            .flat_map(|(text, dir)| praxis_core::context::prefix::index_paths(&text, home, dir))
+            .collect(),
+        None => Vec::new(),
+    };
     let tools = ToolContext::new(workspace)?
         .with_output_filter(config.context.filter_output)
-        .with_readable(user_files.into_iter().flatten());
+        .with_readable(user_files.into_iter().chain(indexed));
     let settings = &config.sandbox;
     if settings.mode == SandboxMode::Off {
         static NOTICE: std::sync::Once = std::sync::Once::new();

@@ -988,6 +988,8 @@ All of them sit in the frozen prefix under the existing budget, trimmed broadest
 
 **Imports:** `@path` on a memory file's line imports that file in place. Relative paths resolve against the importing file; `@~/` against home. Up to four hops; a cycle stops silently at the repeated file. All imports from one memory file share a 256 KiB budget; past it, no further imports expand. Not parsed inside code spans or fenced blocks. A project file's import must resolve inside the workspace (confinement rules, §9) and a user file's inside `~/.config/praxis/`; otherwise it's skipped with a warning.
 
+**Index lines (lazy memory):** a line in the user's own `~/.claude/CLAUDE.md` or `~/.config/praxis/AGENTS.md` of the form `<path> — read when <trigger>` (or ` - read when`) is left as text, and `Read` may open the named file outside the workspace, so a small model sees only the core and reads a file when its trigger applies. `~/` resolves against home, a relative path against the memory file's folder. Project files' index lines grant nothing (`context::prefix::index_paths`).
+
 **Nested memory** (*Should*): the first time `Read`, `Write` or `Edit` touches a file under a subdirectory of cwd, that directory's memory file, and any rule whose `paths` glob matches the file, is appended as a message. Each is loaded once per session.
 
 **Skills, commands and agents:**
