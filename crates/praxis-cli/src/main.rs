@@ -382,7 +382,7 @@ fn mcp_list(json: bool, config: &Config, workspace: &Path) -> Result<u8> {
         })
         .collect();
     for (name, pending) in &config.mcp_pending {
-        let mut row = serde_json::json!({"name": name, "source": pending.source.as_str(), "status": "needs_approval", "tools": [], "enabled": true});
+        let mut row = serde_json::json!({"name": name, "source": praxis_core::mcp::McpSource::Project.as_str(), "status": "needs_approval", "tools": [], "enabled": true});
         if let McpServer::Stdio(stdio) = &pending.server {
             row["command"] = Value::from(stdio.command.as_str());
         }

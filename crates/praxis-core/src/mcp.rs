@@ -421,8 +421,8 @@ impl Mcp {
     /// Lists servers that wait for approval, so the session's list shows them (SPEC §13).
     /// Their names join `sources`; they connect only through `approve`.
     pub fn with_unapproved(mut self, pending: &BTreeMap<String, PendingMcp>) -> Self {
-        for (name, server) in pending {
-            self.sources.insert(name.clone(), server.source);
+        for name in pending.keys() {
+            self.sources.insert(name.clone(), McpSource::Project);
         }
         self.unapproved.clone_from(pending);
         self

@@ -578,7 +578,7 @@ command = "mcp-server-filesystem"
 args = ["."]
 ```
 
-Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper. LM Studio's `~/.lmstudio/mcp.json` (`mcpServers` shape, `$HOME`) is a user-level source that needs approval like project MCP servers, keyed by its own path. A name already in Praxis config wins, and a missing file is silent; a malformed one gives a notice.
+Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper. LM Studio's `~/.lmstudio/mcp.json` (`mcpServers` shape, `$HOME`) is a user-level source. It is the user's own file, so its servers load without a trust prompt (owner decision 2026-11-19); the MCP view's checkboxes turn them on and off. A name already in Praxis config wins, and a missing file is silent; a malformed one gives a notice.
 
 ### Trust
 
@@ -612,7 +612,7 @@ flowchart TD
 | Project `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` (§12) | Loaded as context, unlabelled; labelled `Instructions from:` once approved (T13.6) |
 | Rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
 
-Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A project or LM Studio MCP server that the block approval doesn't cover is listed as waiting and approved one server at a time (§13): its approval is stored under `server:<config path>#<name>` as the hash of its own TOML, so approving one never approves its siblings. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
+Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A project MCP server that the block approval doesn't cover is listed as waiting and approved one server at a time (§13): its approval is stored under `server:<config path>#<name>` as the hash of its own TOML, so approving one never approves its siblings. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
 
 Project memory files use the same store (decided by the owner, 2026-11-14). Each file's expanded text (after comments are stripped and imports expanded) is hashed and keyed by the file's path. A file whose hash is stored, or that a person approves at a terminal, is labelled `Instructions from:` (§12). Any other file stays unlabelled context. ACP and piped runs have no terminal, so they only honour stored approvals. ACP can approve MCP servers, through the MCP view's Approve action (§13), but never memory files. An unreadable store leaves memory files unlabelled with a warning; it never approves anything.
 
@@ -1052,13 +1052,13 @@ Revalidate `updatedInput` against the schema, then run the permission check on t
 - **Tool list freeze:** `tools/list` results are fixed at session start per §7, with later `list_changed` notifications logged rather than applied.
 - **Results:** pass through the tool-result budget; non-text content is replaced by a short description.
 - **Resources and prompts:** a server that declares them gets one `mcp__<server>__read_resource` tool (enum of its URIs) and one `mcp__<server>__get_prompt` tool (enum of its prompt names). They go through the same permission, hook, pin and budget paths. A server tool with the same name wins.
-- **LM Studio servers:** `~/.lmstudio/mcp.json` loads as an extra source (§8). It's approved once, then pinned like any other server.
+- **LM Studio servers:** `~/.lmstudio/mcp.json` loads as an extra source (§8). It loads without approval and is pinned like any other server.
 - **Pinning:** on approval, store the SHA-256 of each tool's name, description and schema. Pins live in the trust store under `mcp:<tool name>`, beside the definition text so a change can be shown; a tool seen for the first time is pinned without asking, since its server was already approved. On any change, hide that tool from the model and ask again, showing what changed. This also covers plugin servers.
 - **Description scan:** at approval, flag instruction-like wording, encoded content and unusual length as a warning only. It catches part of the problem and has false positives, so it never blocks and never counts as a defence.
 - **Timeouts:** default 60 s per call, and cancellation is forwarded.
 - **Schemas:** weak models choke on large schemas, so strip `$comment`, `examples` and long descriptions in the prompt, but validate against the original.
 
-- **Approving project and LM Studio servers:** a server waiting for approval (§8) is listed with status `needs_approval` and the command line its approval would run. In ACP, the MCP view's Approve action shows that command in a modal, and only an explicit confirm sends `_praxis/approve_mcp_server` (§12). The agent stores the approval under the server's own key in the trust store (§8) before it tries the connection, then connects the server for the session and answers `{name, notices}`; a connect failure is a notice, and the approval stays stored. The request is refused at once while a turn runs, and the server's tools apply from the next request. A server whose TOML changes waits for approval again.
+- **Approving project servers:** a server waiting for approval (§8) is listed with status `needs_approval` and the command line its approval would run. In ACP, the MCP view's Approve action shows that command in a modal, and only an explicit confirm sends `_praxis/approve_mcp_server` (§12). The agent stores the approval under the server's own key in the trust store (§8) before it tries the connection, then connects the server for the session and answers `{name, notices}`; a connect failure is a notice, and the approval stays stored. The request is refused at once while a turn runs, and the server's tools apply from the next request. A server whose TOML changes waits for approval again.
 - **Session toggles (T4.7):** a session can turn a server off. Its tools leave `tools` (or the indexed list and `ToolSearch`), and calls to them fail with a tool error saying the server is off. The change applies from the next request, since a changed tool list breaks the prompt cache (§7). The set is kept per session and never saved.
 
 Start with tools, then resources and prompts.

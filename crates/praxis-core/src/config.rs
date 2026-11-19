@@ -78,7 +78,6 @@ impl McpSource {
 #[derive(Debug, Clone)]
 pub struct PendingMcp {
     pub server: McpServer,
-    pub source: McpSource,
     pub key: String,
     pub digest: String,
 }
@@ -494,13 +493,7 @@ pub fn load_with_approval(
                     path.display()
                 ));
                 if let Some(Value::Table(servers)) = widening.get("mcp") {
-                    let approved = split_servers(
-                        servers.clone(),
-                        path,
-                        McpSource::Project,
-                        &sources,
-                        &mut pending,
-                    )?;
+                    let approved = split_servers(servers.clone(), path, &sources, &mut pending)?;
                     merge(&mut project, nested("mcp", Value::Table(approved)), "");
                 }
             }
@@ -524,22 +517,14 @@ pub fn load_with_approval(
             .and_then(Value::as_table)
             .is_some_and(|servers| !servers.is_empty());
         if has_servers {
-            let text = toml::to_string(&lmstudio).map_err(|e| error("config", e))?;
+            // LM Studio's file is the user's own config, so its servers need no trust prompt; the
+            // MCP view's checkboxes turn them on and off (owner decision 2026-11-19).
             let servers = match lmstudio.remove("mcp") {
                 Some(Value::Table(servers)) => servers,
                 _ => Table::new(),
             };
-            let approved = if is_approved(&sources, path, &text, approve)? {
-                servers
-            } else {
-                notices.push(format!(
-                    "Ignored `mcp` from {}: LM Studio's MCP servers need your approval.",
-                    path.display()
-                ));
-                split_servers(servers, path, McpSource::LmStudio, &sources, &mut pending)?
-            };
-            lmstudio_mcp.extend(approved.keys().cloned());
-            merge(&mut merged, nested("mcp", Value::Table(approved)), "");
+            lmstudio_mcp.extend(servers.keys().cloned());
+            merge(&mut merged, nested("mcp", Value::Table(servers)), "");
         }
     }
     let env = sources.env.iter().filter_map(|(name, value)| {
@@ -593,7 +578,6 @@ pub fn load_with_approval(
 fn split_servers(
     servers: Table,
     origin: &Path,
-    source: McpSource,
     sources: &Sources,
     pending: &mut BTreeMap<String, PendingMcp>,
 ) -> Result<Table, ConfigError> {
@@ -623,7 +607,6 @@ fn split_servers(
             name,
             PendingMcp {
                 server,
-                source,
                 key,
                 digest,
             },

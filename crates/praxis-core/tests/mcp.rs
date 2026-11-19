@@ -961,7 +961,6 @@ async fn a_waiting_server_connects_only_once_approved() {
         "test".to_owned(),
         PendingMcp {
             server: server(me.to_str().unwrap(), &["serve"]),
-            source: McpSource::Project,
             key: "server:/proj/.praxis/config.toml#test".to_owned(),
             digest: "unused".to_owned(),
         },
@@ -999,7 +998,6 @@ async fn approval_text_shows_env_quotes_arguments_and_escapes_control_characters
             "fs".to_owned(),
             PendingMcp {
                 server,
-                source: McpSource::Project,
                 key: "server:/p#fs".to_owned(),
                 digest: "unused".to_owned(),
             },
@@ -1063,7 +1061,6 @@ fn waiting(name: &str, server: McpServer) -> BTreeMap<String, PendingMcp> {
         name.to_owned(),
         PendingMcp {
             server,
-            source: McpSource::Project,
             key: format!("server:/p#{name}"),
             digest: format!("digest-{name}"),
         },

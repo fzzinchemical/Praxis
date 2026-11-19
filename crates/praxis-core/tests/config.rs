@@ -549,7 +549,6 @@ fn a_refused_project_server_waits_and_its_own_approval_loads_it() {
         .config;
     assert!(refused.mcp.is_empty());
     let pending = &refused.mcp_pending["theirs"];
-    assert_eq!(pending.source, McpSource::Project);
     store.set(&pending.key, &pending.digest).unwrap();
 
     let approved = load(sources()).unwrap().config;
@@ -576,27 +575,6 @@ fn a_project_server_name_with_a_control_character_is_a_config_error() {
     )
     .unwrap_err();
     assert!(error.to_string().contains("control character"), "{error}");
-}
-
-#[test]
-fn lmstudio_servers_wait_for_their_own_approval() {
-    let lmstudio = file(r#"{"mcpServers": {"git": {"type": "stdio", "command": "git-mcp"}}}"#);
-    let store = TrustStore::new(lmstudio.with_file_name("trust.json"));
-    let sources = || Sources {
-        lmstudio_mcp: Some(lmstudio.clone()),
-        trust: Some(store.clone()),
-        ..Sources::default()
-    };
-    let refused = load_with_approval(sources(), &mut |_, _| false)
-        .unwrap()
-        .config;
-    assert!(refused.mcp.is_empty());
-    let pending = &refused.mcp_pending["git"];
-    assert_eq!(pending.source, McpSource::LmStudio);
-    store.set(&pending.key, &pending.digest).unwrap();
-    let approved = load(sources()).unwrap().config;
-    assert_eq!(approved.mcp_sources["git"], McpSource::LmStudio);
-    assert!(approved.mcp_pending.is_empty());
 }
 
 fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
@@ -657,51 +635,17 @@ fn lmstudio_json(json: &str, answer: bool) -> (Loaded, Vec<PathBuf>) {
 }
 
 #[test]
-fn lmstudio_mcp_servers_load_once_approved() {
+fn lmstudio_mcp_servers_load_without_asking() {
     let json = r#"{"mcpServers": {"fs": {"command": "mcp-fs", "args": ["."]},
         "web": {"url": "https://x/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}}"#;
-    let (loaded, asked) = lmstudio_json(json, true);
-    assert_eq!(asked.len(), 1);
-    assert!(asked[0].ends_with("mcp.json"));
+    let (loaded, asked) = lmstudio_json(json, false);
+    assert!(asked.is_empty(), "{asked:?}");
+    assert!(loaded.config.mcp_pending.is_empty());
     assert!(matches!(&loaded.config.mcp["fs"], McpServer::Stdio(s)
         if s.command == "mcp-fs" && s.args == ["."]));
     assert!(matches!(&loaded.config.mcp["web"], McpServer::Http(h)
         if h.url == "https://x/mcp"));
     assert_eq!(loaded.config.mcp_sources["fs"], McpSource::LmStudio);
-}
-
-#[test]
-fn lmstudio_mcp_servers_need_approval_before_they_run() {
-    let (loaded, asked) = lmstudio_json(r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#, false);
-    assert_eq!(asked.len(), 1);
-    assert!(loaded.config.mcp.is_empty());
-    assert!(
-        loaded.notices.iter().any(|n| n.contains("mcp.json")),
-        "{:?}",
-        loaded.notices
-    );
-}
-
-#[test]
-fn approved_lmstudio_mcp_servers_are_not_asked_again() {
-    let json = r#"{"mcpServers": {"fs": {"command": "mcp-fs"}}}"#;
-    let path = file("").with_file_name("mcp.json");
-    fs::write(&path, json).unwrap();
-    let trust = TrustStore::new(path.with_file_name("trust.json"));
-    let load_with = |answer: bool| {
-        load_with_approval(
-            Sources {
-                lmstudio_mcp: Some(path.clone()),
-                trust: Some(trust.clone()),
-                ..Sources::default()
-            },
-            &mut |_, _| answer,
-        )
-        .unwrap()
-    };
-    assert!(load_with(true).config.mcp.contains_key("fs"));
-    // The second run has no one to ask, so only the stored approval can load it.
-    assert!(load_with(false).config.mcp.contains_key("fs"));
 }
 
 #[test]

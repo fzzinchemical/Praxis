@@ -1831,7 +1831,6 @@ mod tests {
                 args: Vec::new(),
                 env: Default::default(),
             }),
-            source: McpSource::Project,
             key: "server:/p#fs".into(),
             digest: "d".into(),
         };
