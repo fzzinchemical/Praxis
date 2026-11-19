@@ -293,6 +293,10 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.0.2-beta
+
+- MCP servers from LM Studio's `~/.lmstudio/mcp.json` load without approval; the MCP view's checkboxes turn them on and off. Project `.mcp.json` servers still ask once.
+
 ### New in 2.0.1-beta
 
 - MCP tool calls run without asking: enabling or disabling a server in the MCP view is the approval. Deny rules, hooks and read-only mode still apply.
