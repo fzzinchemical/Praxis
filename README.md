@@ -274,7 +274,7 @@ command = "mcp-server-filesystem"
 args = ["."]
 ```
 
-The full reference is [docs/SPEC.md §8](docs/SPEC.md#8-config-trust-and-sessions).
+The full reference is [docs/SPEC.md §8](docs/spec/08-config-trust-and-sessions.md#8-config-trust-and-sessions).
 
 ## VS Code
 
@@ -394,7 +394,7 @@ Fixes from testing 1.4.0-beta in VS Code. Each is covered by unit tests, but non
 
 ### New in 1.4.0-beta
 
-Harness fixes from the [performance notes](docs/TASKS.md#m13-beta-140-harness-fixes-from-the-performance-notes). Each is covered by tests against a fake server, but **none has been measured with a model yet**: no eval was run for this release.
+Harness fixes from the [performance notes](docs/tasks/DONE.md#m13-beta-140-harness-fixes-from-the-performance-notes). Each is covered by tests against a fake server, but **none has been measured with a model yet**: no eval was run for this release.
 
 - A tool call with broken arguments no longer kills the session with HTTP 500 on every later request.
 - HTTP 5xx errors and dropped connections are retried up to 3 times before any output arrives.
