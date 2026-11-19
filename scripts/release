@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Builds a release locally (GitHub Actions are off): ./scripts/release v1.2.0 [--publish]
-# Without --publish it only builds dist/. With it, it tags HEAD, pushes the tag and creates the
+# Without --publish it only builds dist/. With it, it tags HEAD, pushes main and the tag and creates the
 # GitHub release with `gh`, using README.md's "### New in <version>" section as its text. A tag with a suffix (v1.2.0-beta) becomes a pre-release.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -33,5 +33,5 @@ echo "release: built target/dist for $tag"
 pre=()
 [[ "$tag" == *-* ]] && pre=(--prerelease)
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null || git tag "$tag"
-git push origin "$tag"
+git push --atomic origin main "$tag"
 gh release create "$tag" target/dist/* --verify-tag --title "${tag/-/ }" --notes "$notes" "${pre[@]}"
