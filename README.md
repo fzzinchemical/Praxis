@@ -296,6 +296,7 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 ### New in 2.1.0-beta
 
 - Lazy memory: index lines in your own `~/.claude/CLAUDE.md` or `~/.config/praxis/AGENTS.md` (`~/.claude/docs/code.md — read when writing code`) stay out of the prompt, and the agent may `Read` the named file when the trigger applies.
+- The VS Code panel's RAM/VRAM line moved below the chat box, and it and the status line no longer shrink out of sight as the chat grows.
 - Model routing recipe: map a big model to an alias (`[models.planner] model = "<LM Studio key>"`) and give planning or review agents `model: planner` in `~/.claude/agents/*.md`; the session model (for example `qwen3.5-4b`) carries out the steps.
 
 ### New in 2.0.2-beta

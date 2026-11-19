@@ -215,6 +215,8 @@ main {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Fixed lines: as the log grows, flex would otherwise squash them out of sight. */
+  flex-shrink: 0;
 }
 
 .status-bar {
@@ -224,7 +226,7 @@ main {
 }
 
 .resources {
-  margin-bottom: 6px;
+  margin-top: 6px;
 }
 
 /* Composer: textarea and actions in one bordered box. */
