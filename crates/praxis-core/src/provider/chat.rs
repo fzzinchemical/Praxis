@@ -272,7 +272,8 @@ struct ChunkAssembler {
 impl ChunkAssembler {
     fn on_event(&mut self, event: SseEvent) -> Result<Vec<ChatChunk>, ProviderError> {
         // LM Studio reports failures such as context overflow this way on HTTP 200.
-        if event.event.as_deref() == Some("error") {
+        // It also sends `data: {"error": ...}` with no event line.
+        if event.event.as_deref() == Some("error") || event.data.starts_with(r#"{"error""#) {
             return Err(parse_error_body(&event.data));
         }
         if event.data == "[DONE]" {
@@ -491,6 +492,22 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&body).unwrap(),
             r#"{"name":"Read","description":"reads"}"#
+        );
+    }
+
+    /// An error body sent as plain `data:` without `event: error` is a server error, not malformed.
+    #[test]
+    fn error_in_plain_data_is_a_server_error() {
+        let event = super::SseEvent {
+            event: None,
+            data: r#"{"error":{"message":"Model unloaded."}}"#.into(),
+        };
+        let err = super::ChunkAssembler::default()
+            .on_event(event)
+            .unwrap_err();
+        assert!(
+            matches!(&err, super::ProviderError::Server { message } if message == "Model unloaded."),
+            "{err:?}"
         );
     }
 }

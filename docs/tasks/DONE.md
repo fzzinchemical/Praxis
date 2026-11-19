@@ -435,7 +435,7 @@ flowchart LR
 
 - [x] **T10.6 Plugin commands in the panel** (§11, §12) · *Should*
   - **Needs:** T6.2, T9.4.
-  - **Goal:** like Claude Code, the panel lists available commands grouped by source ("From the ponytail plugin: off, lite, full, ultra"), each a button that runs or inserts `/<plugin>:<command>`. See [the Claude Code example](../img/claude-code-plugin-commands.png).
+  - **Goal:** like Claude Code, the panel lists available commands grouped by source ("From the ponytail plugin: off, lite, full, ultra"), each a button that runs or inserts `/<plugin>:<command>`.
   - **Done when:** after `session/new` or `session/load`, the agent sends ACP `available_commands_update` listing user-invocable commands and skills with their source; the panel renders them grouped by plugin or directory; clicking one inserts it in the prompt box; typing `/` in the prompt box opens an autocomplete list filtered as the user types (arrow keys, Enter or Tab accepts, Escape closes); commands marked `user-invocable: false` are absent; keyboard reachable with labelled buttons.
   - **Added (2026-11-13, project owner):** autocomplete while typing.
 
