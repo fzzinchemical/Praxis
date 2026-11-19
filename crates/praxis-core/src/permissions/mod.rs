@@ -351,14 +351,13 @@ impl Permissions {
             "Bash" if self.policy.mode == Mode::FullAccess && !bash_writes_hard_denied(input) => {
                 Decision::Allow
             }
-            mcp if self.policy.mode == Mode::FullAccess && mcp.starts_with("mcp__") => {
-                Decision::Allow
-            }
+            // Enabled servers' tools run without asking; the MCP view's checkboxes are the gate
+            // (owner decision 2026-11-19). Deny rules, hooks and read-only mode still apply first.
+            mcp if mcp.starts_with("mcp__") => Decision::Allow,
             "Write" | "Edit" => Decision::Ask { can_always: true },
             "Bash" if self.policy.mode == Mode::Ask && read_only_git(input) => Decision::Allow,
             // A grant would cover every later command, so routine ones need allow rules instead.
             "Bash" => Decision::Ask { can_always: false },
-            mcp if mcp.starts_with("mcp__") => Decision::Ask { can_always: true },
             other => Decision::Deny(format!(
                 "Unknown tool `{other}`. Use one of the tools you were given."
             )),
@@ -516,16 +515,13 @@ mod tests {
     }
 
     #[test]
-    fn mcp_rules_match_one_tool_or_a_whole_server() {
-        let echo = ("mcp__test__echo", json!({ "text": "hi" }));
-        let other = ("mcp__testing__echo", json!({}));
-        let p = permissions(Mode::Ask, &["mcp__test"], &["mcp__test__crash"]);
-        assert_eq!(p.decide(echo.0, &echo.1), Decision::Allow);
+    fn mcp_tools_run_without_asking_unless_a_deny_rule_matches() {
+        let p = permissions(Mode::Ask, &[], &["mcp__test__crash"]);
+        assert_eq!(p.decide("mcp__test__echo", &json!({})), Decision::Allow);
         assert!(denied(&p.decide("mcp__test__crash", &json!({}))));
-        assert_eq!(p.decide(other.0, &other.1), ASK);
-        let p = permissions(Mode::Ask, &["mcp__test__echo"], &[]);
-        assert_eq!(p.decide(echo.0, &echo.1), Decision::Allow);
-        assert_eq!(p.decide("mcp__test__crash", &json!({})), ASK);
+        let p = permissions(Mode::Ask, &[], &["mcp__test"]);
+        assert!(denied(&p.decide("mcp__test__echo", &json!({}))));
+        assert_eq!(p.decide("mcp__testing__echo", &json!({})), Decision::Allow);
     }
 
     #[test]

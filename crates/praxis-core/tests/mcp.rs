@@ -396,8 +396,8 @@ fn test_server() -> BTreeMap<String, McpServer> {
 
 async fn mcp_tools_are_callable_through_the_agent_loop() {
     let run = run_agent("mcp__test__echo", r#"{"text":"hi"}"#, &[], &[]).await;
-    // MCP tools ask before running, like any tool that isn't read-only.
-    assert!(run.asked);
+    // Enabling a server is the approval, so its tools run without asking.
+    assert!(!run.asked);
     assert!(!run.output.is_error, "{}", run.output.content);
     assert_eq!(run.output.content, "echo: hi");
     assert!(
@@ -651,12 +651,6 @@ async fn indexed_permissions_hooks_and_validation_see_the_inner_tool() {
         out.is_error && out.content.contains("deny rule"),
         "{}",
         out.content
-    );
-    // A `CallTool` rule matches nothing: the inner tool still asks.
-    assert!(
-        indexed("CallTool", ECHO_CALL, &["CallTool"], &[])
-            .await
-            .asked
     );
     let hook = Hook {
         event: "PreToolUse".to_owned(),
