@@ -1,5 +1,5 @@
 //! US-64 acceptance: every MCP failure gives a clear tool result, and an unreadable trust store
-//! hides the server's tools with a notice naming the file. This binary is also the small
+//! keeps the server's tools with a notice naming the file. This binary is also the small
 //! `rmcp` server these tests start, run with `serve`.
 
 // `praxis = false` builds without `cfg(test)`, so clippy can't tell this is test code: a
@@ -132,24 +132,23 @@ async fn image_audio_and_resource_content_gives_placeholders_not_data() {
     }
 }
 
-async fn an_unreadable_trust_store_hides_the_tools_and_names_the_file() {
+async fn an_unreadable_trust_store_keeps_the_tools_and_names_the_file() {
     let dir = std::env::temp_dir().join(format!("praxis-us64-trust-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    // A directory where the trust file should be: reading it fails, and it can't be approved.
+    // A directory where the trust file should be: reading it fails. MCP servers are trusted, so
+    // the tools stay offered and the notice names the file.
     let trust = dir.join("trust.json");
     std::fs::create_dir_all(&trust).unwrap();
     let store = TrustStore::new(trust.clone());
 
-    let (mut mcp, _) = Mcp::connect(&story_servers(), Duration::from_secs(10)).await;
-    let notices = mcp.pin(Some(&store), &mut |_| {
-        panic!("an unreadable trust store must not ask for approval")
-    });
-    assert!(mcp.schemas().is_empty(), "{:?}", mcp.schemas());
+    let (mcp, _) = Mcp::connect(&story_servers(), Duration::from_secs(10)).await;
+    let notices = mcp.pin(Some(&store));
+    assert!(!mcp.schemas().is_empty());
     let file = trust.display().to_string();
     assert!(
         notices
             .iter()
-            .any(|n| n.contains("is hidden") && n.contains(&file)),
+            .any(|n| n.contains("trust store") && n.contains(&file)),
         "{notices:?}"
     );
     std::fs::remove_dir_all(&dir).unwrap();
@@ -176,6 +175,6 @@ fn main() {
     println!("a_tool_that_never_answers_times_out_after_60_seconds ... ok");
     multi.block_on(image_audio_and_resource_content_gives_placeholders_not_data());
     println!("image_audio_and_resource_content_gives_placeholders_not_data ... ok");
-    multi.block_on(an_unreadable_trust_store_hides_the_tools_and_names_the_file());
-    println!("an_unreadable_trust_store_hides_the_tools_and_names_the_file ... ok");
+    multi.block_on(an_unreadable_trust_store_keeps_the_tools_and_names_the_file());
+    println!("an_unreadable_trust_store_keeps_the_tools_and_names_the_file ... ok");
 }

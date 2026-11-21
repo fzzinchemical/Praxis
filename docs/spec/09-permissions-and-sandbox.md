@@ -103,5 +103,5 @@ Because of that limit, hard denials (§10) are fully enforced for `Write` and `E
 
 `praxis` and `xtask` both handle `sandbox-exec` before the async runtime starts, so restriction happens in a single-threaded process; it exits 126 when it refuses. Evals run the same sandbox nested inside their bwrap container. `sandbox-exec` must be hidden from `--help`. It runs what it's told, and only applies restrictions, so it grants nothing new.
 
-MCP servers and hooks are **not** sandboxed in the first version, because they are user-approved programs that often need access. Say so in the approval prompt and threat model.
+MCP servers and hooks are **not** sandboxed in the first version, because they are trusted programs that often need access. Say so in the threat model.
 

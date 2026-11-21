@@ -52,7 +52,7 @@ flowchart LR
 
 - `Bash` runs in a Landlock sandbox. The binary re-executes itself as the sandbox helper (`sandbox-exec`) before tokio starts, and refuses to run unsandboxed when Landlock is missing.
 - A project's `.praxis/config.toml` has no effect until you trust the workspace, and it can never raise the permission mode.
-- MCP tool definitions are pinned; a changed definition needs your approval before the model sees it.
+- MCP servers are trusted and start without approval. Tool definitions are pinned; a changed definition is reported with its scan warnings.
 - `#![forbid(unsafe_code)]` in core and CLI; `unwrap` and `expect` are lint errors outside tests.
 </details>
 
@@ -177,7 +177,7 @@ Hosted models still help with tasks local models can't do yet. Support for the A
 - **Agent loop** with streaming output, built-in `Read`, `Write`, `Edit`, `Grep`, `Glob` and `Bash` tools, and a turn summary that lists the files changed and whether tests actually ran.
 - **Safety in code, not in the prompt.** Permission modes (`read-only`, `ask`, `auto-edit`, and `full-access`, which only the user can select) with allow and deny rules, workspace confinement, a Landlock sandbox for `Bash`, hard denials for secrets, and a trust gate for project config. Model output, file contents and tool results are treated as untrusted.
 - **Sessions:** resume (`--resume`), checkpoints and `/undo`, and plan-first mode (`/plan`, then `/execute`).
-- **MCP client** over stdio and streamable HTTP, read from config or `.mcp.json`. Tool definitions are pinned, and a changed tool needs your approval.
+- **MCP client** over stdio and streamable HTTP, read from config or `.mcp.json`. Servers start without approval; tool definitions are pinned, and a changed tool is reported.
 - **Claude Code compatibility:** plugins (`plugin.json`, skills, commands, agents, hooks, MCP), standalone skills and agents in `.claude/` and `~/.claude/`, `CLAUDE.md` and `AGENTS.md` memory with imports and nested files, path-scoped rules, and Claude Code settings.
 - **Editors:** a VS Code extension (Rust compiled to WebAssembly, no npm) with chat, diff review, sessions and plugin views. Any [Agent Client Protocol](https://agentclientprotocol.com) client, such as Zed, can use `praxis acp`.
 
@@ -240,7 +240,7 @@ praxis --resume=<id>               # continue one session; the ID must follow `=
 praxis sessions                    # list saved sessions
 praxis plugin install <git-url>    # plugins start disabled; enable them after review
 praxis plugin list
-praxis mcp list [--json]           # configured MCP servers and their approval state, without connecting
+praxis mcp list [--json]           # configured MCP servers and their source, without connecting
 praxis acp                         # Agent Client Protocol over stdio, for editors
 ```
 
@@ -292,6 +292,11 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Performance targets measured and a written threat model (M7).
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
+
+### New in 2.3.1-beta
+
+- MCP: servers start without approval, project ones included. The MCP view's Approve action and the approval prompts for changed tools are gone; a changed tool is reported with its warnings and stays available.
+- VS Code: the diff popup follows the theme, closes with its ✕ button, and has a Revert file button.
 
 ### New in 2.3.0-beta
 

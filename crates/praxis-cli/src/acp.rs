@@ -15,7 +15,6 @@ use praxis_core::provider::{MEMORY_MARK, Message, ToolCall};
 use praxis_core::session::{self, Entry, SessionLog};
 use praxis_core::tools::{DiagnosticsReader, EditorReader};
 use praxis_core::tools::{FileDiff, ToolOutput};
-use praxis_core::trust::TrustStore;
 use serde_json::{Value, json};
 use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
@@ -68,8 +67,6 @@ struct Server<M> {
     sessions_dir: PathBuf,
     /// Plugin and standalone commands announced after each `session/new` and `session/load`.
     commands: Vec<Skill>,
-    /// Where a sidebar approval of an MCP server is stored (SPEC §8). `None` refuses approvals.
-    trust: Option<TrustStore>,
     sessions: Mutex<HashMap<String, Slot>>,
     /// Whether the client advertised `fs.readTextFile` at `initialize`.
     client_reads: AtomicBool,
@@ -77,24 +74,6 @@ struct Server<M> {
     client_diagnostics: AtomicBool,
     /// Set by the first `initialize`, so a repeat doesn't start a second resources loop.
     resources_started: AtomicBool,
-}
-
-/// The `sessionId` and `name` of an approval request, or `None` when either is missing.
-fn approve_params(params: &Value) -> Option<(String, String)> {
-    Some((
-        params["sessionId"].as_str()?.to_owned(),
-        params["name"].as_str()?.to_owned(),
-    ))
-}
-
-/// The answer to an approval: `{name, notices}`, or the error the request gets (SPEC §13).
-async fn approve_reply<M: Models>(
-    server: &Server<M>,
-    session: &str,
-    name: &str,
-) -> Result<Value, Error> {
-    let notices = server.approve_mcp(session, name).await?;
-    Ok(json!({"name": name, "notices": notices}))
 }
 
 /// Prompt text that makes the test build panic its turn task, where no tool can catch it.
@@ -113,9 +92,6 @@ const MCP_SERVERS: &str = "_praxis/mcp_servers";
 /// Extension request that turns one MCP server on or off for the session: `sessionId`, `name`,
 /// `enabled`. Applies from the session's next turn (SPEC §13).
 const SET_MCP_ENABLED: &str = "_praxis/set_mcp_enabled";
-/// Extension request for "Approve" in the MCP view: `sessionId`, `name`. Stores the user's approval
-/// of that server and connects it for the session. Answered with `name` and `notices` (SPEC §13).
-const APPROVE_MCP: &str = "_praxis/approve_mcp_server";
 /// How long an edit waits for the client's diagnostics; a silent client must not hang the tool.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_secs(5);
 /// How long a `Read` waits for the client's buffer; a silent client must not hang the turn.
@@ -264,18 +240,13 @@ impl<M: Models> Server<M> {
             .mcp
             .iter()
             .map(|s| {
-                let mut row = json!({
+                json!({
                     "name": s.name,
                     "source": s.source.as_str(),
                     "status": s.status.as_str(),
                     "tools": s.tools,
                     "enabled": !slot.mcp_off.contains(&s.name),
-                });
-                // Only servers waiting for approval carry what the approval would run (SPEC §13).
-                if let Some(command) = &s.command {
-                    row["command"] = json!(command);
-                }
-                row
+                })
             })
             .collect();
         Ok(json!({"servers": servers}))
@@ -296,27 +267,6 @@ impl<M: Models> Server<M> {
             slot.mcp_off.insert(name.to_owned());
         }
         Ok(())
-    }
-
-    /// Approves one MCP server the user chose in the view and connects it for session `id`. Like
-    /// a revert, it takes the agent, so it is refused at once while a turn runs (SPEC §13). The
-    /// approval is stored before the connection is tried, so a failed connect stays approved.
-    async fn approve_mcp(&self, id: &str, name: &str) -> Result<Vec<String>, Error> {
-        let (mut agent, _) = self.begin_turn(id)?;
-        let outcome = match &self.trust {
-            Some(trust) => agent
-                .approve_mcp(name, trust)
-                .await
-                .map_err(|e| Error::invalid_params().data(e)),
-            None => Err(Error::invalid_params()
-                .data("approving an MCP server needs a home or data directory to store it in")),
-        };
-        let mcp = agent.mcp_servers();
-        self.end_turn(id, agent);
-        if let Some(slot) = self.sessions().get_mut(id) {
-            slot.mcp = mcp;
-        }
-        outcome
     }
 
     fn end_turn(&self, id: &str, agent: Agent) {
@@ -430,14 +380,12 @@ pub fn agent(
     sessions_dir: PathBuf,
     models: impl Models,
     commands: Vec<Skill>,
-    trust: Option<TrustStore>,
 ) -> impl ConnectTo<Client> {
     let server = Arc::new(Server {
         new_agent,
         models,
         sessions_dir,
         commands,
-        trust,
         sessions: Mutex::default(),
         client_reads: AtomicBool::new(false),
         client_diagnostics: AtomicBool::new(false),
@@ -752,7 +700,7 @@ pub fn agent(
             on_receive_request!(),
         )
         .on_receive_request(
-            async move |req: UntypedMessage, responder, cx| {
+            async move |req: UntypedMessage, responder, _cx| {
                 // Last in the chain, so it only sees methods no handler above took.
                 if req.method() == REVERT {
                     let params = req.params();
@@ -801,21 +749,6 @@ pub fn agent(
                         Ok(()) => responder.respond(json!({"name": name, "enabled": enabled})),
                         Err(e) => responder.respond_with_error(e),
                     };
-                }
-                if req.method() == APPROVE_MCP {
-                    let Some((session, name)) = approve_params(req.params()) else {
-                        let error = Error::invalid_params()
-                            .data("approve_mcp_server needs a sessionId and a name");
-                        return responder.respond_with_error(error);
-                    };
-                    let server = for_rewind.clone();
-                    // Connecting can take seconds, so it runs off the dispatch loop, as loads do.
-                    return cx.clone().spawn(async move {
-                        match approve_reply(&server, &session, &name).await {
-                            Ok(reply) => responder.respond(reply),
-                            Err(e) => responder.respond_with_error(e),
-                        }
-                    });
                 }
                 if req.method() != REWIND {
                     return responder.respond_with_error(Error::method_not_found());
@@ -1449,7 +1382,7 @@ mod tests {
             let provider = Arc::new(Provider::new(&url, None)?);
             Ok(Agent::new(provider, tools, config).with_agents(Vec::new()))
         });
-        agent(new_agent, dir.join("sessions"), FakeModels, commands, None)
+        agent(new_agent, dir.join("sessions"), FakeModels, commands)
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -1760,145 +1693,6 @@ mod tests {
 
     /// A session's MCP toggles live in its slot: listed with their enabled flag, changed per
     /// session, and unknown names or sessions are refused (SPEC §11).
-    #[tokio::test]
-    async fn approving_an_mcp_server_is_refused_mid_turn_and_without_a_store() {
-        let dir = temp_dir("approve-refused");
-        let server = Server {
-            new_agent: Box::new(|| unreachable!("no new agent is needed")),
-            models: FakeModels,
-            sessions_dir: dir.join("sessions"),
-            commands: Vec::new(),
-            trust: None,
-            sessions: Mutex::new(HashMap::new()),
-            client_reads: AtomicBool::new(false),
-            client_diagnostics: AtomicBool::new(false),
-            resources_started: AtomicBool::new(false),
-        };
-        let tools = Arc::new(ToolContext::new(&dir).unwrap());
-        let provider = Arc::new(Provider::new("http://127.0.0.1:1", None).unwrap());
-        let config = AgentConfig {
-            model: "m".into(),
-            context_size: 100_000,
-            system_prompt: "sys".into(),
-            memory: Vec::new(),
-            user_memory: 0,
-            scoped_rules: Vec::new(),
-            mask_keep_turns: 10,
-            max_turn_requests: 10,
-            profile: praxis_core::agent::profile::ModelProfile::default(),
-            seed: None,
-            policy: praxis_core::permissions::Policy::default(),
-            masking: true,
-        };
-        let agent = Agent::new(provider, tools, config);
-        let slot = Slot {
-            subagents: agent.subagent_stops(),
-            agent: Some(agent),
-            cancel: CancellationToken::new(),
-            model: "m".into(),
-            mode: Mode::Ask,
-            mcp: Vec::new(),
-            mcp_off: BTreeSet::new(),
-        };
-        server.sessions().insert("s".into(), slot);
-        // No trust store: the approval is refused, and the agent goes back to the session.
-        assert!(server.approve_mcp("s", "fs").await.is_err());
-        assert!(server.sessions().get("s").unwrap().agent.is_some());
-        // A running turn holds the agent, so the approval is refused at once.
-        let (_agent, _cancel) = server.begin_turn("s").unwrap();
-        assert!(server.approve_mcp("s", "fs").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn approving_stores_the_approval_and_refreshes_the_session_list() {
-        use praxis_core::config::{McpServer, McpSource, PendingMcp, StdioServer};
-        let dir = temp_dir("approve-stores");
-        let store = praxis_core::trust::TrustStore::new(dir.join("trust.json"));
-        let server = Server {
-            new_agent: Box::new(|| unreachable!("no new agent is needed")),
-            models: FakeModels,
-            sessions_dir: dir.join("sessions"),
-            commands: Vec::new(),
-            trust: Some(store.clone()),
-            sessions: Mutex::new(HashMap::new()),
-            client_reads: AtomicBool::new(false),
-            client_diagnostics: AtomicBool::new(false),
-            resources_started: AtomicBool::new(false),
-        };
-        let pending = PendingMcp {
-            server: McpServer::Stdio(StdioServer {
-                command: "/nonexistent/mcp-fs".into(),
-                args: Vec::new(),
-                env: Default::default(),
-            }),
-            key: "server:/p#fs".into(),
-            digest: "d".into(),
-        };
-        let mcp =
-            praxis_core::mcp::Mcp::default().with_unapproved(&std::collections::BTreeMap::from([
-                ("fs".to_owned(), pending),
-            ]));
-        let tools = Arc::new(ToolContext::new(&dir).unwrap());
-        let provider = Arc::new(Provider::new("http://127.0.0.1:1", None).unwrap());
-        let config = AgentConfig {
-            model: "m".into(),
-            context_size: 100_000,
-            system_prompt: "sys".into(),
-            memory: Vec::new(),
-            user_memory: 0,
-            scoped_rules: Vec::new(),
-            mask_keep_turns: 10,
-            max_turn_requests: 10,
-            profile: praxis_core::agent::profile::ModelProfile::default(),
-            seed: None,
-            policy: praxis_core::permissions::Policy::default(),
-            masking: true,
-        };
-        let agent = Agent::new(provider, tools, config).with_mcp(Arc::new(mcp));
-        let slot = Slot {
-            subagents: agent.subagent_stops(),
-            agent: Some(agent),
-            cancel: CancellationToken::new(),
-            model: "m".into(),
-            mode: Mode::Ask,
-            mcp: Vec::new(),
-            mcp_off: BTreeSet::new(),
-        };
-        server.sessions().insert("s".into(), slot);
-        server.sessions().get_mut("s").unwrap().mcp = vec![praxis_core::mcp::ServerStatus {
-            name: "fs".into(),
-            source: McpSource::Project,
-            status: praxis_core::mcp::Health::NeedsApproval,
-            tools: Vec::new(),
-            command: Some("/nonexistent/mcp-fs".into()),
-        }];
-        let waiting = server.mcp_servers("s").unwrap();
-        assert_eq!(
-            waiting["servers"][0]["command"], "/nonexistent/mcp-fs",
-            "{waiting}"
-        );
-        // The approval is stored, the connect fails and is a notice, and the list shows the result.
-        let reply = approve_reply(&server, "s", "fs").await.unwrap();
-        assert_eq!(reply["name"], "fs");
-        assert!(
-            reply["notices"][0]
-                .as_str()
-                .unwrap()
-                .contains("unavailable"),
-            "{reply}"
-        );
-        assert_eq!(store.get("server:/p#fs").unwrap().as_deref(), Some("d"));
-        let listed = server.mcp_servers("s").unwrap();
-        assert_eq!(listed["servers"][0]["status"], "failed", "{listed}");
-        assert!(server.approve_mcp("s", "fs").await.is_err());
-        assert!(approve_reply(&server, "s", "fs").await.is_err());
-        assert_eq!(
-            approve_params(&json!({"sessionId": "s", "name": "fs"})),
-            Some(("s".into(), "fs".into()))
-        );
-        assert_eq!(approve_params(&json!({"sessionId": "s"})), None);
-    }
-
     #[test]
     fn replay_shows_a_subagents_calls_under_its_parent_and_a_plain_message_as_is() {
         let entry = |value: Value| serde_json::from_value::<Entry>(value).unwrap();
@@ -1940,7 +1734,6 @@ mod tests {
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
             commands: Vec::new(),
-            trust: None,
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
@@ -1951,7 +1744,6 @@ mod tests {
             source: McpSource::Plugin,
             status: Health::Connected,
             tools: vec!["git_status".into()],
-            command: None,
         };
         let slot = Slot {
             agent: None,
@@ -2024,7 +1816,6 @@ mod tests {
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
             commands: Vec::new(),
-            trust: None,
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),
@@ -2509,7 +2300,6 @@ mod tests {
             models: FakeModels,
             sessions_dir: dir.join("sessions"),
             commands: Vec::new(),
-            trust: None,
             sessions: Mutex::new(HashMap::new()),
             client_reads: AtomicBool::new(false),
             client_diagnostics: AtomicBool::new(false),

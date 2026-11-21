@@ -62,7 +62,7 @@ command = "mcp-server-filesystem"
 args = ["."]
 ```
 
-Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper. LM Studio's `~/.lmstudio/mcp.json` (`mcpServers` shape, `$HOME`) is a user-level source. It is the user's own file, so its servers load without a trust prompt (owner decision 2026-11-19); the MCP view's checkboxes turn them on and off. A name already in Praxis config wins, and a missing file is silent; a malformed one gives a notice.
+Project MCP servers may also come from `.mcp.json` in Claude Code's shape, with or without the `mcpServers` wrapper. MCP servers are trusted from every layer, project ones included, so they load without approval (owner decision 2026-11-21); the MCP view's checkboxes turn them on and off. LM Studio's `~/.lmstudio/mcp.json` (`mcpServers` shape, `$HOME`) is a user-level source. It is the user's own file, so its servers load without a trust prompt (owner decision 2026-11-19); the MCP view's checkboxes turn them on and off. A name already in Praxis config wins, and a missing file is silent; a malformed one gives a notice.
 
 ### Trust
 
@@ -91,12 +91,13 @@ flowchart TD
 |---|---|
 | `deny` rules, model choice (within backends the user enabled), stricter mode | Applied |
 | `allow` rules, wider mode | Ignored with a notice |
-| MCP servers, hooks, plugins | Not started |
+| MCP servers | Started: MCP servers are trusted (owner decision 2026-11-21) |
+| Hooks, plugins | Not started |
 | `lmstudio.*`, `anthropic.*`, `sandbox.*` | **Never honoured from project config**, even when approved |
 | Project `AGENTS.md`, `CLAUDE.md`, `CLAUDE.local.md` (§12) | Loaded as context, unlabelled; labelled `Instructions from:` once approved (T13.6) |
 | Rules, skills, commands, agents (§12) | Loaded as context; they can't grant anything |
 
-Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A project MCP server that the block approval doesn't cover is listed as waiting and approved one server at a time (§13): its approval is stored under `server:<config path>#<name>` as the hash of its own TOML, so approving one never approves its siblings. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
+Approval stores the SHA-256 of the widening content in `~/.local/share/praxis/trust.json` (or under `$XDG_DATA_HOME`), keyed by the project config's path. Any change requires re-approval. In non-interactive mode, unapproved items stay inactive. A refusal isn't stored, so the next interactive run asks again, and a store that can't be parsed is a config error, never an empty store.
 
 Project memory files use the same store (decided by the owner, 2026-11-14). Each file's expanded text (after comments are stripped and imports expanded) is hashed and keyed by the file's path. A file whose hash is stored, or that a person approves at a terminal, is labelled `Instructions from:` (§12). Any other file stays unlabelled context. ACP and piped runs have no terminal, so they only honour stored approvals. ACP can approve MCP servers, through the MCP view's Approve action (§13), but never memory files. An unreadable store leaves memory files unlabelled with a warning; it never approves anything.
 

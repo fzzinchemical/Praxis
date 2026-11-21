@@ -374,20 +374,13 @@ fn mcp_list(json: bool, config: &Config, workspace: &Path) -> Result<u8> {
     );
     let mut servers = config.mcp.clone();
     servers.extend(plugins.mcp);
-    let mut rows: Vec<Value> = servers
+    let rows: Vec<Value> = servers
         .keys()
         .map(|name| {
             let source = sources.get(name).map_or("user", |s| s.as_str());
             serde_json::json!({"name": name, "source": source, "status": "configured", "tools": [], "enabled": true})
         })
         .collect();
-    for (name, pending) in &config.mcp_pending {
-        let mut row = serde_json::json!({"name": name, "source": praxis_core::mcp::McpSource::Project.as_str(), "status": "needs_approval", "tools": [], "enabled": true});
-        if let McpServer::Stdio(stdio) = &pending.server {
-            row["command"] = Value::from(stdio.command.as_str());
-        }
-        rows.push(row);
-    }
     if json {
         println!("{}", serde_json::json!({"servers": rows}));
     } else {
@@ -525,14 +518,6 @@ fn approve_project_config(path: &Path, items: &str) -> bool {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line).is_ok()
         && parse_reply(&line, false) == PermissionReply::AllowOnce
-}
-
-/// A changed MCP tool stays hidden unless a person at a terminal approves it (SPEC §13).
-fn approve_mcp_change(change: &str, terminal: Option<&mut Terminal>) -> bool {
-    terminal_approves(
-        &format!("\n{}\nApprove this tool? [y/N]: ", sanitize(change)),
-        terminal,
-    )
 }
 
 /// Asks at the terminal and takes only an explicit yes. Without a terminal nobody can answer.
@@ -1254,13 +1239,12 @@ async fn serve_acp(
     new_agent: acp::NewAgent,
     models: impl acp::Models,
     commands: Vec<Skill>,
-    trust: Option<TrustStore>,
 ) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
         eprintln!("ACP sessions need HOME or XDG_DATA_HOME to save to.");
         return Ok(EXIT_USAGE);
     };
-    acp::agent(new_agent, dir, models, commands, trust)
+    acp::agent(new_agent, dir, models, commands)
         .connect_to(agent_client_protocol::Stdio::new())
         .await?;
     Ok(0)
@@ -1336,7 +1320,7 @@ async fn run(
         );
         servers.extend(plugins.mcp.clone());
         // Pinning stays after the reply.
-        let connected = if servers.is_empty() && config.mcp_pending.is_empty() {
+        let connected = if servers.is_empty() {
             None
         } else {
             Some(praxis_core::mcp::Mcp::connect(&servers, praxis_core::mcp::CONNECT_TIMEOUT).await)
@@ -1362,7 +1346,6 @@ async fn run(
                 Box::new(move || Err(anyhow::anyhow!("{message}"))),
                 picker,
                 Vec::new(),
-                None,
             )
             .await;
         }
@@ -1412,12 +1395,8 @@ async fn run(
         masking: true,
     };
     let mcp = connected.map(|(mcp, mut notices)| {
-        let mut mcp = mcp
-            .with_sources(&sources)
-            .with_unapproved(&config.mcp_pending);
-        notices.extend(mcp.pin(trust.as_ref(), &mut |change| {
-            approve_mcp_change(change, terminal.as_mut())
-        }));
+        let mcp = mcp.with_sources(&sources);
+        notices.extend(mcp.pin(trust.as_ref()));
         for notice in notices {
             eprintln!("{}", sanitize(&notice));
         }
@@ -1448,7 +1427,6 @@ async fn run(
             Box::new(new_agent),
             picker,
             plugins.commands.clone(),
-            trust,
         ))
         .await;
     }

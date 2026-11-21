@@ -17,7 +17,7 @@ use crate::context::budget::{Budget, Observation};
 use crate::context::compaction::CompactionState;
 use crate::context::prefix::{ScopedRule, SessionFacts, dir_memory};
 use crate::hooks::{Hook, Outcome, PermissionDecision};
-use crate::mcp::{CONNECT_TIMEOUT, Mcp, ServerStatus};
+use crate::mcp::{Mcp, ServerStatus};
 use crate::permissions::{Decision, Permissions, Policy};
 use crate::plugin::{AgentDef, Skill, render};
 use crate::provider::{
@@ -26,7 +26,6 @@ use crate::provider::{
 };
 use crate::session::SessionLog;
 use crate::tools::{self, FileDiff, ToolContext, ToolOutput, confine};
-use crate::trust::TrustStore;
 use futures::{StreamExt, pin_mut};
 use profile::ModelProfile;
 use recovery::{Split, ThinkSplitter, ToolFormat};
@@ -406,42 +405,6 @@ impl Agent {
         }
         self.mcp = Some(mcp);
         self.reassemble_prefix();
-    }
-
-    /// Approves MCP server `name` that the user chose in the sidebar: stores its approval, then
-    /// connects it for this session, from the next request (SPEC §8, §13). The approval is stored
-    /// before the connection is tried, so a failed connect stays approved and its failure comes
-    /// back as a notice. Errors at once when no such server is waiting.
-    pub async fn approve_mcp(
-        &mut self,
-        name: &str,
-        trust: &TrustStore,
-    ) -> Result<Vec<String>, String> {
-        let waiting = format!("no MCP server named `{name}` is waiting for approval");
-        let mcp = self.mcp.as_ref().ok_or_else(|| waiting.clone())?;
-        let pending = mcp.unapproved().get(name).ok_or(waiting)?;
-        // The store takes a file lock and fsyncs, so it runs off the async runtime.
-        let (store, key, digest) = (trust.clone(), pending.key.clone(), pending.digest.clone());
-        tokio::task::spawn_blocking(move || store.set(&key, &digest))
-            .await
-            .map_err(|e| e.to_string())??;
-        let (mut next, failure) = mcp.approve(name, CONNECT_TIMEOUT).await;
-        let mut notices: Vec<String> = failure.into_iter().collect();
-        notices.extend(next.pin(Some(trust), &mut |_| false));
-        self.replace_mcp(Arc::new(next));
-        Ok(notices)
-    }
-
-    /// Swaps in MCP servers that gained one after approval, rebuilding their tool list the way
-    /// `with_mcp` does. Called only between turns, since the prefix changes (SPEC §7).
-    fn replace_mcp(&mut self, mcp: Arc<Mcp>) {
-        self.tool_schemas.retain(|t| !t.name.starts_with("mcp__"));
-        if !self.mcp_index.is_empty() {
-            self.tool_schemas
-                .retain(|t| t.name != "ToolSearch" && t.name != "CallTool");
-            self.mcp_index.clear();
-        }
-        self.add_mcp(mcp);
     }
 
     /// Turns MCP servers off (`off` names them) for this session, from the next request. Their

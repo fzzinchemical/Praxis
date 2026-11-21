@@ -177,17 +177,20 @@ main {
 }
 
 /* Edit and Write output: added and removed lines take the theme's diff colours. */
-.tool .diff-add {
+.tool .diff-add,
+.diff-popup .diff-add {
   background: var(--vscode-diffEditor-insertedLineBackground, transparent);
   color: var(--vscode-gitDecoration-addedResourceForeground, inherit);
 }
 
-.tool .diff-del {
+.tool .diff-del,
+.diff-popup .diff-del {
   background: var(--vscode-diffEditor-removedLineBackground, transparent);
   color: var(--vscode-gitDecoration-deletedResourceForeground, inherit);
 }
 
-.tool .diff-hunk {
+.tool .diff-hunk,
+.diff-popup .diff-hunk {
   color: var(--vscode-descriptionForeground);
 }
 
@@ -630,29 +633,56 @@ summary:focus-visible {
   white-space: nowrap;
 }
 
-/* Open diff: the call's diff in a popup over the chat; the change is already saved. */
+/* Open diff: the call's diff in a popup over the chat, styled like the settings popover. */
 .diff-popup {
-  position: fixed;
-  inset: 8%;
-  z-index: 20;
+  background: var(--vscode-editorWidget-background);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
   display: flex;
   flex-direction: column;
-  background: var(--vscode-editor-background);
-  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
-  box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+  inset: 16px;
+  position: fixed;
+  z-index: 20;
 }
 
 .diff-popup-header {
-  display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--vscode-panel-border);
+  border-bottom: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  display: flex;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.diff-popup-title {
+  color: var(--vscode-descriptionForeground);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diff-popup-close {
+  background: transparent;
+  color: var(--vscode-icon-foreground, var(--vscode-foreground));
+  padding: 2px 6px;
+}
+
+.diff-popup-close:hover {
+  background: var(--vscode-toolbar-hoverBackground, var(--vscode-button-secondaryHoverBackground));
 }
 
 .diff-popup pre {
   flex: 1;
-  overflow: auto;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
   margin: 0;
+  overflow: auto;
   padding: 8px;
+  white-space: pre;
+}
+
+.diff-popup pre > span {
+  display: block;
+  min-height: 1lh;
 }

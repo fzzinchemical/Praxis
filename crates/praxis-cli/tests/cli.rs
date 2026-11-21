@@ -629,7 +629,7 @@ async fn ask(
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn acp_lists_a_waiting_project_server_and_approval_stores_and_connects_it() {
+async fn acp_starts_a_project_server_without_approval() {
     let server = server(Some(4096), Replies(vec![text_reply("unused")])).await;
     let dir = workspace();
     fs::write(
@@ -669,13 +669,13 @@ async fn acp_lists_a_waiting_project_server_and_approval_stores_and_connects_it(
         json!({"sessionId": session}),
     )
     .await;
+    // Project servers are trusted: the session tries to start it at once, with nothing to approve.
     let fs_row = &listed["result"]["servers"][0];
     assert_eq!(fs_row["name"], "fs", "{listed}");
-    assert_eq!(fs_row["status"], "needs_approval", "{listed}");
-    assert_eq!(fs_row["command"], "/nonexistent/mcp-fs .", "{listed}");
-
-    // The server can't start, so the approval is stored and the answer says why it isn't connected.
-    let approved = ask(
+    assert_eq!(fs_row["source"], "project", "{listed}");
+    assert_eq!(fs_row["status"], "failed", "{listed}");
+    assert!(fs_row.get("command").is_none(), "{listed}");
+    let gone = ask(
         &mut stdin,
         &mut lines,
         3,
@@ -683,50 +683,7 @@ async fn acp_lists_a_waiting_project_server_and_approval_stores_and_connects_it(
         json!({"sessionId": session, "name": "fs"}),
     )
     .await;
-    assert_eq!(approved["result"]["name"], "fs", "{approved}");
-    assert!(
-        approved["result"]["notices"][0]
-            .as_str()
-            .unwrap()
-            .contains("fs"),
-        "{approved}"
-    );
-    let stored = fs::read_to_string(dir.join("xdg-data/praxis/trust.json")).unwrap();
-    assert!(
-        stored.contains("server:") && stored.contains("#fs"),
-        "{stored}"
-    );
-    let relisted = ask(
-        &mut stdin,
-        &mut lines,
-        4,
-        "_praxis/mcp_servers",
-        json!({"sessionId": session}),
-    )
-    .await;
-    assert_eq!(
-        relisted["result"]["servers"][0]["status"], "failed",
-        "{relisted}"
-    );
-
-    let unknown = ask(
-        &mut stdin,
-        &mut lines,
-        5,
-        "_praxis/approve_mcp_server",
-        json!({"sessionId": session, "name": "nope"}),
-    )
-    .await;
-    assert!(unknown["error"].is_object(), "{unknown}");
-    let no_name = ask(
-        &mut stdin,
-        &mut lines,
-        6,
-        "_praxis/approve_mcp_server",
-        json!({"sessionId": session}),
-    )
-    .await;
-    assert!(no_name["error"].is_object(), "{no_name}");
+    assert_eq!(gone["error"]["code"], -32601, "{gone}");
     let _ = child.kill().await;
 }
 
@@ -999,7 +956,7 @@ async fn mcp_list_prints_each_servers_name_and_status() {
     assert_eq!(output.status.code(), Some(0), "{}", err(&output));
     let listing = out(&output);
     assert!(listing.contains("docs (configured)"), "{listing}");
-    assert!(listing.contains("fs (needs_approval)"), "{listing}");
+    assert!(listing.contains("fs (configured)"), "{listing}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1145,8 +1102,7 @@ async fn mcp_list_json_names_each_configured_source_without_connecting() {
         .find(|s| s["name"] == "fs")
         .expect("project server");
     assert_eq!(fs_row["source"], "project", "{listing}");
-    assert_eq!(fs_row["status"], "needs_approval", "{listing}");
-    assert_eq!(fs_row["command"], "/nonexistent/mcp-fs", "{listing}");
+    assert_eq!(fs_row["status"], "configured", "{listing}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1192,7 +1148,6 @@ async fn acp_rejects_praxis_requests_missing_their_params_and_keeps_serving() {
         (2, "_praxis/revert_file"),
         (3, "_praxis/set_mcp_enabled"),
         (4, "_praxis/rewind"),
-        (5, "_praxis/approve_mcp_server"),
     ] {
         let answer = ask(&mut stdin, &mut lines, id, method, json!({})).await;
         assert_eq!(answer["error"]["code"], -32602, "{method}: {answer}");

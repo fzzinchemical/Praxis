@@ -2,7 +2,7 @@
 //! `tools` array never changes mid-session (SPEC §7).
 
 pub use crate::config::McpSource;
-use crate::config::{HttpServer, McpServer, PendingMcp};
+use crate::config::{HttpServer, McpServer};
 use crate::provider::{ToolSchema, is_loopback};
 use crate::tools::ToolOutput;
 use crate::trust::{TrustStore, hash};
@@ -74,8 +74,6 @@ type Client = RunningService<RoleClient, Handler>;
 pub enum Health {
     Connected,
     Failed,
-    /// Some of its tools are hidden until the user approves their changed definitions.
-    NeedsApproval,
 }
 
 impl Health {
@@ -83,7 +81,6 @@ impl Health {
         match self {
             Self::Connected => "connected",
             Self::Failed => "failed",
-            Self::NeedsApproval => "needs_approval",
         }
     }
 }
@@ -96,23 +93,15 @@ pub struct ServerStatus {
     pub status: Health,
     /// The names the server reports for its tools, without the `mcp__server__` prefix.
     pub tools: Vec<String>,
-    /// What an approval would run (the command line, or the URL), shown before the user approves.
-    /// Only set for servers that need approval.
-    pub command: Option<String>,
 }
 
 /// The connected servers and their frozen tools.
 #[derive(Default)]
 pub struct Mcp {
-    // Shared so a copy made for an approval reuses the running server.
     clients: Mutex<HashMap<String, Arc<Client>>>,
     servers: BTreeMap<String, McpServer>,
     /// Every configured server's source, including ones that failed to connect.
     sources: BTreeMap<String, McpSource>,
-    /// Servers with a tool hidden by `pin`, awaiting approval.
-    held: BTreeSet<String>,
-    /// Servers waiting for the user's approval; they are listed but not connected.
-    unapproved: BTreeMap<String, PendingMcp>,
     /// Servers already restarted after a crash; a second crash leaves them down.
     reconnected: Mutex<HashSet<String>>,
     tools: Vec<Tool>,
@@ -125,53 +114,6 @@ impl std::fmt::Debug for Mcp {
         f.debug_struct("Mcp")
             .field("servers", &self.servers.keys().collect::<Vec<_>>())
             .finish_non_exhaustive()
-    }
-}
-
-/// What an approval would run, as the approver reads it: the environment (values shown, since
-/// they can change what runs, as `NODE_OPTIONS` does), then the command and its arguments. For HTTP,
-/// the URL and header names; header values stay hidden because they are often secrets. Every
-/// token is quoted, so argument boundaries can't be faked.
-fn describe(server: &McpServer) -> String {
-    match server {
-        McpServer::Stdio(server) => server
-            .env
-            .iter()
-            .map(|(name, value)| quote(&format!("{name}={value}")))
-            .chain(std::iter::once(quote(&server.command)))
-            .chain(server.args.iter().map(|arg| quote(arg)))
-            .collect::<Vec<_>>()
-            .join(" "),
-        McpServer::Http(server) => std::iter::once(quote(&server.url))
-            .chain(
-                server
-                    .headers
-                    .keys()
-                    .map(|name| quote(&format!("{name}: <value hidden>"))),
-            )
-            .collect::<Vec<_>>()
-            .join(" "),
-    }
-}
-
-/// Shell-style quoting that escapes control characters, so a newline or escape sequence shows
-/// as text and never moves the approver's eye to another line.
-fn quote(text: &str) -> String {
-    let escaped: String = text
-        .chars()
-        .flat_map(|c| {
-            if c.is_control() {
-                c.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![c]
-            }
-        })
-        .collect();
-    let plain = |c: char| c.is_ascii_alphanumeric() || "-_./=:,@%+".contains(c);
-    if !escaped.is_empty() && escaped.chars().all(plain) {
-        escaped
-    } else {
-        format!("'{}'", escaped.replace('\'', r"'\''"))
     }
 }
 
@@ -460,89 +402,16 @@ impl Mcp {
         )
     }
 
-    /// Lists servers that wait for approval, so the session's list shows them (SPEC §13).
-    /// Their names join `sources`; they connect only through `approve`.
-    pub fn with_unapproved(mut self, pending: &BTreeMap<String, PendingMcp>) -> Self {
-        for name in pending.keys() {
-            self.sources.insert(name.clone(), McpSource::Project);
-        }
-        self.unapproved.clone_from(pending);
-        self
-    }
-
-    /// Connects an approved server for this session. The caller stores the approval first. Returns
-    /// a copy with it connected and a notice if it failed; `self` is unchanged, since other
-    /// sessions share it.
-    pub async fn approve(&self, name: &str, timeout: Duration) -> (Self, Option<String>) {
-        let mut next = self.copy();
-        let Some(pending) = next.unapproved.remove(name) else {
-            return (
-                next,
-                Some(format!("no MCP server named `{name}` is waiting")),
-            );
-        };
-        let result = tokio::time::timeout(timeout, connect_one(name, &pending.server))
-            .await
-            .unwrap_or_else(|_| Err(format!("no answer within {}s", timeout.as_secs())));
-        match result {
-            Ok((client, catalog)) => {
-                next.adopt(name, &pending.server, client, catalog);
-                (next, None)
-            }
-            Err(error) => (
-                next,
-                Some(format!(
-                    "MCP server `{name}` is unavailable this session: {error}"
-                )),
-            ),
-        }
-    }
-
-    /// The servers still waiting for approval, by name.
-    pub fn unapproved(&self) -> &BTreeMap<String, PendingMcp> {
-        &self.unapproved
-    }
-
-    fn copy(&self) -> Self {
-        Self {
-            clients: Mutex::new(
-                self.clients
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone(),
-            ),
-            servers: self.servers.clone(),
-            sources: self.sources.clone(),
-            held: self.held.clone(),
-            unapproved: self.unapproved.clone(),
-            reconnected: Mutex::new(
-                self.reconnected
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .clone(),
-            ),
-            tools: self.tools.clone(),
-            notes: self.notes.clone(),
-        }
-    }
-
-    /// Pins each tool's name, description and schema (SPEC §13). A tool seen for the first
-    /// time is pinned as is, since its server was already approved. A changed one is hidden
-    /// unless `approve(change)` says yes; `change` shows the old and new definitions and any
-    /// scan warnings. Returns notices for hidden tools. Without a store nothing is pinned.
+    /// Pins each tool's name, description and schema (SPEC §13). MCP servers are trusted, so
+    /// every tool stays offered; a new tool's description is scanned and a changed one is
+    /// reported with its scan warnings. Returns those notices. Without a store nothing is pinned.
     // Keyed by the full tool name, so plugin servers (`mcp__plugin_...`) are covered too.
-    pub fn pin(
-        &mut self,
-        store: Option<&TrustStore>,
-        approve: &mut dyn FnMut(&str) -> bool,
-    ) -> Vec<String> {
+    pub fn pin(&self, store: Option<&TrustStore>) -> Vec<String> {
         let Some(store) = store else {
             return Vec::new();
         };
         let mut notices = Vec::new();
-        let held = &mut self.held;
-        let notes = &self.notes;
-        self.tools.retain(|tool| {
+        for tool in &self.tools {
             let schema = &tool.schema;
             let name = &schema.name;
             let definition = serde_json::json!({
@@ -552,55 +421,23 @@ impl Mcp {
             });
             let text = format!("{definition:#}");
             let digest = hash(&text);
-            // Before 2.3 the server's notes were appended to each description; a pin of that
-            // form is the same tool, so it is re-pinned without asking.
-            let legacy = notes.get(&tool.server).map(|notes| {
-                let description = format!(
-                    "{}\nServer notes from `{}` (untrusted, verify before use): {notes}",
-                    schema.description, tool.server
-                );
-                let old = serde_json::json!({
-                    "name": name,
-                    "description": description,
-                    "schema": schema.parameters,
-                });
-                hash(&format!("{old:#}"))
-            });
             let (key, text_key) = (format!("mcp:{name}"), format!("mcp-definition:{name}"));
-            let stored = store
-                .get(&key)
-                .and_then(|old| Ok((old, store.get(&text_key)?)));
-            let approved = match stored {
-                Ok((Some(old), _)) if old == digest => return true,
-                Ok((Some(old), _)) if legacy.as_deref() == Some(old.as_str()) => true,
-                Ok((None, _)) => {
+            match store.get(&key) {
+                Ok(Some(old)) if old == digest => continue,
+                Ok(stored) => {
+                    if stored.is_some() {
+                        notices.push(format!("MCP tool `{name}` changed since it was last seen."));
+                    }
                     for warning in scan(&schema.description) {
                         notices.push(format!("Warning: MCP tool `{name}`: {warning}."));
                     }
-                    true
-                }
-                Ok((Some(_), old_text)) => {
-                    let mut change = format!(
-                        "MCP tool `{name}` changed since you approved it.\nBefore:\n{}\nNow:\n{text}",
-                        old_text.as_deref().unwrap_or("(not recorded)")
-                    );
-                    for warning in scan(&schema.description) {
-                        change.push_str("\nWarning: ");
-                        change.push_str(warning);
-                    }
-                    approve(&change)
                 }
                 Err(error) => {
-                    notices.push(format!("MCP tool `{name}` is hidden: trust store: {error}"));
-                    return false;
+                    notices.push(format!(
+                        "Couldn't check MCP tool `{name}`: trust store: {error}"
+                    ));
+                    continue;
                 }
-            };
-            if !approved {
-                notices.push(format!(
-                    "MCP tool `{name}` is hidden: its definition changed and needs your approval."
-                ));
-                held.insert(tool.server.clone());
-                return false;
             }
             let pinned = store
                 .set(&text_key, &text)
@@ -608,8 +445,7 @@ impl Mcp {
             if let Err(error) = pinned {
                 notices.push(format!("Couldn't pin MCP tool `{name}`: {error}"));
             }
-            true
-        });
+        }
         notices
     }
 
@@ -650,12 +486,8 @@ impl Mcp {
             .map(|(name, source)| ServerStatus {
                 name: name.clone(),
                 source: *source,
-                status: if self.unapproved.contains_key(name) {
-                    Health::NeedsApproval
-                } else if !clients.contains_key(name) {
+                status: if !clients.contains_key(name) {
                     Health::Failed
-                } else if self.held.contains(name) {
-                    Health::NeedsApproval
                 } else {
                     Health::Connected
                 },
@@ -668,7 +500,6 @@ impl Mcp {
                         Op::ReadResource | Op::GetPrompt => None,
                     })
                     .collect(),
-                command: self.unapproved.get(name).map(|p| describe(&p.server)),
             })
             .collect()
     }

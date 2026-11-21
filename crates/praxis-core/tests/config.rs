@@ -126,8 +126,7 @@ fn mcp_server_names_with_a_double_underscore_are_rejected() {
 }
 
 #[test]
-fn an_unapproved_project_server_with_a_double_underscore_is_rejected() {
-    // Unapproved servers wait in `mcp_pending`; they are checked too, since approval loads them.
+fn a_project_server_with_a_double_underscore_is_rejected() {
     let project = file("[mcp.\"github__evil\"]\ncommand = \"evil\"\n");
     let message = load_err(Sources {
         project: Some(project),
@@ -510,56 +509,23 @@ fn project_config_cannot_set_anthropic() {
 }
 
 #[test]
-fn project_mcp_servers_need_approval_and_user_ones_dont() {
+fn project_mcp_servers_load_without_asking() {
     let user = file("[mcp.mine]\ncommand = \"mine-server\"\n");
-    let project = file("[mcp.theirs]\ncommand = \"evil\"\nargs = [\"--x\"]\n");
-    let store = TrustStore::new(project.with_file_name("trust.json"));
-    let run = |answer: bool| {
-        load_with_approval(
-            Sources {
-                user: Some(user.clone()),
-                project: Some(project.clone()),
-                trust: Some(store.clone()),
-                ..Sources::default()
-            },
-            &mut |_, _| answer,
-        )
-        .unwrap()
-        .config
-    };
-    let refused = run(false);
-    assert_eq!(refused.mcp.keys().collect::<Vec<_>>(), ["mine"]);
-    assert!(matches!(&refused.mcp["mine"], McpServer::Stdio(s) if s.command == "mine-server"));
-    let approved = run(true);
-    assert_eq!(approved.mcp.keys().collect::<Vec<_>>(), ["mine", "theirs"]);
-    assert!(matches!(&approved.mcp["theirs"], McpServer::Stdio(s) if s.args == ["--x"]));
-}
-
-#[test]
-fn a_refused_project_server_waits_and_its_own_approval_loads_it() {
-    let project = file("[mcp.theirs]\ncommand = \"evil\"\n");
-    let store = TrustStore::new(project.with_file_name("trust.json"));
-    let sources = || Sources {
-        project: Some(project.clone()),
-        trust: Some(store.clone()),
-        ..Sources::default()
-    };
-    let refused = load_with_approval(sources(), &mut |_, _| false)
-        .unwrap()
-        .config;
-    assert!(refused.mcp.is_empty());
-    let pending = &refused.mcp_pending["theirs"];
-    store.set(&pending.key, &pending.digest).unwrap();
-
-    let approved = load(sources()).unwrap().config;
-    assert!(approved.mcp.contains_key("theirs"));
-    assert!(approved.mcp_pending.is_empty());
-
-    // A changed server waits for approval again.
-    fs::write(&project, "[mcp.theirs]\ncommand = \"worse\"\n").unwrap();
-    let changed = load(sources()).unwrap().config;
-    assert!(changed.mcp.is_empty());
-    assert!(changed.mcp_pending.contains_key("theirs"));
+    let project = file("[mcp.theirs]\ncommand = \"theirs-server\"\nargs = [\"--x\"]\n");
+    let loaded = load_with_approval(
+        Sources {
+            user: Some(user),
+            project: Some(project.clone()),
+            trust: Some(TrustStore::new(project.with_file_name("trust.json"))),
+            ..Sources::default()
+        },
+        &mut |_, items| panic!("asked about {items}"),
+    )
+    .unwrap()
+    .config;
+    assert_eq!(loaded.mcp.keys().collect::<Vec<_>>(), ["mine", "theirs"]);
+    assert!(matches!(&loaded.mcp["theirs"], McpServer::Stdio(s) if s.args == ["--x"]));
+    assert_eq!(loaded.mcp_sources["theirs"], McpSource::Project);
 }
 
 #[test]
@@ -592,25 +558,17 @@ fn mcp_json(project: &Path, json: &str, answer: bool) -> Loaded {
 }
 
 #[test]
-fn mcp_json_loads_with_or_without_the_wrapper_once_approved() {
+fn mcp_json_loads_with_or_without_the_wrapper_without_asking() {
     let project = file("");
     let wrapped = r#"{"mcpServers": {"web": {"type": "http", "url": "https://x/mcp",
         "headers": {"Authorization": "Bearer ${TOKEN}"}}}}"#;
     let bare = r#"{"local": {"type": "stdio", "command": "srv", "args": ["-v"]}}"#;
 
-    let refused = mcp_json(&project, wrapped, false);
-    assert!(refused.config.mcp.is_empty());
-    assert!(
-        refused.notices.iter().any(|n| n.contains("`mcp`")),
-        "{:?}",
-        refused.notices
-    );
-
-    let web = &mcp_json(&project, wrapped, true).config.mcp["web"];
+    let web = &mcp_json(&project, wrapped, false).config.mcp["web"];
     // The variable is resolved when connecting, never stored.
     assert!(matches!(web, McpServer::Http(h)
         if h.url == "https://x/mcp" && h.headers["Authorization"] == "Bearer ${TOKEN}"));
-    let local = &mcp_json(&project, bare, true).config.mcp["local"];
+    let local = &mcp_json(&project, bare, false).config.mcp["local"];
     assert!(matches!(local, McpServer::Stdio(s) if s.command == "srv" && s.args == ["-v"]));
 }
 
@@ -640,7 +598,6 @@ fn lmstudio_mcp_servers_load_without_asking() {
         "web": {"url": "https://x/mcp", "headers": {"Authorization": "Bearer ${TOKEN}"}}}}"#;
     let (loaded, asked) = lmstudio_json(json, false);
     assert!(asked.is_empty(), "{asked:?}");
-    assert!(loaded.config.mcp_pending.is_empty());
     assert!(matches!(&loaded.config.mcp["fs"], McpServer::Stdio(s)
         if s.command == "mcp-fs" && s.args == ["."]));
     assert!(matches!(&loaded.config.mcp["web"], McpServer::Http(h)
@@ -671,21 +628,20 @@ fn praxis_config_wins_over_an_lmstudio_server_with_the_same_name() {
 }
 
 #[test]
-fn an_unapproved_project_server_still_holds_its_name_against_lmstudio() {
+fn a_project_server_holds_its_name_against_lmstudio() {
     let project = file("[mcp.web]\ncommand = \"project-web\"\n");
     let path = project.with_file_name("mcp.json");
     fs::write(&path, r#"{"mcpServers": {"web": {"command": "lm-web"}}}"#).unwrap();
-    // Approves only the LM Studio file, so the project's `web` stays refused.
     let loaded = load_with_approval(
         Sources {
             project: Some(project),
             lmstudio_mcp: Some(path),
             ..Sources::default()
         },
-        &mut |asked, _| asked.ends_with("mcp.json"),
+        &mut |_, items| panic!("asked about {items}"),
     )
     .unwrap();
-    assert!(!loaded.config.mcp.contains_key("web"));
+    assert!(matches!(&loaded.config.mcp["web"], McpServer::Stdio(s) if s.command == "project-web"));
 }
 
 #[test]

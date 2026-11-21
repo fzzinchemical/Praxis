@@ -40,14 +40,11 @@ pub struct Config {
     // patterns ever need it.
     /// `[profiles."pattern"]`, the user layer of model profiles (SPEC §5.5).
     pub profiles: BTreeMap<String, ProfileLayer>,
-    /// `[mcp.name]` servers (SPEC §13). Project ones run code, so they need approval.
+    /// `[mcp.name]` servers (SPEC §13). Trusted from every layer, project ones included.
     pub mcp: BTreeMap<String, McpServer>,
     /// Where each `mcp` server was declared. Filled by the loader, never read from a file.
     #[serde(skip)]
     pub mcp_sources: BTreeMap<String, McpSource>,
-    /// Project and LM Studio servers still waiting for approval, by name. Filled by the loader.
-    #[serde(skip)]
-    pub mcp_pending: BTreeMap<String, PendingMcp>,
     /// Hooks from Claude Code settings files. Filled by the loader, never read from a file.
     #[serde(skip)]
     pub hooks: Vec<Hook>,
@@ -71,15 +68,6 @@ impl McpSource {
             Self::LmStudio => "lmstudio",
         }
     }
-}
-
-/// A project or LM Studio MCP server that waits for approval. Approving stores `digest` under
-/// `key` in the trust store, so a changed server asks again (SPEC §8, §13).
-#[derive(Debug, Clone)]
-pub struct PendingMcp {
-    pub server: McpServer,
-    pub key: String,
-    pub digest: String,
 }
 
 /// An MCP server, from `[mcp.name]` or Claude Code's `.mcp.json` shape (SPEC §8, §13).
@@ -421,12 +409,11 @@ pub fn load_with_approval(
     let mut merged = Table::new();
     let mut notices = Vec::new();
     let mut hooks = Vec::new();
-    // Names Praxis config defines, approved or not; LM Studio's servers can't take them.
+    // Names Praxis config defines; LM Studio's servers can't take them.
     let mut defined = Vec::new();
-    // Names of the project's approved MCP servers, so each can say it came from the project.
+    // Names of the project's MCP servers, so each can say it came from the project.
     let mut project_mcp = std::collections::BTreeSet::new();
     let mut lmstudio_mcp = std::collections::BTreeSet::new();
-    let mut pending = BTreeMap::new();
     // Claude Code's user file sits below the praxis user layer and needs no approval: it's the
     // user's own file (SPEC §8).
     if let Some(path) = &sources.claude_user {
@@ -492,10 +479,6 @@ pub fn load_with_approval(
                     keys.join(", "),
                     path.display()
                 ));
-                if let Some(Value::Table(servers)) = widening.get("mcp") {
-                    let approved = split_servers(servers.clone(), path, &sources, &mut pending)?;
-                    merge(&mut project, nested("mcp", Value::Table(approved)), "");
-                }
             }
         }
         if let Some(Value::Table(servers)) = project.get("mcp") {
@@ -560,9 +543,15 @@ pub fn load_with_approval(
         })
         .collect();
     config.hooks = hooks;
-    config.mcp_pending = pending;
     // Tool names are `mcp__server__tool`, so a `__` in a server name could make two collide.
-    for name in config.mcp.keys().chain(config.mcp_pending.keys()) {
+    // A control character in a name could hide or fake a line where the name is shown.
+    for name in config.mcp.keys() {
+        if name.chars().any(char::is_control) {
+            return Err(error(
+                "config",
+                format!("MCP server name {name:?} holds a control character"),
+            ));
+        }
         if name.contains("__") {
             return Err(error(
                 "config",
@@ -571,48 +560,6 @@ pub fn load_with_approval(
         }
     }
     Ok(Loaded { config, notices })
-}
-
-/// Splits servers the block-wide approval didn't cover: one whose own approval is stored
-/// under its key is approved, and the rest wait for the user (SPEC §8, §13).
-fn split_servers(
-    servers: Table,
-    origin: &Path,
-    sources: &Sources,
-    pending: &mut BTreeMap<String, PendingMcp>,
-) -> Result<Table, ConfigError> {
-    let mut approved = Table::new();
-    for (name, value) in servers {
-        // Names reach the approval prompt, where a control character could hide or fake a line.
-        if name.chars().any(char::is_control) {
-            return Err(error(
-                &origin.display().to_string(),
-                format!("MCP server name {name:?} holds a control character"),
-            ));
-        }
-        let key = format!("server:{}#{name}", origin.display());
-        let digest = hash(&value.to_string());
-        let stored = match &sources.trust {
-            Some(store) => store.get(&key).map_err(|e| error("trust store", e))?,
-            None => None,
-        };
-        if stored.as_deref() == Some(digest.as_str()) {
-            approved.insert(name, value);
-            continue;
-        }
-        let server = value
-            .try_into()
-            .map_err(|e: toml::de::Error| error(&origin.display().to_string(), e.message()))?;
-        pending.insert(
-            name,
-            PendingMcp {
-                server,
-                key,
-                digest,
-            },
-        );
-    }
-    Ok(approved)
 }
 
 /// Reads a Claude Code settings file; a missing one is empty.
@@ -784,9 +731,6 @@ fn split_widening(project: &mut Table, user_mode: Mode) -> (Table, Vec<String>) 
     let auto_load = project.get("agent").and_then(|a| a.get("auto_load"));
     if auto_load.and_then(Value::as_bool) == Some(true) {
         keys.push("agent.auto_load");
-    }
-    if project.contains_key("mcp") {
-        keys.push("mcp");
     }
     let mut widening = Table::new();
     for key in &keys {

@@ -747,6 +747,9 @@ pub fn start() -> Result<(), JsValue> {
         }
         if let Some(path) = button.get_attribute("data-revert-file") {
             api.post_message(&json!({"type": "revert_file", "path": path}).to_string());
+            if let Some(popup) = button.closest(".diff-popup").ok().flatten() {
+                popup.remove();
+            }
             return;
         }
         if let Some(turn) = button
@@ -898,26 +901,33 @@ impl Ui {
         if tool.pre.child_element_count() == 0 {
             return Ok(false);
         }
-        let Some(body) = self.document.body() else {
-            return Ok(false);
-        };
         let popup = self.document.create_element("div")?;
-        popup.set_class_name("diff-popup tool");
+        popup.set_class_name("diff-popup");
         popup.set_attribute("role", "dialog")?;
         popup.set_attribute("aria-label", &format!("Diff of {path}"))?;
         let header = self.document.create_element("div")?;
         header.set_class_name("diff-popup-header");
+        let revert = self.document.create_element("button")?;
+        revert.set_attribute("type", "button")?;
+        revert.set_attribute("data-revert-file", path)?;
+        revert.set_text_content(Some("Revert file"));
         let title = self.document.create_element("span")?;
+        title.set_class_name("diff-popup-title");
         title.set_text_content(Some(path));
         let close = self.document.create_element("button")?;
         close.set_attribute("type", "button")?;
         close.set_attribute("data-close-diff", "")?;
-        close.set_text_content(Some("Close"));
+        close.set_attribute("aria-label", "Close")?;
+        close.set_attribute("title", "Close")?;
+        close.set_class_name("diff-popup-close");
+        close.set_text_content(Some("\u{2715}"));
+        header.append_child(&revert)?;
         header.append_child(&title)?;
         header.append_child(&close)?;
         popup.append_child(&header)?;
         popup.append_child(&tool.pre.clone_node_with_deep(true)?)?;
-        body.append_child(&popup)?;
+        // Inside the transcript, so its one delegated click listener answers the popup's buttons.
+        self.output.append_child(&popup)?;
         Ok(true)
     }
 

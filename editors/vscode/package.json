@@ -3,7 +3,7 @@
   "displayName": "Praxis",
   "description": "Local-first coding agent",
   "publisher": "praxis",
-  "version": "2.3.0-beta",
+  "version": "2.3.1-beta",
   "license": "UNLICENSED",
   "engines": { "vscode": "^1.145.0" },
   "main": "./dist/praxis_vscode.js",
@@ -24,8 +24,7 @@
       { "command": "praxis.setPluginOption", "title": "Praxis: Set Plugin Option" },
       { "command": "praxis.installPlugin", "title": "Praxis: Install Plugin", "icon": "$(add)" },
       { "command": "praxis.refreshPlugins", "title": "Praxis: Refresh Plugins", "icon": "$(refresh)" },
-      { "command": "praxis.refreshMcp", "title": "Praxis: Refresh MCP Servers", "icon": "$(refresh)" },
-      { "command": "praxis.approveMcp", "title": "Praxis: Approve MCP Server", "icon": "$(check)" }
+      { "command": "praxis.refreshMcp", "title": "Praxis: Refresh MCP Servers", "icon": "$(refresh)" }
     ],
     "viewsContainers": {
       "activitybar": [{ "id": "praxis", "title": "Praxis", "icon": "media/praxis.svg" }]
@@ -50,12 +49,9 @@
         { "command": "praxis.deleteSession", "when": "view == praxis.sessions && viewItem == session", "group": "2_remove" },
         { "command": "praxis.enablePlugin", "when": "view == praxis.plugins && viewItem == plugin-disabled", "group": "1_state" },
         { "command": "praxis.disablePlugin", "when": "view == praxis.plugins && viewItem == plugin-enabled", "group": "1_state" },
-        { "command": "praxis.removePlugin", "when": "view == praxis.plugins && viewItem =~ /^plugin-/", "group": "2_remove" },
-        { "command": "praxis.approveMcp", "when": "view == praxis.mcp && viewItem == mcp-needs-approval", "group": "1_state" },
-        { "command": "praxis.approveMcp", "when": "view == praxis.mcp && viewItem == mcp-needs-approval", "group": "inline" }
+        { "command": "praxis.removePlugin", "when": "view == praxis.plugins && viewItem =~ /^plugin-/", "group": "2_remove" }
       ],
       "commandPalette": [
-        { "command": "praxis.approveMcp", "when": "false" },
         { "command": "praxis.openSession", "when": "false" },
         { "command": "praxis.deleteSession", "when": "false" },
         { "command": "praxis.moveSessionToFolder", "when": "false" },

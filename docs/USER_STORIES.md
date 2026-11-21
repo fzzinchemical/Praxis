@@ -93,7 +93,7 @@ What the first release (M7) has to do for its users, and what can be cut if time
 | **US-18** | As a developer, I want to use local MCP servers, so that the agent can reach tools beyond the built-ins. | Tools from a stdio server work through the agent loop. A slow server doesn't delay startup. | T4.1 |
 | **US-19** | As a developer, I want MCP tools permissioned and failures contained, so that a bad server can't harm me or end my session. | Per-tool rules apply, and a crash returns tool errors and reconnects once. | T4.3 |
 | **US-20** | As a developer, I want many MCP tools to fit a small context window, so that local models can still use them. | Large servers switch to indexed mode. Real filesystem, git and browser servers don't lower eval scores. | T4.4, T4.5 |
-| **US-44** | As a developer, I want to be told when an approved MCP tool changes its definition, so that a server can't quietly turn malicious. | A changed tool is hidden until I approve it again, and I can see what changed. | T4.6 |
+| **US-44** | As a developer, I want to be told when an approved MCP tool changes its definition, so that a server can't quietly turn malicious. | A changed tool is reported with a notice and its scan warnings (MCP servers are trusted since 2.3.1). | T4.6 |
 
 ### VS Code
 
