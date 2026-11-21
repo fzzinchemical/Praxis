@@ -412,6 +412,8 @@ pub fn start() -> Result<(), JsValue> {
     let window = web_sys::window().ok_or("no window")?;
     let document = window.document().ok_or("no document")?;
     let output = by_id(&document, "output")?;
+    // Hidden until the session's replay ends (`Ui::reveal`), so it never shows scrolling down.
+    output.set_attribute("data-loading", "")?;
     let form: HtmlFormElement = by_id(&document, "prompt-form")?.dyn_into()?;
     let stop = by_id(&document, "stop")?;
     // The Send button has no id; it is the form's submit button.
@@ -1124,6 +1126,14 @@ impl Ui {
         Ok(())
     }
 
+    /// Shows the transcript that `start` hid while the session replayed, already scrolled to its
+    /// end, so the reader never sees the replay scroll down.
+    fn reveal(&self) -> Result<(), JsValue> {
+        self.output.remove_attribute("data-loading")?;
+        self.output.set_scroll_top(self.output.scroll_height());
+        Ok(())
+    }
+
     fn set_ready(&mut self, ready: bool) -> Result<(), JsValue> {
         self.ready = ready;
         set_enabled(&self.send, ready)?;
@@ -1228,14 +1238,19 @@ impl Ui {
             "notice" => {
                 // These texts come from `praxis-vscode/src/lib.rs` and `protocol.rs`.
                 let notice = text("text");
-                if notice == "ready" {
+                let ready = notice == "ready";
+                let failed = notice.starts_with("praxis acp")
+                    || notice.starts_with("Praxis could not start");
+                if ready {
                     self.set_ready(true)?;
-                } else if notice.starts_with("praxis acp")
-                    || notice.starts_with("Praxis could not start")
-                {
+                } else if failed {
                     self.set_ready(false)?;
                 }
                 self.append("p", "notice", notice)?;
+                // The replay comes before the ready notice, so the transcript is complete here.
+                if ready || failed {
+                    self.reveal()?;
+                }
             }
             // A replayed prompt: plain text, and the next reply starts a new message.
             "commands" => {

@@ -47,6 +47,11 @@ main {
   padding: 16px 0;
 }
 
+/* Hidden while a session replays; the panel shows it at the bottom once ready (Ui::reveal). */
+#output[data-loading] {
+  visibility: hidden;
+}
+
 #output:focus-visible {
   outline: 1px solid var(--vscode-focusBorder);
   outline-offset: -1px;
