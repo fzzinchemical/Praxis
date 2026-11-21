@@ -381,7 +381,12 @@ async fn edit_requires_a_unique_match_unless_replace_all() {
         )
         .await;
     ok(&all, "2 replacement");
-    assert!(!all.content.contains("SENT"));
+    // The result carries a hunk per replaced span, so the chat can show the change.
+    assert!(
+        all.content.ends_with("\n-x x\n+SENT SENT"),
+        "{}",
+        all.content
+    );
     assert_eq!(all.structured["newString"], "SENT");
     assert_eq!(fs::read_to_string(path).unwrap(), "SENT SENT\n");
 }

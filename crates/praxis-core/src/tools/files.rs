@@ -361,6 +361,71 @@ fn splice(text: &str, spans: &[Range<usize>], new_string: &str) -> String {
     updated
 }
 
+/// Context lines shown around each replaced span, and the most diff lines an edit result carries.
+const DIFF_CONTEXT: usize = 2;
+const MAX_DIFF_LINES: usize = 40;
+
+/// A unified-style hunk per replaced span, with `-` for whole old lines and `+` for their
+/// replacement, so the chat can colour it like a Write. Capped at `MAX_DIFF_LINES`.
+fn edit_diff(text: &str, spans: &[Range<usize>], new_string: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    // New line count minus old, over the hunks so far: moves each later hunk's new start.
+    let mut shift: isize = 0;
+    // Spans whose whole lines touch or overlap share one hunk, so each old line is shown once.
+    let mut hunks: Vec<(usize, usize, Vec<&Range<usize>>)> = Vec::new();
+    for span in spans {
+        let first = text[..span.start].rfind('\n').map_or(0, |i| i + 1);
+        let last = if text[..span.end].ends_with('\n') {
+            span.end
+        } else {
+            text[span.end..]
+                .find('\n')
+                .map_or(text.len(), |i| span.end + i + 1)
+        };
+        match hunks.last_mut() {
+            Some((_, end, inner)) if first <= *end => {
+                *end = (*end).max(last);
+                inner.push(span);
+            }
+            _ => hunks.push((first, last, vec![span])),
+        }
+    }
+    for (first, last, inner) in hunks {
+        let before: Vec<&str> = text[..first].lines().rev().take(DIFF_CONTEXT).collect();
+        let after: Vec<&str> = text[last..].lines().take(DIFF_CONTEXT).collect();
+        let old_block = &text[first..last];
+        let mut new_block = String::new();
+        let mut pos = first;
+        for span in inner {
+            new_block.push_str(&text[pos..span.start]);
+            new_block.push_str(new_string);
+            pos = span.end;
+        }
+        new_block.push_str(&text[pos..last]);
+        let old: Vec<&str> = old_block.lines().collect();
+        let new: Vec<&str> = new_block.lines().collect();
+        let first_line = text[..first].matches('\n').count();
+        let old_start = first_line + 1 - before.len();
+        let new_start = old_start.saturating_add_signed(shift);
+        lines.push(format!(
+            "@@ -{old_start},{} +{new_start},{} @@",
+            before.len() + old.len() + after.len(),
+            before.len() + new.len() + after.len()
+        ));
+        lines.extend(before.iter().rev().map(|line| format!(" {line}")));
+        lines.extend(old.iter().map(|line| format!("-{line}")));
+        lines.extend(new.iter().map(|line| format!("+{line}")));
+        lines.extend(after.iter().map(|line| format!(" {line}")));
+        shift += new.len() as isize - old.len() as isize;
+    }
+    let hidden = lines.len().saturating_sub(MAX_DIFF_LINES);
+    lines.truncate(MAX_DIFF_LINES);
+    if hidden > 0 {
+        lines.push(format!("... {hidden} more diff line(s) not shown"));
+    }
+    lines.join("\n")
+}
+
 pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError> {
     let path = resolve(&ctx.workspace, &input.file_path)?;
     check_writable(&ctx.workspace, &path)?;
@@ -397,10 +462,11 @@ pub fn edit(input: EditInput, ctx: &ToolContext) -> Result<ToolOutput, ToolError
         ));
     }
     let updated = splice(text, &spans, &input.new_string);
+    let diff = edit_diff(text, &spans, &input.new_string);
     store(&path, &updated, ctx)?;
     let mut output = ToolOutput::ok(
         format!(
-            "Edited {shown}: {count} replacement(s), {} line(s) became {}.",
+            "Edited {shown}: {count} replacement(s), {} line(s) became {}.\n{diff}",
             input.old_string.lines().count(),
             input.new_string.lines().count()
         ),
@@ -645,6 +711,54 @@ mod tests {
             fs::read_to_string(&target).unwrap(),
             "fn a() {\r\n    y();\r\n}\r\n"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn edit_result_shows_the_change_as_a_hunk_with_context() {
+        let (dir, _target, result) = edit_after_read(
+            "hunk.rs",
+            b"fn a() {\n    x();\n    z();\n}\n",
+            "    x();\n",
+            "    y();\n",
+        );
+
+        let output = result.unwrap();
+        let mut lines = output.content.lines();
+        assert_eq!(
+            lines.next().unwrap(),
+            format!(
+                "Edited {}: 1 replacement(s), 1 line(s) became 1.",
+                dir.join("hunk.rs").display()
+            )
+        );
+        let hunk: Vec<&str> = lines.collect();
+        assert_eq!(
+            hunk,
+            [
+                "@@ -1,4 +1,4 @@",
+                " fn a() {",
+                "-    x();",
+                "+    y();",
+                "     z();",
+                " }"
+            ]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_large_edit_result_caps_its_diff_lines() {
+        let old: String = (0..60).map(|i| format!("old {i}\n")).collect();
+        let (dir, _target, result) = edit_after_read("big.txt", old.as_bytes(), &old, "replaced\n");
+
+        let content = result.unwrap().content;
+        assert!(content.contains("\n-old 0\n"), "{content}");
+        assert!(
+            content.ends_with("more diff line(s) not shown"),
+            "{content}"
+        );
+        assert!(content.lines().count() <= MAX_DIFF_LINES + 2, "{content}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
