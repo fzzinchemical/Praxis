@@ -12,3 +12,5 @@
 - In `wasm32-unknown-unknown`, `Path::is_absolute()` is always false (the target is neither unix nor windows). Use `has_root()` in the extension crates; native tests cannot catch this.
 - In `agent-client-protocol` 5.0.0, a `cx.spawn` task is dropped when its connection ends, so a running task never sees a `send_notification` error. Don't write tests that expect it to (docs/AUDIT.md F1).
 - Default SIGTERM skips destructors, so ACP and REPL race their work against it (`until_sigterm`); a plain `async` main leaks MCP children and tool process groups when VS Code stops it.
+- An extension host restart (an extension auto-update) leaves chat webviews open but never hands them to the new host; a panel serializer does not help (it runs on window reload only). `recover_orphans` closes them and reopens their sessions from `workspaceState`.
+- A `session/load` replays agent text, which sets the panel to Generating; the `ready` notice must idle the panel, or every prompt queues.

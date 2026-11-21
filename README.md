@@ -293,6 +293,12 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.2.2-beta
+
+- VS Code: a reopened session no longer queues every prompt. Loading a session left the chat marked busy after replaying its history, so prompts waited in the queue forever.
+- VS Code: chats left behind when VS Code restarts its extension host (for example after an extension auto-update) are closed and reopened with their sessions, with a working agent.
+- VS Code: a prompt that cannot be sent ends the turn instead of leaving the chat busy.
+
 ### New in 2.2.1-beta
 
 - VS Code: after a turn crashes, the chat reloads its session, so new and queued prompts reach the model again instead of failing silently.

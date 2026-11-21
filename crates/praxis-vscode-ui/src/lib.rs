@@ -1054,6 +1054,9 @@ impl Ui {
         self.ready = ready;
         set_enabled(&self.send, ready)?;
         if ready {
+            // A loaded session's replayed replies set the phase to Generating, and no turn follows
+            // them; without this the panel stays busy and queues every prompt.
+            self.idle()?;
             self.sync_pickers()
         } else {
             self.idle()

@@ -121,7 +121,50 @@ async fn drive(port: u16, code: &mut Child) -> Result<()> {
         }
     };
     eprintln!("vscode-smoke: chat webview found, sending the prompt");
-    send_prompt(&mut Cdp::connect(&webview).await?).await
+    send_prompt(&mut Cdp::connect(&webview).await?, 1).await?;
+    // An extension host restart kills the agent; the panel must come back wired to a new one.
+    eprintln!("vscode-smoke: restarting the extension host");
+    run_command(&mut workbench, "Developer: Restart Extension Host").await?;
+    let webview = restored_chat(port, &webview).await?;
+    eprintln!("vscode-smoke: sending a prompt to the restored chat");
+    // The restored session replays the first reply, so a second one proves the new agent answers.
+    send_prompt(&mut Cdp::connect(&webview).await?, 2).await
+}
+
+/// The chat reopened after the restart: a new webview whose transcript replays the first reply.
+/// VS Code can leave the dead panel's target listed for a moment, so `old` is skipped.
+async fn restored_chat(port: u16, old: &str) -> Result<String> {
+    let until = Instant::now() + Duration::from_secs(60);
+    while Instant::now() < until {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let Ok(Ok(list)) =
+            tokio::time::timeout(Duration::from_secs(5), http_json(port, "/json/list")).await
+        else {
+            continue;
+        };
+        let urls = list
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|t| is_webview(t));
+        for url in urls.filter_map(|t| t["webSocketDebuggerUrl"].as_str()) {
+            if url == old {
+                continue;
+            }
+            let Ok(mut ui) = Cdp::connect(url).await else {
+                continue;
+            };
+            let shown = ui
+                .eval(&format!(
+                    "{FRAME}.getElementById('output')?.textContent ?? ''"
+                ))
+                .await?;
+            if shown.as_str().is_some_and(|text| text.contains(REPLY)) {
+                return Ok(url.to_owned());
+            }
+        }
+    }
+    bail!("no chat reopened with the session after the extension host restart")
 }
 
 /// Polls `/json/list` until a target matches. `None` on timeout; an early VS Code exit is an error.
@@ -169,8 +212,12 @@ fn pick_target(list: &Value, matches: fn(&Value) -> bool) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Ctrl+Shift+P, then the command's title and Enter: the same path a user takes.
 async fn open_chat(workbench: &mut Cdp) -> Result<()> {
+    run_command(workbench, "Praxis: Open Chat").await
+}
+
+/// Ctrl+Shift+P, then the command's title and Enter: the same path a user takes.
+async fn run_command(workbench: &mut Cdp, title: &str) -> Result<()> {
     let modifiers = 2 | 8; // CDP bit flags: Ctrl, Shift
     let p =
         json!({"key": "P", "code": "KeyP", "windowsVirtualKeyCode": 80, "modifiers": modifiers});
@@ -178,7 +225,7 @@ async fn open_chat(workbench: &mut Cdp) -> Result<()> {
     workbench.key("keyUp", p).await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
     workbench
-        .call("Input.insertText", json!({"text": "Praxis: Open Chat"}))
+        .call("Input.insertText", json!({"text": title}))
         .await?;
     tokio::time::sleep(Duration::from_secs(1)).await;
     let enter = json!({"key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13});
@@ -191,9 +238,9 @@ async fn open_chat(workbench: &mut Cdp) -> Result<()> {
     workbench.key("keyUp", enter).await
 }
 
-/// Types into our own composer and submits it. The UI keeps the text until the session is ready,
-/// so the submit is repeated while the box still holds it.
-async fn send_prompt(ui: &mut Cdp) -> Result<()> {
+/// Types into our own composer and submits it, until the transcript holds `replies` replies. The UI
+/// keeps the text until the session is ready, so the submit is repeated while the box still holds it.
+async fn send_prompt(ui: &mut Cdp, replies: usize) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(120);
     let mut sent = false;
     loop {
@@ -201,7 +248,7 @@ async fn send_prompt(ui: &mut Cdp) -> Result<()> {
             .eval(&format!("({{text: {FRAME}.getElementById('prompt')?.value ?? '', output: {FRAME}.getElementById('output')?.textContent ?? ''}})"))
             .await?;
         let output = state["output"].as_str().unwrap_or_default();
-        if output.contains(REPLY) {
+        if output.matches(REPLY).count() >= replies {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -480,8 +527,16 @@ mod tests {
                 tokio::spawn(async move {
                     let mut ws = tokio_tungstenite::accept_async(socket).await.unwrap();
                     while let Some(Ok(Message::Text(text))) = ws.next().await {
-                        let id = serde_json::from_str::<Value>(&text).unwrap()["id"].clone();
-                        let value = json!({"text": "", "output": REPLY});
+                        let request = serde_json::from_str::<Value>(&text).unwrap();
+                        let id = request["id"].clone();
+                        // `send_prompt` reads the composer and transcript; `restored_chat` the transcript only.
+                        let expression =
+                            request["params"]["expression"].as_str().unwrap_or_default();
+                        let value = if expression.contains("'prompt')?.value") {
+                            json!({"text": "", "output": format!("{REPLY}{REPLY}")})
+                        } else {
+                            json!(REPLY)
+                        };
                         let reply = json!({"id": id, "result": {"result": {"value": value}}});
                         ws.send(Message::text(reply.to_string())).await.unwrap();
                     }
@@ -491,6 +546,8 @@ mod tests {
         let list = json!([
             {"type": "page", "url": "vscode-file://w", "webSocketDebuggerUrl": ws_url},
             {"type": "iframe", "title": "Praxis", "url": "", "webSocketDebuggerUrl": ws_url},
+            // The chat reopened after the extension host restart.
+            {"type": "iframe", "title": "Praxis", "url": "", "webSocketDebuggerUrl": format!("{ws_url}/2")},
         ])
         .to_string();
         let http = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

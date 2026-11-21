@@ -179,6 +179,28 @@ pub fn notice(text: &str) -> Value {
     json!({"type": "notice", "text": text})
 }
 
+/// The workspace-state key holding the sessions of this window's open chat panels.
+pub const OPEN_SESSIONS: &str = "praxis.openSessions";
+
+/// Whether a tab's webview `viewType` is a chat panel. VS Code prefixes it
+/// (`mainThreadWebview-praxis.chat`), so only the end is compared.
+pub fn is_chat_view(view_type: &str) -> bool {
+    view_type == "praxis.chat" || view_type.ends_with("-praxis.chat")
+}
+
+/// The saved open sessions (a JSON array of ids). The state is untrusted, so only well-formed
+/// session ids are kept; anything unreadable is no sessions.
+pub fn saved_sessions(saved: &str) -> Vec<String> {
+    let Ok(Value::Array(ids)) = serde_json::from_str(saved) else {
+        return Vec::new();
+    };
+    ids.iter()
+        .filter_map(Value::as_str)
+        .filter(|id| is_session_id(id))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Ends the turn the panel started for a prompt that could not be sent. Without it the panel
 /// stays busy, queues every later prompt and has no turn to stop.
 pub fn unsent(why: &str) -> Value {
@@ -1905,6 +1927,18 @@ mod tests {
         let next: Value =
             serde_json::from_str(&client.prompt("again", &Context::default()).unwrap()).unwrap();
         assert_eq!(next["params"]["sessionId"], "s1");
+    }
+
+    #[test]
+    fn orphaned_chat_tabs_reopen_only_well_formed_saved_sessions() {
+        assert!(is_chat_view("mainThreadWebview-praxis.chat"));
+        assert!(!is_chat_view("mainThreadWebview-praxis.plugin"));
+        assert_eq!(
+            saved_sessions(r#"["1795215395807205518-7783","--delete=x",3]"#),
+            ["1795215395807205518-7783"]
+        );
+        assert!(saved_sessions("undefined").is_empty());
+        assert!(saved_sessions(r#"{"a":1}"#).is_empty());
     }
 
     #[test]

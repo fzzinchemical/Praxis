@@ -43,6 +43,8 @@ extern "C" {
     fn extension_uri(this: &ExtensionContext) -> Uri;
     #[wasm_bindgen(method, getter)]
     fn subscriptions(this: &ExtensionContext) -> Array;
+    #[wasm_bindgen(method, getter, js_name = workspaceState)]
+    fn workspace_state(this: &ExtensionContext) -> JsValue;
 }
 
 #[wasm_bindgen(module = "vscode")]
@@ -334,6 +336,72 @@ type Shared = Rc<RefCell<Panel>>;
 thread_local! {
     /// Every chat panel opened, so deleting a session can close the panel showing it.
     static PANELS: RefCell<Vec<Weak<RefCell<Panel>>>> = const { RefCell::new(Vec::new()) };
+    /// `context.workspaceState`, where the open panels' sessions are kept for `recover_orphans`.
+    static MEMENTO: RefCell<JsValue> = const { RefCell::new(JsValue::UNDEFINED) };
+}
+
+/// Saves the sessions of this window's open chat panels. When the extension host restarts (an
+/// extension update, say), VS Code keeps the panels open but never hands them to the new host,
+/// and their agents die with the old one; the new host reopens these sessions.
+fn save_open_sessions() {
+    let ids: Vec<String> = PANELS.with(|panels| {
+        panels
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .filter(|state| !state.borrow().closed)
+            .filter_map(|state| panel_session(&state.borrow()))
+            .collect()
+    });
+    let saved = serde_json::Value::from(ids).to_string();
+    MEMENTO.with(|memento| {
+        let memento = memento.borrow();
+        if let Ok(update) = Reflect::get(&memento, &"update".into()) {
+            let update: Function = update.unchecked_into();
+            let _ = update.call2(&memento, &protocol::OPEN_SESSIONS.into(), &saved.into());
+        }
+    });
+}
+
+/// Chat tabs that exist when the extension activates belong to a host that is gone: none of them
+/// can reach an agent. Closes them and reopens their saved sessions in working panels.
+fn recover_orphans(open: &dyn Fn(Option<String>)) -> Result<(), JsValue> {
+    let saved = MEMENTO.with(|memento| {
+        let memento = memento.borrow();
+        let get: Function = Reflect::get(&memento, &"get".into())?.unchecked_into();
+        let saved = get.call1(&memento, &protocol::OPEN_SESSIONS.into())?;
+        Ok::<_, JsValue>(protocol::saved_sessions(
+            &saved.as_string().unwrap_or_default(),
+        ))
+    })?;
+    let groups = WINDOW.with(|window| Reflect::get(window, &"tabGroups".into()))?;
+    let all: Array = Reflect::get(&groups, &"all".into())?.unchecked_into();
+    let orphans = Array::new();
+    for group in all.iter() {
+        let tabs: Array = Reflect::get(&group, &"tabs".into())?.unchecked_into();
+        for tab in tabs.iter() {
+            let input = Reflect::get(&tab, &"input".into())?;
+            if !input.is_object() {
+                continue;
+            }
+            let view = Reflect::get(&input, &"viewType".into())?.as_string();
+            if view.as_deref().is_some_and(protocol::is_chat_view) {
+                orphans.push(&tab);
+            }
+        }
+    }
+    if orphans.length() == 0 {
+        return Ok(());
+    }
+    let close: Function = Reflect::get(&groups, &"close".into())?.unchecked_into();
+    close.call1(&groups, &orphans)?;
+    if saved.is_empty() {
+        open(None);
+    }
+    for id in saved {
+        open(Some(id));
+    }
+    Ok(())
 }
 
 /// Entry point VS Code calls. An `Err` is thrown, which fails activation visibly.
@@ -349,6 +417,12 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
             }
         }
     };
+    MEMENTO.with(|memento| *memento.borrow_mut() = context.workspace_state());
+    if let Err(error) = recover_orphans(&panel) {
+        output.append(&format!(
+            "could not reopen chats from before the restart: {error:?}\n"
+        ));
+    }
     create_sessions_view(&output);
     refresh_sessions();
     create_plugins_view(&output);
@@ -607,6 +681,7 @@ fn open_panel(root: &Uri, output: &OutputChannel, resume: Option<String>) -> Res
         // Dropping the closures releases their clones of `state`, so the panel can free.
         drop(closures);
         refresh_mcp();
+        save_open_sessions();
     });
     panel.on_did_dispose(&on_dispose);
 
@@ -1072,6 +1147,9 @@ fn react(state: &Shared, mut reaction: Reaction) {
     }
     if reaction.session_ready {
         refresh_mcp();
+        // Deferred: `save_open_sessions` borrows every panel, this one included.
+        let save = Closure::once_into_js(save_open_sessions);
+        set_timeout(&save, 0);
     }
     if let Some(review) = reaction.review
         && let Err(error) = open_review(&review, &panel.output)
