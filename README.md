@@ -293,6 +293,12 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.3.0-beta
+
+- MCP: the prompt lists each connected server with its tools and its own usage notes, so models pick the right server. Server notes are trusted and no longer repeated in every tool description; tools approved before stay approved.
+- VS Code: Open diff shows the change in a popup over the chat. The change is already saved, so closing it never asks to save; Revert file undoes it.
+- VS Code: the chat keeps following new output to the bottom until you scroll up, instead of sticking partway.
+
 ### New in 2.2.2-beta
 
 - VS Code: a reopened session no longer queues every prompt. Loading a session left the chat marked busy after replaying its history, so prompts waited in the queue forever.
