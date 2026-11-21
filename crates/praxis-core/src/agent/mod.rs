@@ -327,7 +327,7 @@ impl Agent {
         let tool_schemas = tools::schemas();
         let facts = SessionFacts::capture(tools.workspace());
         let (system, prefix_warning) =
-            assemble_prefix(&config, &budget, &tool_schemas, &facts, &[], "");
+            assemble_prefix(&config, &budget, &tool_schemas, &facts, &[], "", "");
         let history = vec![Message::System { content: system }];
         let permissions = Permissions::new(config.policy.clone(), tools.workspace());
         Self {
@@ -673,6 +673,11 @@ impl Agent {
             &self.facts,
             &self.skills,
             &self.mcp_index,
+            &self
+                .mcp
+                .as_ref()
+                .map(|m| m.server_section(&self.mcp_off))
+                .unwrap_or_default(),
         );
         self.history[0] = Message::System { content: system };
         self.prefix_warning = warning;
@@ -1816,6 +1821,7 @@ fn assemble_prefix(
     facts: &SessionFacts,
     skills: &[Skill],
     mcp_index: &str,
+    mcp_servers: &str,
 ) -> (String, Option<String>) {
     let teaching = config.profile.tool_format.instructions(tool_schemas);
     // Offering `Agent` alone isn't enough: the model must also be told when to use it. The same
@@ -1830,6 +1836,9 @@ fn assemble_prefix(
         + git.unwrap_or_default()
         + teaching.as_deref().unwrap_or_default();
     let mut facts = facts.render();
+    if !mcp_servers.is_empty() {
+        facts = format!("{mcp_servers}\n\n{facts}");
+    }
     if !mcp_index.is_empty() {
         facts = format!("{mcp_index}\n\n{facts}");
     }

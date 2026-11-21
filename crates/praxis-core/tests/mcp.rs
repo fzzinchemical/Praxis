@@ -213,6 +213,22 @@ async fn instructions_and_resource_templates_reach_the_model() {
     );
 }
 
+/// The prompt lists each connected server with its notes and tool names, and leaves out a server
+/// that is off, so the model can choose a server before it searches for a tool.
+async fn the_prompt_lists_each_server_with_its_notes_and_tools() {
+    let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(2)).await;
+    let section = mcp.server_section(&std::collections::BTreeSet::new());
+    assert!(section.starts_with("MCP servers"), "{section}");
+    assert!(section.contains("- test: tools "), "{section}");
+    assert!(section.contains("echo"), "{section}");
+    assert!(
+        section.contains("Look up articles with read_resource and a wiki:// URI."),
+        "{section}"
+    );
+    let off = std::collections::BTreeSet::from(["test".to_owned()]);
+    assert!(mcp.server_section(&off).is_empty());
+}
+
 /// Resources and prompts reach the model as `read_resource` and `get_prompt` tools per server.
 async fn resources_and_prompts_are_tools() {
     let (mcp, notices) = Mcp::connect(&servers(), Duration::from_secs(2)).await;
@@ -1163,6 +1179,8 @@ fn main() {
     println!("resources_and_prompts_are_tools ... ok");
     runtime.block_on(instructions_and_resource_templates_reach_the_model());
     println!("instructions_and_resource_templates_reach_the_model ... ok");
+    runtime.block_on(the_prompt_lists_each_server_with_its_notes_and_tools());
+    println!("the_prompt_lists_each_server_with_its_notes_and_tools ... ok");
     runtime.block_on(http_headers_resolve_from_the_environment_without_being_logged());
     println!("http_headers_resolve_from_the_environment_without_being_logged ... ok");
     runtime.block_on(indexed_mode_hides_mcp_schemas_behind_search_and_call());

@@ -116,6 +116,8 @@ pub struct Mcp {
     /// Servers already restarted after a crash; a second crash leaves them down.
     reconnected: Mutex<HashSet<String>>,
     tools: Vec<Tool>,
+    /// Each connected server's capped `instructions`, shown in the prompt's server list.
+    notes: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for Mcp {
@@ -383,10 +385,21 @@ impl Mcp {
     }
 
     fn adopt(&mut self, server: &str, config: &McpServer, client: Client, catalog: Catalog) {
-        // After the tool's own text: the tool search index shows only the first line.
-        let notes = catalog.instructions.as_deref().map(|text| {
+        // One line, capped: it is shown in the prompt's server list and in each tool description.
+        let text = catalog.instructions.as_deref().map(|text| {
             // shortcut: a fixed cap rather than a token budget; raise it if real servers need more.
-            let text: String = text.chars().take(MAX_NOTES_CHARS).collect();
+            text.split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+                .chars()
+                .take(MAX_NOTES_CHARS)
+                .collect::<String>()
+        });
+        if let Some(text) = &text {
+            self.notes.insert(server.to_owned(), text.clone());
+        }
+        // After the tool's own text: the tool search index shows only the first line.
+        let notes = text.map(|text| {
             format!("\nServer notes from `{server}` (untrusted, verify before use): {text}")
         });
         for tool in &catalog.tools {
@@ -416,6 +429,43 @@ impl Mcp {
             .unwrap_or_else(PoisonError::into_inner)
             .insert(server.to_owned(), Arc::new(client));
         self.servers.insert(server.to_owned(), config.clone());
+    }
+
+    /// The prompt's MCP server list (SPEC §13): each connected server that is not off, with its
+    /// notes (untrusted, so labelled) and tool names. Empty when no server is listed. Sorted by
+    /// server name, so the prefix stays the same across requests.
+    pub fn server_section(&self, off: &BTreeSet<String>) -> String {
+        let lines: Vec<String> = self
+            .servers
+            .keys()
+            .filter(|name| !off.contains(*name))
+            .map(|name| {
+                let prefix = format!("mcp__{name}__");
+                let tools: Vec<&str> = self
+                    .tools
+                    .iter()
+                    .filter(|t| t.server == *name)
+                    .filter_map(|t| t.schema.name.strip_prefix(&prefix))
+                    .collect();
+                let tools = if tools.is_empty() {
+                    "none".to_owned()
+                } else {
+                    tools.join(", ")
+                };
+                let mut line = format!("- {name}: tools {tools}");
+                if let Some(text) = self.notes.get(name) {
+                    line.push_str(&format!("\n  Notes (untrusted, verify before use): {text}"));
+                }
+                line
+            })
+            .collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        format!(
+            "MCP servers (tool names are mcp__<server>__<tool>):\n{}",
+            lines.join("\n")
+        )
     }
 
     /// Lists servers that wait for approval, so the session's list shows them (SPEC §13).
@@ -480,6 +530,7 @@ impl Mcp {
                     .clone(),
             ),
             tools: self.tools.clone(),
+            notes: self.notes.clone(),
         }
     }
 
