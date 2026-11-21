@@ -629,3 +629,30 @@ summary:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Open diff: the call's diff in a popup over the chat; the change is already saved. */
+.diff-popup {
+  position: fixed;
+  inset: 8%;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  background: var(--vscode-editor-background);
+  border: 1px solid var(--vscode-widget-border, var(--vscode-panel-border));
+  box-shadow: 0 4px 16px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.4));
+}
+
+.diff-popup-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+}
+
+.diff-popup pre {
+  flex: 1;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+}

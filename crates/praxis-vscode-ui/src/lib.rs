@@ -726,8 +726,20 @@ pub fn start() -> Result<(), JsValue> {
         let Some(button) = event.target().and_then(|t| t.dyn_into::<Element>().ok()) else {
             return;
         };
+        if button.has_attribute("data-close-diff") {
+            if let Some(popup) = button.closest(".diff-popup").ok().flatten() {
+                popup.remove();
+            }
+            return;
+        }
         if let Some(path) = button.get_attribute("data-open-change") {
             let call = button.get_attribute("data-open-call");
+            // The change is already saved; a popup shows it without an editor that asks to save.
+            if let Some(call) = &call
+                && state.borrow().show_diff(&path, call).unwrap_or(false)
+            {
+                return;
+            }
             api.post_message(
                 &json!({"type": "open_change", "path": path, "call": call}).to_string(),
             );
@@ -877,6 +889,38 @@ fn keep_bottom<T>(
 }
 
 impl Ui {
+    /// Shows a Write or Edit call's diff in a popup over the chat. False when the call has no
+    /// output to show, so the caller falls back to the editor.
+    fn show_diff(&self, path: &str, call: &str) -> Result<bool, JsValue> {
+        let Some(tool) = self.tools.get(call) else {
+            return Ok(false);
+        };
+        if tool.pre.child_element_count() == 0 {
+            return Ok(false);
+        }
+        let Some(body) = self.document.body() else {
+            return Ok(false);
+        };
+        let popup = self.document.create_element("div")?;
+        popup.set_class_name("diff-popup tool");
+        popup.set_attribute("role", "dialog")?;
+        popup.set_attribute("aria-label", &format!("Diff of {path}"))?;
+        let header = self.document.create_element("div")?;
+        header.set_class_name("diff-popup-header");
+        let title = self.document.create_element("span")?;
+        title.set_text_content(Some(path));
+        let close = self.document.create_element("button")?;
+        close.set_attribute("type", "button")?;
+        close.set_attribute("data-close-diff", "")?;
+        close.set_text_content(Some("Close"));
+        header.append_child(&title)?;
+        header.append_child(&close)?;
+        popup.append_child(&header)?;
+        popup.append_child(&tool.pre.clone_node_with_deep(true)?)?;
+        body.append_child(&popup)?;
+        Ok(true)
+    }
+
     fn append(&self, tag: &str, class: &str, text: &str) -> Result<Element, JsValue> {
         keep_bottom(&self.output, || {
             let element = self.document.create_element(tag)?;
