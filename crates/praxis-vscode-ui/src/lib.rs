@@ -1092,6 +1092,20 @@ impl Ui {
         self.active.clone().filter(|_| self.active_on)
     }
 
+    /// Redraws the MCP chips in the model bar: one per enabled server, dimmed when it failed.
+    fn render_mcp(&self, message: &Value) -> Result<(), JsValue> {
+        let container = by_id(&self.document, "mcp-chips")?;
+        container.set_text_content(Some(""));
+        for server in view::mcp_chips(message) {
+            let chip = self.document.create_element("span")?;
+            chip.set_class_name(if server.failed { "chip failed" } else { "chip" });
+            chip.set_attribute("title", &format!("{}: {}", server.name, server.status))?;
+            chip.set_text_content(Some(&server.name));
+            container.append_child(&chip)?;
+        }
+        Ok(())
+    }
+
     /// Redraws the chips for the active file and the picked files, each with a remove button.
     fn render_chips(&self) -> Result<(), JsValue> {
         self.chips.set_text_content(Some(""));
@@ -1305,6 +1319,7 @@ impl Ui {
                 self.fill_picker(&mode, message)?;
             }
             "profile" => self.render_profile(message)?,
+            "mcp_servers" => self.render_mcp(message)?,
             "tool" => self.tool(message)?,
             "subagent_usage" => self.subagent_usage(message)?,
             "permission" => self.permission(message)?,

@@ -1,7 +1,7 @@
 //! The MCP Servers view's pure logic (SPEC §12, T4.7/T4.8). The answer to `_praxis/mcp_servers`
 //! maps to rows here; the extension host only sends the requests and draws the rows.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 /// One MCP server as the agent reports it for this session.
 #[derive(Debug, PartialEq)]
@@ -64,6 +64,21 @@ pub fn mcp_servers(result: &Value) -> Result<Vec<McpServer>, String> {
         .as_array()
         .ok_or("mcp_servers answer without a `servers` array")?;
     rows.iter().map(server).collect()
+}
+
+/// The message that draws the chat's MCP chips: every server with its status and enabled flag.
+pub fn chips_message(servers: &[McpServer]) -> Value {
+    let rows: Vec<Value> = servers
+        .iter()
+        .map(|server| {
+            json!({
+                "name": server.name,
+                "status": server.status.label(),
+                "enabled": server.enabled,
+            })
+        })
+        .collect();
+    json!({"type": "mcp_servers", "servers": rows})
 }
 
 fn server(row: &Value) -> Result<McpServer, String> {
@@ -142,6 +157,22 @@ mod tests {
         let rows = mcp_servers(&answer).expect("well-formed answer");
         assert_eq!(rows[0].status, Status::Configured);
         assert_eq!(rows[0].description(), "configured · user · 0 tools");
+    }
+
+    #[test]
+    fn chips_message_carries_each_server_status_and_enabled_flag() {
+        let answer = json!({"servers": [
+            {"name": "fs", "source": "user", "status": "connected", "tools": [], "enabled": true},
+            {"name": "git", "source": "user", "status": "failed", "tools": [], "enabled": false}
+        ]});
+        let servers = mcp_servers(&answer).expect("well-formed answer");
+        assert_eq!(
+            chips_message(&servers),
+            json!({"type": "mcp_servers", "servers": [
+                {"name": "fs", "status": "connected", "enabled": true},
+                {"name": "git", "status": "failed", "enabled": false}
+            ]})
+        );
     }
 
     #[test]
