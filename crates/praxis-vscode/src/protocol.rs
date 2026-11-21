@@ -420,6 +420,8 @@ pub struct Client {
     modes: Option<Value>,
     /// The session a `session/load` asked for, adopted when the agent answers.
     loading: Option<String>,
+    /// Set while a crashed session reloads, so its replayed history is not shown twice.
+    recovering: bool,
 }
 
 impl Client {
@@ -433,6 +435,7 @@ impl Client {
             picker: None,
             modes: None,
             loading: None,
+            recovering: false,
         };
         (client, initialize())
     }
@@ -567,6 +570,7 @@ impl Client {
                 }
                 Some(LOAD_SESSION) => {
                     self.loading = None;
+                    self.recovering = false;
                     show(notice(&format!("Could not open session: {text}")))
                 }
                 Some(SET_MODEL) => Reaction {
@@ -593,10 +597,33 @@ impl Client {
                     modes: self.modes.clone(),
                     ..Reaction::default()
                 },
-                _ => show(json!({"type": "done", "reason": format!("error: {text}")})),
+                _ => {
+                    let done = json!({"type": "done", "reason": format!("error: {text}")});
+                    // The agent drops a session whose turn crashed (`settle_turn` in praxis-cli), so
+                    // reload it; otherwise every later prompt fails as an unknown session.
+                    let crashed = text.starts_with("the turn crashed");
+                    match self.session.take_if(|_| crashed) {
+                        Some(session) => {
+                            let load = request(
+                                LOAD_SESSION,
+                                "session/load",
+                                json!({"sessionId": session, "cwd": self.cwd, "mcpServers": []}),
+                            );
+                            self.loading = Some(session);
+                            self.recovering = true;
+                            Reaction {
+                                show: Some(done),
+                                send: Some(load),
+                                ..Reaction::default()
+                            }
+                        }
+                        None => show(done),
+                    }
+                }
             };
         }
         match (message["method"].as_str(), &message["id"]) {
+            (Some("session/update"), _) if self.recovering => Reaction::default(),
             (Some("session/update"), _) => update(&message["params"]["update"]),
             (Some("_praxis/resources"), _) => show(json!({"type": "resources",
                 "ram": message["params"]["ram"], "vram": message["params"]["vram"]})),
@@ -701,6 +728,7 @@ impl Client {
             }
             Some(LOAD_SESSION) => {
                 self.session = self.loading.take();
+                self.recovering = false;
                 self.picker = picker(result, "model", "models");
                 self.modes = picker(result, "mode", "modes");
                 Reaction {
@@ -1841,6 +1869,36 @@ mod tests {
             ..Reaction::default()
         });
         assert_eq!(prompt["params"]["sessionId"], "s9");
+    }
+
+    #[test]
+    fn a_crashed_turn_reloads_its_session_without_replaying_the_transcript() {
+        let (mut client, _) = Client::start("/w/a");
+        client.on_line(r#"{"jsonrpc":"2.0","id":0,"result":{}}"#);
+        client.on_line(r#"{"jsonrpc":"2.0","id":1,"result":{"sessionId":"s1"}}"#);
+        let prompt: Value =
+            serde_json::from_str(&client.prompt("hi", &Context::default()).unwrap()).unwrap();
+        let crashed = client.on_line(
+            &json!({"jsonrpc": "2.0", "id": prompt["id"],
+                "error": {"code": -32603, "message": "Internal error",
+                    "data": "the turn crashed: task panicked"}})
+            .to_string(),
+        );
+        assert_eq!(crashed.show.as_ref().unwrap()["type"], "done");
+        let load = sent(&crashed);
+        assert_eq!(load["method"], "session/load");
+        assert_eq!(load["params"]["sessionId"], "s1");
+        // The panel already shows the history, so the load's replay is not shown again.
+        let replay = json!({"jsonrpc": "2.0", "method": "session/update", "params": {"update":
+            {"sessionUpdate": "agent_message_chunk", "content": {"type": "text", "text": "old"}}}});
+        assert!(client.on_line(&replay.to_string()).show.is_none());
+        let ready =
+            client.on_line(&json!({"jsonrpc": "2.0", "id": load["id"], "result": {}}).to_string());
+        assert_eq!(ready.show.unwrap()["text"], "ready");
+        assert!(client.on_line(&replay.to_string()).show.is_some());
+        let next: Value =
+            serde_json::from_str(&client.prompt("again", &Context::default()).unwrap()).unwrap();
+        assert_eq!(next["params"]["sessionId"], "s1");
     }
 
     #[test]
