@@ -293,6 +293,10 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.2.1-beta
+
+- VS Code: after a turn crashes, the chat reloads its session, so new and queued prompts reach the model again instead of failing silently.
+
 ### New in 2.2.0-beta
 
 - LM Studio errors sent as a plain `data: {"error": ...}` SSE line (for example "Model unloaded.") are now reported as server errors, not as malformed responses.
