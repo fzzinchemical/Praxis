@@ -193,13 +193,19 @@ async fn instructions_and_resource_templates_reach_the_model() {
     let (mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(2)).await;
     let schemas = mcp.schemas();
     let find = |name: &str| schemas.iter().find(|s| s.name == name).unwrap();
+    // The notes reach the model once, in the prompt's server list, not in each description.
     let echo = find("mcp__test__echo");
     assert!(
-        echo.description
-            .contains("Look up articles with read_resource and a wiki:// URI."),
+        !echo.description.contains("Server notes"),
         "{}",
         echo.description
     );
+    let section = mcp.server_section(&std::collections::BTreeSet::new());
+    assert!(
+        section.contains("Look up articles with read_resource and a wiki:// URI."),
+        "{section}"
+    );
+    assert!(!section.contains("untrusted"), "{section}");
     let read = find("mcp__test__read_resource");
     assert!(
         read.description.contains("wiki://{title}"),
@@ -470,6 +476,34 @@ async fn list_changed_does_not_alter_the_tools() {
     assert!(!notified.is_error, "{}", notified.content);
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(names(&mcp), before);
+}
+
+/// A tool pinned before 2.3, with the server's notes in its description, stays approved.
+async fn tools_pinned_with_the_old_notes_suffix_are_not_asked_again() {
+    let dir = std::env::temp_dir().join(format!("praxis-mcp-legacy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let store = TrustStore::new(dir.join("trust.json"));
+    let (mut mcp, _) = Mcp::connect(&test_server(), Duration::from_secs(10)).await;
+    let notes = "Look up articles with read_resource and a wiki:// URI.";
+    for schema in mcp.schemas() {
+        let old = json!({
+            "name": schema.name,
+            "description": format!(
+                "{}\nServer notes from `test` (untrusted, verify before use): {notes}",
+                schema.description
+            ),
+            "schema": schema.parameters,
+        });
+        let key = format!("mcp:{}", schema.name);
+        store
+            .set(&key, &praxis_core::trust::hash(&format!("{old:#}")))
+            .unwrap();
+    }
+    let before = mcp.schemas().len();
+    let notices = mcp.pin(Some(&store), &mut |change| panic!("asked again: {change}"));
+    assert!(notices.is_empty(), "{notices:?}");
+    assert_eq!(mcp.schemas().len(), before);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 async fn changed_descriptions_hide_the_tool_until_approved_again() {
@@ -1171,6 +1205,8 @@ fn main() {
     println!("a_crashed_server_errors_and_reconnects_once ... ok");
     runtime.block_on(list_changed_does_not_alter_the_tools());
     println!("list_changed_does_not_alter_the_tools ... ok");
+    runtime.block_on(tools_pinned_with_the_old_notes_suffix_are_not_asked_again());
+    println!("tools_pinned_with_the_old_notes_suffix_are_not_asked_again ... ok");
     runtime.block_on(changed_descriptions_hide_the_tool_until_approved_again());
     println!("changed_descriptions_hide_the_tool_until_approved_again ... ok");
     runtime.block_on(plugin_tools_take_the_plugin_name_and_are_pinned());
