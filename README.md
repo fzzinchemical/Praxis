@@ -293,6 +293,14 @@ Beta 1 covers milestones M0 to M6 and most of M9 (see [docs/TASKS.md](docs/TASKS
 - Sandboxing on macOS and Windows: not planned.
 - Hooks and MCP servers run outside the sandbox. Only enable plugins you trust.
 
+### New in 2.3.2-beta
+
+- VS Code: a chat with history opens straight at its bottom instead of scrolling down through the replay.
+- VS Code: the chat's model bar shows the session's MCP servers as chips; a failed one is dimmed.
+- VS Code: sessions drag into folders and back out, Move to folder offers existing folders, and the Sessions header has a New Folder button. Empty folders are kept.
+- VS Code: the diff popup uses the chat's own theme colours.
+- Edit results show the change as a diff hunk instead of only a line count.
+
 ### New in 2.3.1-beta
 
 - MCP: servers start without approval, project ones included. The MCP view's Approve action and the approval prompts for changed tools are gone; a changed tool is reported with its warnings and stays available.
