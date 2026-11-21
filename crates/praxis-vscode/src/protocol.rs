@@ -179,6 +179,12 @@ pub fn notice(text: &str) -> Value {
     json!({"type": "notice", "text": text})
 }
 
+/// Ends the turn the panel started for a prompt that could not be sent. Without it the panel
+/// stays busy, queues every later prompt and has no turn to stop.
+pub fn unsent(why: &str) -> Value {
+    json!({"type": "done", "reason": format!("error: {why}")})
+}
+
 /// The file the active editor shows, or `None` for no editor.
 pub fn active_file(path: Option<&str>) -> Value {
     json!({"type": "active", "path": path})
@@ -1899,6 +1905,14 @@ mod tests {
         let next: Value =
             serde_json::from_str(&client.prompt("again", &Context::default()).unwrap()).unwrap();
         assert_eq!(next["params"]["sessionId"], "s1");
+    }
+
+    #[test]
+    fn an_unsent_prompt_ends_the_turn_the_panel_started() {
+        // The panel goes busy before it posts, so only a `done` lets it send again.
+        let message = unsent("Praxis is not ready yet.");
+        assert_eq!(message["type"], "done");
+        assert_eq!(message["reason"], "error: Praxis is not ready yet.");
     }
 
     #[test]

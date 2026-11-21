@@ -859,7 +859,9 @@ fn send_prompt(
         (Some(line), Some(child)) => {
             child.stdin().write(&format!("{line}\n"));
         }
-        _ => panel.webview.notify("Praxis is not ready yet."),
+        _ => panel
+            .webview
+            .post_message(&protocol::unsent("Praxis is not ready yet.").to_string()),
     }
 }
 
