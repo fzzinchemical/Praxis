@@ -94,6 +94,17 @@ enum Command {
             conflicts_with_all = ["json", "delete"]
         )]
         folder: Option<Vec<String>>,
+        /// Create an empty folder NAME for this workspace. Its name is checked like a session's folder.
+        #[arg(
+            long,
+            value_name = "NAME",
+            allow_hyphen_values = true,
+            conflicts_with_all = ["json", "delete", "folder", "folders"]
+        )]
+        new_folder: Option<String>,
+        /// List the folders created for this workspace (see `--new-folder`); JSON with `--json`.
+        #[arg(long, conflicts_with_all = ["delete", "folder"])]
+        folders: bool,
     },
 }
 
@@ -311,6 +322,8 @@ fn sessions_command(
     json: bool,
     delete: Option<String>,
     folder: Option<Vec<String>>,
+    new_folder: Option<String>,
+    folders: bool,
     workspace: &Path,
 ) -> Result<u8> {
     let Some(dir) = xdg_path("XDG_DATA_HOME", ".local/share", "sessions") else {
@@ -326,6 +339,21 @@ fn sessions_command(
             return Ok(EXIT_USAGE);
         };
         session::set_folder(&dir, id, name)?;
+        return Ok(0);
+    }
+    if let Some(name) = new_folder {
+        session::create_folder(&dir, workspace, &name)?;
+        return Ok(0);
+    }
+    if folders {
+        let names = session::created_folders(&dir, workspace)?;
+        if json {
+            println!("{}", serde_json::json!(names));
+        } else {
+            for name in &names {
+                println!("{}", sanitize(name));
+            }
+        }
         return Ok(0);
     }
     let sessions = session::list(&dir, workspace)?;
@@ -1269,8 +1297,10 @@ async fn run(
             json,
             delete,
             folder,
+            new_folder,
+            folders,
         }) => {
-            return sessions_command(json, delete, folder, &workspace);
+            return sessions_command(json, delete, folder, new_folder, folders, &workspace);
         }
         Some(Command::Acp) | None => {}
     }

@@ -2,7 +2,7 @@
 
 use crate::provider::Message;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
@@ -11,6 +11,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Session id -> folder name, beside the logs. A side file keeps the logs themselves unchanged.
 const FOLDERS_FILE: &str = "folders.json";
+/// Workspace -> folder names created with no session in them yet, so an empty folder persists.
+const CREATED_FOLDERS_FILE: &str = "created_folders.json";
 const FOLDER_NAME_MAX: usize = 64;
 
 /// An open `<dir>/<id>.jsonl`. Logs hold source code and tool output, so only the owner can read them.
@@ -197,7 +199,7 @@ pub fn list(dir: &Path, workspace: &Path) -> io::Result<Vec<SessionInfo>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e),
     };
-    let folders = read_folders(dir);
+    let folders: BTreeMap<String, String> = read_json(dir, FOLDERS_FILE);
     let mut sessions: Vec<SessionInfo> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
@@ -221,9 +223,9 @@ pub fn delete(dir: &Path, id: &str) -> io::Result<()> {
     lock(&file, id)?;
     fs::remove_file(path(dir, id)?)?;
     let _folders = lock_folders(dir)?;
-    let mut folders = read_folders(dir);
+    let mut folders: BTreeMap<String, String> = read_json(dir, FOLDERS_FILE);
     if folders.remove(id).is_some() {
-        write_folders(dir, &folders)?;
+        write_json(dir, FOLDERS_FILE, &folders)?;
     }
     Ok(())
 }
@@ -237,23 +239,59 @@ pub fn set_folder(dir: &Path, id: &str, name: &str) -> io::Result<()> {
             format!("no session `{id}`"),
         ));
     }
-    let name = name.trim();
+    let name = checked_name(name)?;
     let _folders = lock_folders(dir)?;
-    let mut folders = read_folders(dir);
-    if name.is_empty() {
-        folders.remove(id);
-    } else {
-        if name.chars().count() > FOLDER_NAME_MAX || name.chars().any(char::is_control) {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "folder names are at most {FOLDER_NAME_MAX} characters with no control characters"
-                ),
-            ));
+    let mut folders: BTreeMap<String, String> = read_json(dir, FOLDERS_FILE);
+    match name {
+        None => {
+            folders.remove(id);
         }
-        folders.insert(id.to_owned(), name.to_owned());
+        Some(name) => {
+            folders.insert(id.to_owned(), name);
+        }
     }
-    write_folders(dir, &folders)
+    write_json(dir, FOLDERS_FILE, &folders)
+}
+
+/// Creates the folder `name` for `workspace` with no session in it yet. Creating an existing name is a no-op.
+pub fn create_folder(dir: &Path, workspace: &Path, name: &str) -> io::Result<()> {
+    let name = checked_name(name)?.ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "folder names can't be empty")
+    })?;
+    let key = canonical(workspace)?;
+    let _folders = lock_folders(dir)?;
+    let mut created: BTreeMap<String, BTreeSet<String>> = read_json(dir, CREATED_FOLDERS_FILE);
+    created.entry(key).or_default().insert(name);
+    write_json(dir, CREATED_FOLDERS_FILE, &created)
+}
+
+/// The folders created for `workspace` (see `create_folder`), sorted. Folders that hold sessions
+/// are listed by `list`; this is only the ones created on purpose.
+pub fn created_folders(dir: &Path, workspace: &Path) -> io::Result<Vec<String>> {
+    let key = canonical(workspace)?;
+    let mut created: BTreeMap<String, BTreeSet<String>> = read_json(dir, CREATED_FOLDERS_FILE);
+    Ok(created
+        .remove(&key)
+        .unwrap_or_default()
+        .into_iter()
+        .collect())
+}
+
+/// The trimmed folder name, `None` when it is empty. Names are at most 64 characters, with no control characters.
+fn checked_name(name: &str) -> io::Result<Option<String>> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Ok(None);
+    }
+    if name.chars().count() > FOLDER_NAME_MAX || name.chars().any(char::is_control) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!(
+                "folder names are at most {FOLDER_NAME_MAX} characters with no control characters"
+            ),
+        ));
+    }
+    Ok(Some(name.to_owned()))
 }
 
 /// Holds an exclusive lock on a sibling file across a folders read-modify-write, so concurrent
@@ -273,32 +311,32 @@ fn lock_folders(dir: &Path) -> io::Result<File> {
     Ok(file)
 }
 
-/// Every session's folder. A missing or unreadable file reads as no folders, so sessions still list.
-/// shortcut: the next folder change rewrites a corrupt file from scratch, so its old entries are lost. Upgrade by keeping the bad file aside.
-fn read_folders(dir: &Path) -> BTreeMap<String, String> {
-    fs::read_to_string(dir.join(FOLDERS_FILE))
+/// The JSON file `file` in `dir`. A missing or unreadable file reads as empty, so sessions still list.
+/// shortcut: the next change rewrites a corrupt file from scratch, so its old entries are lost. Upgrade by keeping the bad file aside.
+fn read_json<T: serde::de::DeserializeOwned + Default>(dir: &Path, file: &str) -> T {
+    fs::read_to_string(dir.join(file))
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
         .unwrap_or_default()
 }
 
-/// Writes the folder file through a temp file and a rename, so a crash never leaves it half-written.
-fn write_folders(dir: &Path, folders: &BTreeMap<String, String>) -> io::Result<()> {
+/// Writes the JSON file `file` through a temp file and a rename, so a crash never leaves it half-written.
+fn write_json<T: Serialize>(dir: &Path, file: &str, value: &T) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
-    let text = serde_json::to_string(folders).map_err(io::Error::other)?;
-    let temp = dir.join(format!("{FOLDERS_FILE}.{}.tmp", std::process::id()));
-    let mut file = OpenOptions::new()
+    let text = serde_json::to_string(value).map_err(io::Error::other)?;
+    let temp = dir.join(format!("{file}.{}.tmp", std::process::id()));
+    let mut file_out = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .mode(0o600)
         .open(&temp)?;
-    file.write_all(text.as_bytes())?;
-    file.sync_all()?;
-    fs::rename(temp, dir.join(FOLDERS_FILE))
+    file_out.write_all(text.as_bytes())?;
+    file_out.sync_all()?;
+    fs::rename(temp, dir.join(file))
 }
 
 /// `None` if the log's header names another workspace or is missing.
@@ -507,12 +545,30 @@ mod tests {
                 });
             }
         });
-        let folders = read_folders(&dir);
+        let folders: BTreeMap<String, String> = read_json(&dir, FOLDERS_FILE);
         fs::remove_dir_all(&dir).unwrap();
         assert_eq!(
             folders.len(),
             8 * 10,
             "concurrent folder changes lost entries"
         );
+    }
+
+    #[test]
+    fn created_folders_persist_per_workspace_and_reject_empty_names() {
+        let dir = scratch("created-folders");
+        let (ws, other) = (dir.join("ws"), dir.join("other"));
+        fs::create_dir_all(&other).unwrap();
+        create_folder(&dir, &ws, "  Work ").unwrap();
+        create_folder(&dir, &ws, "Work").unwrap();
+        create_folder(&dir, &ws, "Home").unwrap();
+        assert_eq!(created_folders(&dir, &ws).unwrap(), ["Home", "Work"]);
+        assert!(created_folders(&dir, &other).unwrap().is_empty());
+        assert_eq!(
+            create_folder(&dir, &ws, "   ").unwrap_err().kind(),
+            io::ErrorKind::InvalidInput
+        );
+        assert!(create_folder(&dir, &ws, "bad\nname").is_err());
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

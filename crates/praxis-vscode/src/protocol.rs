@@ -3,7 +3,6 @@
 //! Lines are framed by hand with `serde_json` rather than the `agent-client-protocol` crate (SPEC §11).
 
 use serde_json::{Value, json};
-use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 /// A message from the webview. The webview is untrusted, so anything else is dropped.
@@ -340,10 +339,19 @@ pub fn session_items(json: &str) -> Result<Vec<SessionItem>, String> {
         .collect()
 }
 
-/// The folders the sessions are in, each once, sorted.
-pub fn folder_names(items: &[SessionItem]) -> Vec<String> {
-    let names: BTreeSet<&str> = items.iter().filter_map(|i| i.folder.as_deref()).collect();
-    names.into_iter().map(str::to_owned).collect()
+/// The folder names `praxis sessions --folders --json` prints: the empty folders created for this workspace.
+pub fn created_folders(json: &str) -> Result<Vec<String>, String> {
+    let Value::Array(names) = serde_json::from_str(json).map_err(|error| error.to_string())? else {
+        return Err("sessions --folders did not print an array".to_owned());
+    };
+    names
+        .iter()
+        .map(|name| {
+            name.as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "folder entry is not a string".to_owned())
+        })
+        .collect()
 }
 
 /// Only ids in the session format (`{nanos}-{pid}`, digits only) may reach the CLI. The CLI checks again.
@@ -1960,19 +1968,13 @@ mod tests {
     }
 
     #[test]
-    fn folder_names_are_listed_once_each_in_order() {
-        let item = |folder: Option<&str>| SessionItem {
-            id: "x".to_owned(),
-            label: "x".to_owned(),
-            folder: folder.map(str::to_owned),
-        };
-        let items = [
-            item(Some("Work")),
-            item(None),
-            item(Some("Home")),
-            item(Some("Work")),
-        ];
-        assert_eq!(folder_names(&items), ["Home", "Work"]);
+    fn created_folders_parse_the_names_and_refuse_other_shapes() {
+        assert_eq!(
+            created_folders(r#"["Home","Work"]"#),
+            Ok(vec!["Home".to_owned(), "Work".to_owned()])
+        );
+        assert!(created_folders(r#"{"Home":1}"#).is_err());
+        assert!(created_folders(r#"[1]"#).is_err());
     }
 
     #[test]

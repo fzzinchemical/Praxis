@@ -17,6 +17,7 @@
       { "command": "praxis.refreshSessions", "title": "Praxis: Refresh Sessions", "icon": "$(refresh)" },
       { "command": "praxis.deleteSession", "title": "Praxis: Delete Session" },
       { "command": "praxis.moveSessionToFolder", "title": "Praxis: Move Session to Folder" },
+      { "command": "praxis.newFolder", "title": "Praxis: New Folder", "icon": "$(new-folder)" },
       { "command": "praxis.enablePlugin", "title": "Praxis: Enable Plugin" },
       { "command": "praxis.disablePlugin", "title": "Praxis: Disable Plugin" },
       { "command": "praxis.removePlugin", "title": "Praxis: Remove Plugin" },
@@ -39,6 +40,7 @@
     "menus": {
       "view/title": [
         { "command": "praxis.newSession", "when": "view == praxis.sessions", "group": "navigation" },
+        { "command": "praxis.newFolder", "when": "view == praxis.sessions", "group": "navigation" },
         { "command": "praxis.refreshSessions", "when": "view == praxis.sessions", "group": "navigation" },
         { "command": "praxis.refreshMcp", "when": "view == praxis.mcp", "group": "navigation" },
         { "command": "praxis.installPlugin", "when": "view == praxis.plugins", "group": "navigation" },

@@ -4,16 +4,18 @@
 //! first workspace folder; prompts, stop and permission answers go to it, typed updates come back.
 
 mod details;
+mod folders;
 mod mcp;
 mod plugins;
 mod profile;
 mod protocol;
 
+use folders::{create_args, folder_list, move_args};
 use js_sys::{Array, Function, Object, Promise, Reflect};
 use plugins::{PluginItem, Verb, config_args, install_args, list_args, plugin_items, verb_args};
 use protocol::{
     Change, Client, Context, FileRead, FromPanel, Lines, Problem, Problems, Reaction, Review,
-    Selection, SessionItem, folder_args, folder_names, session_items,
+    Selection, SessionItem, created_folders, session_items,
 };
 use serde_json::Value;
 use std::cell::RefCell;
@@ -110,6 +112,18 @@ extern "C" {
     fn show_warning_message(message: &str, options: &JsValue, button: &str) -> Promise;
     #[wasm_bindgen(js_namespace = window, js_name = showInputBox)]
     fn show_input_box(options: &JsValue) -> Promise;
+    #[wasm_bindgen(js_namespace = window, js_name = showQuickPick)]
+    fn show_quick_pick(items: &Array, options: &JsValue) -> Promise;
+    /// `vscode.DataTransferItem`, the value a tree drag carries from `handleDrag` to `handleDrop`.
+    type DataTransferItem;
+    #[wasm_bindgen(constructor)]
+    fn new(value: &JsValue) -> DataTransferItem;
+    /// The `dataTransfer` argument of the tree's drag handlers.
+    type DataTransfer;
+    #[wasm_bindgen(method)]
+    fn set(this: &DataTransfer, mime: &str, item: &DataTransferItem);
+    #[wasm_bindgen(method)]
+    fn get(this: &DataTransfer, mime: &str) -> JsValue;
     /// `vscode.window.withProgress`; `task` returns a promise that ends the progress indicator.
     #[wasm_bindgen(js_namespace = window, js_name = withProgress)]
     fn with_progress(options: &JsValue, task: &JsValue) -> Promise;
@@ -475,6 +489,7 @@ pub fn activate(context: ExtensionContext) -> Result<(), JsValue> {
             move_to_folder(id);
         }
     })?;
+    command(&context, "praxis.newFolder", |_| new_folder())?;
     command(&context, "praxis.refreshSessions", |_| refresh_sessions())
 }
 
@@ -1326,6 +1341,8 @@ struct Sidebar {
     emitter: EventEmitter,
     output: OutputChannel,
     items: Vec<SessionItem>,
+    /// The folders created on purpose for this workspace, which list even when empty.
+    created: Vec<String>,
     /// Why the view is empty or stale, shown as its first item until a listing succeeds.
     problem: Option<String>,
 }
@@ -1343,15 +1360,91 @@ fn create_sessions_view(output: &OutputChannel) {
         ("getChildren", callback(|element| children(&element).into())),
     ]);
     // The view lives as long as the host; the returned handle needs no keeping.
-    let _ = create_tree_view("praxis.sessions", &node(&[("treeDataProvider", provider)]));
+    let _ = create_tree_view(
+        "praxis.sessions",
+        &node(&[
+            ("treeDataProvider", provider),
+            ("dragAndDropController", drag_controller()),
+        ]),
+    );
     SIDEBAR.with(|sidebar| {
         *sidebar.borrow_mut() = Some(Sidebar {
             emitter,
             output: output.clone(),
             items: Vec::new(),
+            created: Vec::new(),
             problem: None,
         });
     });
+}
+
+/// The drag type of a session row. VS Code keeps a custom type inside the view that set it.
+const SESSION_MIME: &str = "application/vnd.code.tree.praxis.sessions";
+
+/// The `dragAndDropController`: session rows drag onto a folder (filed there) or onto the root
+/// (taken out of their folder). Folder rows do not drag.
+fn drag_controller() -> JsValue {
+    let handle_drag =
+        Closure::<dyn FnMut(JsValue, JsValue)>::new(|source: JsValue, data: JsValue| {
+            let ids: Vec<String> = source
+                .unchecked_into::<Array>()
+                .iter()
+                .filter_map(|item| item_id(&item))
+                .filter(|id| !id.starts_with(FOLDER_PREFIX))
+                .collect();
+            if ids.is_empty() {
+                return;
+            }
+            let json = serde_json::to_string(&ids).unwrap_or_default();
+            let item = DataTransferItem::new(&JsValue::from_str(&json));
+            data.unchecked_ref::<DataTransfer>()
+                .set(SESSION_MIME, &item);
+        });
+    let handle_drop =
+        Closure::<dyn FnMut(JsValue, JsValue)>::new(|target: JsValue, data: JsValue| {
+            let item = data.unchecked_ref::<DataTransfer>().get(SESSION_MIME);
+            let Some(json) = Reflect::get(&item, &"value".into())
+                .ok()
+                .and_then(|value| value.as_string())
+            else {
+                return;
+            };
+            let Ok(ids) = serde_json::from_str::<Vec<String>>(&json) else {
+                return;
+            };
+            move_sessions(ids, drop_folder(&target).as_deref());
+        });
+    node(&[
+        (
+            "dragMimeTypes",
+            Array::of1(&JsValue::from_str(SESSION_MIME)).into(),
+        ),
+        (
+            "dropMimeTypes",
+            Array::of1(&JsValue::from_str(SESSION_MIME)).into(),
+        ),
+        ("handleDrag", handle_drag.into_js_value()),
+        ("handleDrop", handle_drop.into_js_value()),
+    ])
+}
+
+/// The folder a drop onto `target` files its sessions in: a folder row's folder, a session row's
+/// folder, or none for the root (no target).
+fn drop_folder(target: &JsValue) -> Option<String> {
+    let id = item_id(target)?;
+    if let Some(folder) = id.strip_prefix(FOLDER_PREFIX) {
+        return Some(folder.to_owned());
+    }
+    SIDEBAR.with(|sidebar| {
+        let sidebar = sidebar.borrow();
+        sidebar
+            .as_ref()?
+            .items
+            .iter()
+            .find(|item| item.id == id)?
+            .folder
+            .clone()
+    })
 }
 
 /// A closure VS Code calls back into. shortcut: provider closures live until the host exits; the view is created once.
@@ -1395,7 +1488,7 @@ fn root_children() -> Vec<JsValue> {
             .borrow()
             .as_ref()
             .map(|sidebar| {
-                let mut nodes: Vec<JsValue> = folder_names(&sidebar.items)
+                let mut nodes: Vec<JsValue> = folder_list(&sidebar.items, &sidebar.created)
                     .iter()
                     .map(|name| folder_node(name))
                     .collect();
@@ -1452,24 +1545,105 @@ fn folder_node(name: &str) -> JsValue {
     ])
 }
 
-/// Asks for a folder name, then moves the session through the CLI. An empty name removes it from its
-/// folder, and cancelling the box does nothing.
+/// Picks an existing folder, the root or "New folder…" for the session, then moves it through the CLI.
+/// Cancelling the picker does nothing.
 fn move_to_folder(id: String) {
+    let folders = SIDEBAR.with(|sidebar| {
+        sidebar
+            .borrow()
+            .as_ref()
+            .map(|sidebar| folder_list(&sidebar.items, &sidebar.created))
+            .unwrap_or_default()
+    });
+    let mut picks = vec![pick("No folder", "root", None)];
+    picks.extend(folders.iter().map(|name| pick(name, "folder", Some(name))));
+    picks.push(pick("New folder…", "new", None));
+    let items = Array::new();
+    for item in &picks {
+        items.push(item);
+    }
+    let options = node(&[("placeHolder", JsValue::from_str("Move session to folder"))]);
+    let on_pick = Closure::once_into_js(move |picked: JsValue| {
+        if picked.is_undefined() {
+            return;
+        }
+        match prop(&picked, "praxisAction").as_deref() {
+            Some("new") => ask_new_folder(id),
+            Some(_) => move_sessions(vec![id], prop(&picked, "praxisFolder").as_deref()),
+            None => {}
+        }
+    });
+    let _ = show_quick_pick(&items, &options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_pick);
+}
+
+/// A QuickPick row: its label, what it does (`root`, `folder` or `new`) and the folder it names.
+fn pick(label: &str, action: &str, folder: Option<&str>) -> JsValue {
+    let mut fields = vec![
+        ("label", JsValue::from_str(label)),
+        ("praxisAction", JsValue::from_str(action)),
+    ];
+    if let Some(folder) = folder {
+        fields.push(("praxisFolder", JsValue::from_str(folder)));
+    }
+    node(&fields)
+}
+
+/// A string property of a JS object, `None` when it is missing or not a string.
+fn prop(object: &JsValue, key: &str) -> Option<String> {
+    Reflect::get(object, &key.into()).ok()?.as_string()
+}
+
+/// Asks for a folder name and files the session in it. A blank name does nothing.
+fn ask_new_folder(id: String) {
     let options = node(&[
-        (
-            "prompt",
-            JsValue::from_str("Folder name. Leave empty to take the session out of its folder."),
-        ),
+        ("prompt", JsValue::from_str("Name for the folder")),
         ("placeHolder", JsValue::from_str("Folder")),
     ]);
     let on_name = Closure::once_into_js(move |name: JsValue| {
-        let Some(args) = name.as_string().and_then(|name| folder_args(&id, &name)) else {
+        let Some(name) = name.as_string() else {
             return;
         };
+        if !name.trim().is_empty() {
+            move_sessions(vec![id], Some(name.trim()));
+        }
+    });
+    let _ = show_input_box(&options)
+        .unchecked_into::<Thenable>()
+        .then_once(&on_name);
+}
+
+/// Files each session in `ids` under `folder` (`None` takes them out), one CLI call each, then redraws.
+fn move_sessions(ids: Vec<String>, folder: Option<&str>) {
+    for args in move_args(&ids, folder) {
         run_cli(args, None, |result| {
             if let Err(error) = result {
                 sessions_log(&format!("sessions: move failed: {error}\n"));
                 show_error_message(&format!("Praxis: could not move the session: {error}"));
+            }
+            refresh_sessions();
+        });
+    }
+}
+
+/// Asks for a name, then creates that empty folder for this workspace through the CLI.
+fn new_folder() {
+    let Some(cwd) = workspace_dir() else {
+        return show_error_message("Praxis: open a folder to create a folder in");
+    };
+    let options = node(&[
+        ("prompt", JsValue::from_str("Name for the new empty folder")),
+        ("placeHolder", JsValue::from_str("Folder")),
+    ]);
+    let on_name = Closure::once_into_js(move |name: JsValue| {
+        let Some(args) = name.as_string().and_then(|name| create_args(&name)) else {
+            return;
+        };
+        run_cli(args, Some(&cwd), |result| {
+            if let Err(error) = result {
+                sessions_log(&format!("sessions: new folder failed: {error}\n"));
+                show_error_message(&format!("Praxis: could not create the folder: {error}"));
             }
             refresh_sessions();
         });
@@ -1556,10 +1730,11 @@ fn sessions_log(text: &str) {
     });
 }
 
-/// Replaces the view's sessions and asks VS Code to redraw them.
-fn publish(items: Vec<SessionItem>) {
+/// Replaces the view's sessions and folders and asks VS Code to redraw them.
+fn publish(items: Vec<SessionItem>, created: Vec<String>) {
     redraw(|sidebar| {
         sidebar.items = items;
+        sidebar.created = created;
         sidebar.problem = None;
     });
 }
@@ -1594,9 +1769,22 @@ fn refresh_sessions() {
         });
     };
     let args = vec!["sessions".to_owned(), "--json".to_owned()];
-    run_cli(args, Some(&cwd), |result| {
+    let folders_cwd = cwd.clone();
+    run_cli(args, Some(&cwd), move |result| {
         match result.and_then(|json| session_items(&json)) {
-            Ok(items) => publish(items),
+            Ok(items) => {
+                let args = vec![
+                    "sessions".to_owned(),
+                    "--folders".to_owned(),
+                    "--json".to_owned(),
+                ];
+                run_cli(args, Some(&folders_cwd), move |result| {
+                    match result.and_then(|json| created_folders(&json)) {
+                        Ok(created) => publish(items, created),
+                        Err(error) => fail(error),
+                    }
+                });
+            }
             Err(error) => fail(error),
         }
     });
