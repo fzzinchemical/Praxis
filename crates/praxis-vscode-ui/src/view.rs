@@ -292,6 +292,25 @@ pub fn at_bottom(scroll_top: f64, client_height: f64, scroll_height: f64) -> boo
     scroll_height - scroll_top - client_height <= 40.0
 }
 
+/// Whether the transcript keeps following the bottom after a scroll event. Near the bottom it always
+/// follows; otherwise only an upward move (the reader scrolling away) releases it. Growth never moves
+/// the top, and our own scrolls go down, so neither can clear the flag.
+pub fn next_follow(
+    was_following: bool,
+    previous_top: f64,
+    scroll_top: f64,
+    client_height: f64,
+    scroll_height: f64,
+) -> bool {
+    if at_bottom(scroll_top, client_height, scroll_height) {
+        true
+    } else if scroll_top < previous_top {
+        false
+    } else {
+        was_following
+    }
+}
+
 /// A profile value as the popover's input shows it: strings as they are, lists and numbers as TOML
 /// (what `profile set` reads back), and nothing for an unset value.
 pub fn profile_text(value: &serde_json::Value) -> String {
@@ -318,6 +337,19 @@ mod tests {
     #[test]
     fn a_transcript_shorter_than_its_view_always_follows() {
         assert!(at_bottom(0.0, 400.0, 120.0));
+    }
+
+    #[test]
+    fn only_scrolling_up_releases_the_follow_flag() {
+        // Content grew below the reader (scroll top unchanged, now 41px short of the bottom): keep following.
+        assert!(next_follow(true, 600.0, 600.0, 400.0, 1100.0));
+        // Our own scroll-down, still short of the bottom: keep following.
+        assert!(next_follow(true, 100.0, 300.0, 400.0, 1500.0));
+        // The reader scrolls up away from the bottom: stop following.
+        assert!(!next_follow(true, 600.0, 300.0, 400.0, 1000.0));
+        // Back at the bottom re-arms it, and a scroll-down while released stays released.
+        assert!(next_follow(false, 300.0, 600.0, 400.0, 1000.0));
+        assert!(!next_follow(false, 100.0, 200.0, 400.0, 1000.0));
     }
 
     #[test]

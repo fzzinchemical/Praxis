@@ -511,25 +511,45 @@ pub fn start() -> Result<(), JsValue> {
     on_input.forget();
 
     // The composer can grow (queue, chips, textarea) and shrink the transcript; keep the reader at the bottom if they were there.
+    // The reader sticks to the bottom until they scroll up. Growth re-pins it: the container resizing (ResizeObserver)
+    // and content changing inside it, which leaves the container's own size alone (MutationObserver).
     let follow = Rc::new(std::cell::Cell::new(true));
-    let (log, flag) = (output.clone(), follow.clone());
+    let seen_top = Rc::new(std::cell::Cell::new(0.0_f64));
+    let (log, flag, seen) = (output.clone(), follow.clone(), seen_top.clone());
     let on_scroll = Closure::<dyn FnMut()>::new(move || {
-        flag.set(view::at_bottom(
-            f64::from(log.scroll_top()),
+        let top = f64::from(log.scroll_top());
+        flag.set(view::next_follow(
+            flag.get(),
+            seen.get(),
+            top,
             f64::from(log.client_height()),
             f64::from(log.scroll_height()),
         ));
+        seen.set(top);
     });
     output.add_event_listener_with_callback("scroll", on_scroll.as_ref().unchecked_ref())?;
     on_scroll.forget();
-    let log = output.clone();
-    let on_resize = Closure::<dyn FnMut()>::new(move || {
-        if follow.get() {
-            log.set_scroll_top(log.scroll_height());
+    let pin = {
+        let (log, follow) = (output.clone(), follow.clone());
+        move || {
+            if follow.get() {
+                log.set_scroll_top(log.scroll_height());
+            }
         }
-    });
+    };
+    let pin_on_resize = pin.clone();
+    let on_resize = Closure::<dyn FnMut()>::new(pin_on_resize);
     web_sys::ResizeObserver::new(on_resize.as_ref().unchecked_ref())?.observe(&output);
     on_resize.forget();
+    let on_change = Closure::<dyn FnMut(JsValue, JsValue)>::new(move |_records, _observer| pin());
+    let options = web_sys::MutationObserverInit::new();
+    options.set_child_list(true);
+    options.set_subtree(true);
+    options.set_character_data(true);
+    options.set_attributes(true);
+    web_sys::MutationObserver::new(on_change.as_ref().unchecked_ref())?
+        .observe_with_options(&output, &options)?;
+    on_change.forget();
 
     let state = ui.clone();
     let on_pick = Closure::<dyn FnMut(Event)>::new(move |event: Event| {
