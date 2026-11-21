@@ -1138,7 +1138,13 @@ fn react(state: &Shared, mut reaction: Reaction) {
         panel.webview.post_message(&modes.to_string());
     }
     if let Some(result) = reaction.mcp {
-        publish_mcp(mcp::mcp_servers(&result));
+        let servers = mcp::mcp_servers(&result);
+        // A failed listing sends no servers, so the composer's chips clear with the view's problem line.
+        let chips = servers.as_deref().unwrap_or_default();
+        panel
+            .webview
+            .post_message(&mcp::chips_message(chips).to_string());
+        publish_mcp(servers);
     }
     if reaction.session_ready {
         refresh_mcp();

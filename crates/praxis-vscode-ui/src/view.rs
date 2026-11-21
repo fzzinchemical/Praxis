@@ -313,6 +313,33 @@ pub fn next_follow(
 
 /// A profile value as the popover's input shows it: strings as they are, lists and numbers as TOML
 /// (what `profile set` reads back), and nothing for an unset value.
+/// One MCP chip in the composer: a server the session has turned on.
+#[derive(Debug, PartialEq)]
+pub struct McpChip {
+    pub name: String,
+    pub status: String,
+    pub failed: bool,
+}
+
+/// The chips for a `mcp_servers` message: one per enabled server, in the order the agent lists them.
+pub fn mcp_chips(message: &serde_json::Value) -> Vec<McpChip> {
+    message["servers"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|server| server["enabled"].as_bool() == Some(true))
+        .filter_map(|server| {
+            let status = server["status"].as_str()?.to_owned();
+            Some(McpChip {
+                name: server["name"].as_str()?.to_owned(),
+                failed: status == "failed",
+                status,
+            })
+        })
+        .collect()
+}
+
 pub fn profile_text(value: &serde_json::Value) -> String {
     match value {
         serde_json::Value::Null => String::new(),
@@ -324,6 +351,31 @@ pub fn profile_text(value: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_chips_keep_enabled_servers_and_flag_failed_ones() {
+        let message = serde_json::json!({"type": "mcp_servers", "servers": [
+            {"name": "fs", "status": "connected", "enabled": true},
+            {"name": "git", "status": "failed", "enabled": true},
+            {"name": "docs", "status": "connected", "enabled": false}
+        ]});
+        assert_eq!(
+            mcp_chips(&message),
+            [
+                McpChip {
+                    name: "fs".into(),
+                    status: "connected".into(),
+                    failed: false
+                },
+                McpChip {
+                    name: "git".into(),
+                    status: "failed".into(),
+                    failed: true
+                },
+            ]
+        );
+        assert!(mcp_chips(&serde_json::json!({"servers": 3})).is_empty());
+    }
 
     #[test]
     fn the_transcript_follows_only_when_at_or_near_the_bottom() {
